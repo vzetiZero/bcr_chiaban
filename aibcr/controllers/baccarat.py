@@ -26,6 +26,7 @@ import threading
 import time
 
 from aibcr.adapters import browser as BR
+from aibcr.adapters import febet as FEBET
 from aibcr.adapters import lobby_stream as LS
 from aibcr.adapters import table_bets as TB
 from aibcr.adapters.wm_bet import WMBet
@@ -651,6 +652,21 @@ class BaccaratController:
         return {"ok": True, "note": "Đã áp dụng cấu hình profile.",
                 "proxy_enabled": bool(proxy_server), "width": width,
                 "height": height, "scale": percent}
+
+    def febet_open_dg(self, _params=None):
+        deadline = time.monotonic() + 25
+        while self.browser.driver is None and self.chrome_busy and time.monotonic() < deadline:
+            time.sleep(0.2)
+        with self.browser.lock:
+            return FEBET.open_dream_gaming_baccarat(self.browser.driver)
+
+    def febet_inspect(self, _params=None):
+        with self.browser.lock:
+            return FEBET.inspect(self.browser.driver)
+
+    def febet_select_table(self, params):
+        with self.browser.lock:
+            return FEBET.select_table(self.browser.driver, (params or {}).get("label"))
 
     def chrome_attach(self):
         if self.chrome_busy:
@@ -2521,6 +2537,9 @@ class BaccaratController:
             "chrome.open": lambda p: self.chrome_open(),
             "site.open": self.site_open,
             "profile.configure": self.profile_configure,
+            "febet.openDG": self.febet_open_dg,
+            "febet.inspect": self.febet_inspect,
+            "febet.selectTable": self.febet_select_table,
             "chrome.attach": lambda p: self.chrome_attach(),
             "chrome.close": lambda p: self.chrome_close(),
             "chrome.window": self.apply_window,

@@ -183,7 +183,8 @@ profileList.addEventListener('click', async (event) => {
     const result = closing
       ? await api.closeProfile(index)
       : await api.openProfile(index, Math.max(1, Math.min(8, Number(profileCount.value) || index)),
-        collectSettings(Math.max(1, Math.min(8, Number(profileCount.value) || index)))[index - 1]);
+        collectSettings(Math.max(1, Math.min(8, Number(profileCount.value) || index)))[index - 1],
+        profileSelect.selectedOptions[0] && profileSelect.selectedOptions[0].dataset.url);
     if (!result || !result.ok) {
       updateProfile(index, 'error', (result && result.error) || 'Không thực hiện được thao tác.');
       return;
@@ -198,6 +199,97 @@ profileList.addEventListener('click', async (event) => {
     }
   } catch (error) {
     updateProfile(index, 'error', String(error.message || error));
+  }
+});
+
+function setFebetNote(message, isError = false) {
+  const target = $('#febet-note');
+  target.textContent = message;
+  target.dataset.state = isError ? 'error' : 'ready';
+}
+
+$('#open-dg-all').addEventListener('click', async (event) => {
+  const button = event.currentTarget;
+  button.disabled = true;
+  setFebetNote('Đang mở Dream Gaming Baccarat trong các profile…');
+  try {
+    const result = await api.openDreamGaming();
+    if (!result || !result.ok) {
+      setFebetNote((result && result.error) || 'Không mở được DG.', true);
+      return;
+    }
+    const opened = result.replies.filter((reply) => reply.ok).length;
+    const failed = result.replies.filter((reply) => !reply.ok);
+    const errors = failed.map((reply) => `Profile ${reply.index}: ${reply.error}`).join(' · ');
+    setFebetNote(`Đã xử lý ${result.count} profile; ${opened} profile mở hoặc đã có iframe DG.${errors ? ` ${errors}` : ''}`, failed.length > 0);
+  } catch (error) {
+    setFebetNote(String(error.message || error), true);
+  } finally {
+    button.disabled = false;
+  }
+});
+
+$('#scan-dg').addEventListener('click', async (event) => {
+  const button = event.currentTarget;
+  const select = $('#dg-table-select');
+  button.disabled = true;
+  setFebetNote('Đang quét iframe của Profile 1…');
+  try {
+    const result = await api.inspectFebet();
+    if (!result || !result.ok) {
+      setFebetNote((result && result.error) || 'Không quét được iframe.', true);
+      return;
+    }
+    select.replaceChildren();
+    for (const optionData of result.options || []) {
+      const option = document.createElement('option');
+      option.value = optionData.label;
+      option.textContent = optionData.origin ? `${optionData.label} · ${optionData.origin}` : optionData.label;
+      select.append(option);
+    }
+    select.disabled = !select.options.length;
+    $('#sync-dg-table').disabled = !select.options.length;
+    if (!select.options.length) {
+      const empty = document.createElement('option');
+      empty.value = '';
+      empty.textContent = 'Iframe chưa có nhãn bàn để chọn';
+      select.append(empty);
+      select.disabled = true;
+    }
+    const frameSummary = (result.frames || []).map((frame) => frame.title || frame.origin || 'iframe').join(', ');
+    setFebetNote(`${result.note || ''}${frameSummary ? ` Iframe: ${frameSummary}.` : ''} Tìm thấy ${(result.options || []).length} lựa chọn.`);
+  } catch (error) {
+    setFebetNote(String(error.message || error), true);
+  } finally {
+    button.disabled = false;
+  }
+});
+
+$('#dg-table-select').addEventListener('change', () => {
+  $('#sync-dg-table').disabled = !$('#dg-table-select').value;
+});
+
+$('#sync-dg-table').addEventListener('click', async (event) => {
+  const button = event.currentTarget;
+  const label = $('#dg-table-select').value;
+  if (!label) return;
+  button.disabled = true;
+  setFebetNote(`Đang chọn bàn “${label}” trên các profile…`);
+  try {
+    const result = await api.selectFebetTable(label);
+    if (!result || !result.ok) {
+      setFebetNote((result && result.error) || 'Không đồng bộ được bàn.', true);
+      return;
+    }
+    const failed = result.replies.filter((reply) => !reply.ok);
+    const detail = failed.map((reply) => `Profile ${reply.index}: ${reply.error}`).join(' · ');
+    setFebetNote(failed.length
+      ? `Đã gửi chọn bàn tới ${result.count} profile; ${failed.length} profile chưa chọn được. ${detail}`
+      : `Đã chọn “${label}” trên ${result.count} profile.`, failed.length > 0);
+  } catch (error) {
+    setFebetNote(String(error.message || error), true);
+  } finally {
+    button.disabled = !$('#dg-table-select').value;
   }
 });
 

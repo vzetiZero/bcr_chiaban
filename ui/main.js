@@ -16,7 +16,7 @@ const PYTHON_CANDIDATES = [
 ].filter(Boolean);
 
 const PROFILE_SITES = [
-  { id: 'febet', label: 'FEBET', url: 'https://febet.kiwi/event/tui-qua-than-tai?a=c76811abcadb64fed7d82b32d7e79f3c&utm_campaign=social&utm_source=aphonso&utm_medium=sale&utm_term=bee&utm_content=KANGIN&event=' },
+  { id: 'febet', label: 'FEBET Baccarat', url: 'https://febet.kiwi/live-casino/baccarat?a=c76811abcadb64fed7d82b32d7e79f3c&utm_campaign=social&utm_source=aphonso&utm_medium=sale&utm_term=bee&utm_content=KANGIN&event=' },
   { id: 'e3951', label: 'E3951', url: 'https://e39d5d05qc.e3951.com/m/gameRecord' },
   { id: 'gk881', label: 'GK881', url: 'https://m.gk881.vip/' },
   { id: 'vnwtop', label: 'VNWTop', url: 'https://vnwtop.com/' },
@@ -281,10 +281,13 @@ function profileLayout(index, count, width, height, area) {
   };
 }
 
-ipcMain.handle('profile:open', async (_event, { index, count, profile }) => {
+ipcMain.handle('profile:open', async (_event, { index, count, profile, url }) => {
   const profileIndex = Math.trunc(Number(index));
   if (!Number.isInteger(profileIndex) || profileIndex < 1 || profileIndex > 8) {
     return { ok: false, error: 'Profile không hợp lệ.' };
+  }
+  if (!PROFILE_SITES.some((site) => site.url === url)) {
+    return { ok: false, error: 'Hãy chọn một website hợp lệ trước khi mở profile.' };
   }
   const row = profile || {};
   const width = Math.max(520, Math.min(3840, Math.round(Number(row.width) || 900)));
@@ -307,7 +310,7 @@ ipcMain.handle('profile:open', async (_event, { index, count, profile }) => {
     const engine = engines[game];
     engine.layout = layout;
     const configured = await engine.call('profile.configure', {
-      proxy_server: proxyServer, width, height, scale, left: layout.left, top: layout.top,
+      url, proxy_server: proxyServer, width, height, scale, left: layout.left, top: layout.top,
     });
     if (!configured || !configured.ok) {
       if (newBridge) await newBridge.close().catch(() => {});
@@ -327,6 +330,35 @@ ipcMain.handle('profile:open', async (_event, { index, count, profile }) => {
     if (newBridge) await newBridge.close().catch(() => {});
     return { ok: false, error: error.message || 'Không mở được Chrome profile.' };
   }
+});
+
+ipcMain.handle('febet:open-dg', async (_event) => {
+  const indices = Array.from(activeProfileIndices).sort((a, b) => a - b);
+  if (!indices.length) return { ok: false, error: 'Hãy mở các profile ở sảnh FEBET trước.' };
+  const results = await Promise.allSettled(indices.map((index) =>
+    profileEngine(index).call('febet.openDG')));
+  return { ok: true, count: indices.length, replies: results.map((result, offset) =>
+    result.status === 'fulfilled' ? { index: indices[offset], ...result.value }
+      : { index: indices[offset], ok: false, error: result.reason.message }) };
+});
+
+ipcMain.handle('febet:inspect', async (_event) => {
+  const engine = profileEngine(1);
+  if (!activeProfileIndices.has(1) || !engine) {
+    return { ok: false, error: 'Hãy mở FEBET trên Profile 1 trước.' };
+  }
+  try { return await engine.call('febet.inspect'); }
+  catch (error) { return { ok: false, error: error.message || 'Không quét được iframe.' }; }
+});
+
+ipcMain.handle('febet:select-table', async (_event, { label }) => {
+  const indices = Array.from(activeProfileIndices).sort((a, b) => a - b);
+  if (!indices.length) return { ok: false, error: 'Chưa có profile nào đang mở.' };
+  const results = await Promise.allSettled(indices.map((index) =>
+    profileEngine(index).call('febet.selectTable', { label })));
+  return { ok: true, count: indices.length, replies: results.map((result, offset) =>
+    result.status === 'fulfilled' ? { index: indices[offset], ...result.value }
+      : { index: indices[offset], ok: false, error: result.reason.message }) };
 });
 
 ipcMain.handle('profile:close', async (_event, { index }) => {
