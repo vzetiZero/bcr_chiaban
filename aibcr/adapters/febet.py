@@ -168,21 +168,23 @@ def open_dream_gaming_baccarat(driver):
             image.is_displayed() and image.size.get("width", 0) > 0 and image.size.get("height", 0) > 0)
         time.sleep(0.25)
         image.click()
-        _confirm_balance_notice(driver)
+        clicked_xem_game = _click_xem_game(driver)
 
         frame_deadline = time.monotonic() + 25
         last = {"ok": True, "frames": [], "options": []}
         while time.monotonic() < frame_deadline:
             time.sleep(0.5)
-            _confirm_balance_notice(driver)
+            clicked_xem_game = _click_xem_game(driver) or clicked_xem_game
             last = inspect(driver)
             if last.get("ok") and last.get("loaded"):
                 return {"ok": True, "already_open": False, "clicked_image": True,
+                        "clicked_xem_game": clicked_xem_game,
                         "frames": last["frames"],
                         "options": last["options"], "note": "Đã mở DG Baccarat trong iframe riêng."}
         return {"ok": False, "clicked_image": True,
+                "clicked_xem_game": False,
                 "frames": last.get("frames", []), "options": last.get("options", []),
-                "error": "Đã thử mở DG nhưng chưa thấy iframe game trong 25 giây."}
+                "error": "Đã bấm ảnh DG nhưng chưa thấy nút XEM GAME hoặc iframe game trong 25 giây."}
     except Exception as exc:
         try:
             driver.switch_to.default_content()
@@ -191,31 +193,16 @@ def open_dream_gaming_baccarat(driver):
         return {"ok": False, "error": "Không mở được DG Baccarat (%s)." % type(exc).__name__}
 
 
-def _confirm_balance_notice(driver):
-    """Dismiss only a balance notice that explicitly offers a lobby/continue action."""
+def _click_xem_game(driver):
+    """Click the site's explicit XEM GAME action when its balance modal appears."""
     try:
-        alert = driver.switch_to.alert
-        message = re.sub(r"\s+", " ", alert.text or "").lower()
-        if "số dư" in message or "so du" in message or "balance" in message:
-            alert.accept()
-            return True
-    except Exception:
-        pass
-
-    try:
-        dialogs = driver.find_elements("css selector", '[role="dialog"], [aria-modal="true"]')
-        for dialog in dialogs:
-            if not dialog.is_displayed():
+        for button in driver.find_elements("css selector", "button"):
+            if not button.is_displayed() or not button.is_enabled():
                 continue
-            message = re.sub(r"\s+", " ", dialog.text or "").lower()
-            if not any(term in message for term in ("số dư", "so du", "balance")):
-                continue
-            buttons = dialog.find_elements("css selector", "button")
-            for button in buttons:
-                label = re.sub(r"\s+", " ", button.text or "").strip().lower()
-                if label in ("vào sảnh", "vao sanh", "tiếp tục", "tiep tuc", "đồng ý", "dong y"):
-                    button.click()
-                    return True
+            label = re.sub(r"\s+", " ", button.text or "").strip().upper()
+            if label == "XEM GAME":
+                button.click()
+                return True
     except Exception:
         pass
     return False
