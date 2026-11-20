@@ -129,11 +129,10 @@ def inspect(driver):
 
 
 def open_dream_gaming_baccarat(driver):
-    """Use FEBET's own UI in this profile so it creates a profile-specific game session."""
+    """Open the DG Baccarat lobby by scrolling to and clicking its provider image."""
     if driver is None:
         return {"ok": False, "error": "Mở profile Chrome trước khi khởi chạy DG."}
     from selenium.webdriver.common.by import By
-    from selenium.webdriver.common.action_chains import ActionChains
 
     try:
         if not driver.window_handles:
@@ -157,57 +156,31 @@ def open_dream_gaming_baccarat(driver):
         if existing.get("ok") and existing.get("loaded"):
             return {"ok": True, "already_open": True, "note": "Iframe game đã mở trong profile này."}
 
-        provider_clicked = bool(driver.execute_script("""
-          const nodes=[...document.querySelectorAll('*')].filter(e=>
-            e.children.length<5&&(e.innerText||'').trim()==='Dream Gaming');
-          const node=nodes.find(e=>{const r=e.getBoundingClientRect();return r.width>0&&r.height>0});
-          if(!node)return false;
-          const target=node.closest('.option,[role="button"],button')||node;
-          target.click(); return true;
-        """))
-        if not provider_clicked:
-            return {"ok": False, "error": "Không tìm thấy mục nhà cung cấp Dream Gaming."}
-        time.sleep(0.8)
+        from selenium.webdriver.support.ui import WebDriverWait
 
-        card = driver.execute_script("""
-          const image=[...document.querySelectorAll('img[alt="partner"]')].find(e=>
-            /dream-gaming-square\\.webp/i.test(e.currentSrc||e.src));
-          if(!image)return null;
-          let node=image;
-          while(node&&node!==document.body&&!node.classList.contains('group')) node=node.parentElement;
-          return node&&node!==document.body?node:image;
-        """)
-        if card is None:
-            return {"ok": False, "error": "Không thấy thẻ Baccarat của Dream Gaming sau khi lọc provider."}
-
-        try:
-            ActionChains(driver).move_to_element(card).perform()
-        except Exception:
-            pass
+        image = WebDriverWait(driver, 20).until(lambda current: next((item for item in
+            current.find_elements(By.CSS_SELECTOR, 'img[alt="partner"]')
+            if "dream-gaming-square.webp" in (item.get_attribute("src") or "").lower()), None))
+        driver.execute_script(
+            "arguments[0].scrollIntoView({block:'center',inline:'center',behavior:'instant'});",
+            image)
+        WebDriverWait(driver, 10).until(lambda _:
+            image.is_displayed() and image.size.get("width", 0) > 0 and image.size.get("height", 0) > 0)
         time.sleep(0.25)
-        view_button = _visible_view_game(driver, card)
-        clicked_view = False
-        if view_button is not None:
-            view_button.click()
-            clicked_view = True
-        else:
-            card.click()
-            time.sleep(0.4)
-            view_button = _visible_view_game(driver)
-            if view_button is not None:
-                view_button.click()
-                clicked_view = True
+        image.click()
+        _confirm_balance_notice(driver)
 
         frame_deadline = time.monotonic() + 25
         last = {"ok": True, "frames": [], "options": []}
         while time.monotonic() < frame_deadline:
             time.sleep(0.5)
+            _confirm_balance_notice(driver)
             last = inspect(driver)
             if last.get("ok") and last.get("loaded"):
-                return {"ok": True, "already_open": False, "clicked_provider": True,
-                        "clicked_view_game": clicked_view, "frames": last["frames"],
+                return {"ok": True, "already_open": False, "clicked_image": True,
+                        "frames": last["frames"],
                         "options": last["options"], "note": "Đã mở DG Baccarat trong iframe riêng."}
-        return {"ok": False, "clicked_provider": True, "clicked_view_game": clicked_view,
+        return {"ok": False, "clicked_image": True,
                 "frames": last.get("frames", []), "options": last.get("options", []),
                 "error": "Đã thử mở DG nhưng chưa thấy iframe game trong 25 giây."}
     except Exception as exc:
@@ -218,22 +191,34 @@ def open_dream_gaming_baccarat(driver):
         return {"ok": False, "error": "Không mở được DG Baccarat (%s)." % type(exc).__name__}
 
 
-def _visible_view_game(driver, within=None):
-    from selenium.webdriver.common.by import By
-
-    scope = within if within is not None else driver
+def _confirm_balance_notice(driver):
+    """Dismiss only a balance notice that explicitly offers a lobby/continue action."""
     try:
-        elements = scope.find_elements(By.XPATH, ".//button" if within is not None else "//button")
+        alert = driver.switch_to.alert
+        message = re.sub(r"\s+", " ", alert.text or "").lower()
+        if "số dư" in message or "so du" in message or "balance" in message:
+            alert.accept()
+            return True
     except Exception:
-        return None
-    for element in elements:
-        try:
-            text = re.sub(r"\s+", " ", element.text or "").strip().upper()
-            if text == "XEM GAME" and element.is_displayed() and element.is_enabled():
-                return element
-        except Exception:
-            continue
-    return None
+        pass
+
+    try:
+        dialogs = driver.find_elements("css selector", '[role="dialog"], [aria-modal="true"]')
+        for dialog in dialogs:
+            if not dialog.is_displayed():
+                continue
+            message = re.sub(r"\s+", " ", dialog.text or "").lower()
+            if not any(term in message for term in ("số dư", "so du", "balance")):
+                continue
+            buttons = dialog.find_elements("css selector", "button")
+            for button in buttons:
+                label = re.sub(r"\s+", " ", button.text or "").strip().lower()
+                if label in ("vào sảnh", "vao sanh", "tiếp tục", "tiep tuc", "đồng ý", "dong y"):
+                    button.click()
+                    return True
+    except Exception:
+        pass
+    return False
 
 
 def select_table(driver, label):
