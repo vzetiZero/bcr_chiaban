@@ -176,7 +176,8 @@ def open_dream_gaming_baccarat(driver):
             driver.switch_to.window(driver.window_handles[-1])
             driver.switch_to.default_content()
             driver.get(LOBBY_URL)
-        deadline = time.monotonic() + 20
+        # Chờ điều hướng mạng chậm; đừng kết luận profile lỗi khi Chrome vừa mở.
+        deadline = time.monotonic() + 60
         while time.monotonic() < deadline:
             try:
                 if _is_lobby(driver.current_url):
@@ -199,7 +200,7 @@ def open_dream_gaming_baccarat(driver):
         from selenium.webdriver.support.ui import WebDriverWait
         from selenium.common.exceptions import ElementClickInterceptedException
 
-        image = WebDriverWait(driver, 20).until(lambda current: next((item for item in
+        image = WebDriverWait(driver, 45).until(lambda current: next((item for item in
             current.find_elements(By.CSS_SELECTOR, 'img[alt="partner"]')
             if "dream-gaming-square.webp" in (item.get_attribute("src") or "").lower()), None))
         # Ảnh DG chỉ là logo nhỏ trong thẻ game; lớp phủ hover của thẻ che mất ảnh
@@ -212,7 +213,7 @@ def open_dream_gaming_baccarat(driver):
         driver.execute_script(
             "arguments[0].scrollIntoView({block:'center',inline:'center',behavior:'instant'});",
             card)
-        WebDriverWait(driver, 10).until(lambda _:
+        WebDriverWait(driver, 30).until(lambda _:
             card.is_displayed() and card.size.get("width", 0) > 0 and card.size.get("height", 0) > 0)
         time.sleep(0.25)
         try:
@@ -221,7 +222,8 @@ def open_dream_gaming_baccarat(driver):
             driver.execute_script("arguments[0].click();", card)
         clicked_xem_game = _click_xem_game(driver)
 
-        frame_deadline = time.monotonic() + 25
+        # DG thường khởi tạo nhiều request trong iframe; giữ chờ tối đa 2 phút.
+        frame_deadline = time.monotonic() + 120
         last = {"ok": True, "frames": [], "options": []}
         while time.monotonic() < frame_deadline:
             time.sleep(0.5)
@@ -241,7 +243,7 @@ def open_dream_gaming_baccarat(driver):
         return {"ok": False, "clicked_image": True,
                 "clicked_xem_game": False,
                 "frames": last.get("frames", []), "options": last.get("options", []),
-                "error": "Đã bấm ảnh DG nhưng chưa thấy nút XEM GAME hoặc iframe game trong 25 giây."}
+                "error": "Đã bấm ảnh DG nhưng chưa thấy nút XEM GAME hoặc iframe game trong 120 giây."}
     except Exception as exc:
         try:
             driver.switch_to.default_content()

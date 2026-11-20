@@ -382,7 +382,7 @@ ipcMain.handle('febet:open-dg', async (_event) => {
   const indices = Array.from(activeProfileIndices).sort((a, b) => a - b);
   if (!indices.length) return { ok: false, error: 'Hãy mở các profile ở sảnh FEBET trước.' };
   const results = await Promise.allSettled(indices.map((index) =>
-    profileEngine(index).call('febet.openDG', {}, 150000)));
+    profileEngine(index).call('febet.openDG', {}, 360000)));
   return { ok: true, count: indices.length, replies: results.map((result, offset) =>
     result.status === 'fulfilled' ? { index: indices[offset], ...result.value }
       : { index: indices[offset], ok: false, error: result.reason.message }) };

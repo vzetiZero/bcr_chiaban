@@ -654,9 +654,12 @@ class BaccaratController:
                 "height": height, "scale": percent}
 
     def febet_open_dg(self, _params=None):
-        deadline = time.monotonic() + 60
+        # Chrome/profile startup can be delayed by a slow network or proxy.
+        deadline = time.monotonic() + 180
         while self.browser.driver is None and self.chrome_busy and time.monotonic() < deadline:
             time.sleep(0.2)
+        if self.browser.driver is None:
+            return {"ok": False, "error": "Chrome profile chưa sẵn sàng sau 180 giây."}
         with self.browser.lock:
             return FEBET.open_dream_gaming_baccarat(self.browser.driver)
 
