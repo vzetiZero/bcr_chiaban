@@ -654,7 +654,7 @@ class BaccaratController:
                 "height": height, "scale": percent}
 
     def febet_open_dg(self, _params=None):
-        deadline = time.monotonic() + 25
+        deadline = time.monotonic() + 60
         while self.browser.driver is None and self.chrome_busy and time.monotonic() < deadline:
             time.sleep(0.2)
         with self.browser.lock:

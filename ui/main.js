@@ -382,7 +382,7 @@ ipcMain.handle('febet:open-dg', async (_event) => {
   const indices = Array.from(activeProfileIndices).sort((a, b) => a - b);
   if (!indices.length) return { ok: false, error: 'Hãy mở các profile ở sảnh FEBET trước.' };
   const results = await Promise.allSettled(indices.map((index) =>
-    profileEngine(index).call('febet.openDG')));
+    profileEngine(index).call('febet.openDG', {}, 150000)));
   return { ok: true, count: indices.length, replies: results.map((result, offset) =>
     result.status === 'fulfilled' ? { index: indices[offset], ...result.value }
       : { index: indices[offset], ok: false, error: result.reason.message }) };
@@ -393,7 +393,7 @@ ipcMain.handle('febet:inspect', async (_event) => {
   if (!activeProfileIndices.has(1) || !engine) {
     return { ok: false, error: 'Hãy mở FEBET trên Profile 1 trước.' };
   }
-  try { return await engine.call('febet.inspect'); }
+  try { return await engine.call('febet.inspect', {}, 60000); }
   catch (error) { return { ok: false, error: error.message || 'Không quét được iframe.' }; }
 });
 
@@ -401,7 +401,7 @@ ipcMain.handle('febet:select-table', async (_event, { label }) => {
   const indices = Array.from(activeProfileIndices).sort((a, b) => a - b);
   if (!indices.length) return { ok: false, error: 'Chưa có profile nào đang mở.' };
   const results = await Promise.allSettled(indices.map((index) =>
-    profileEngine(index).call('febet.selectTable', { label })));
+    profileEngine(index).call('febet.selectTable', { label }, 60000)));
   return { ok: true, count: indices.length, replies: results.map((result, offset) =>
     result.status === 'fulfilled' ? { index: indices[offset], ...result.value }
       : { index: indices[offset], ok: false, error: result.reason.message }) };

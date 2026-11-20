@@ -307,7 +307,9 @@ runButton.addEventListener('click', async () => {
       populateFebetTables(scan);
       showNotice(dgFailed
         ? `Đã chạy ${result.count} profile; ${dgFailed} profile chưa vào được sảnh DG.`
-        : 'Các profile đã vào sảnh DG. Chọn bàn để đưa tất cả profile vào cùng bàn.');
+        : (scan.options && scan.options.length
+          ? 'Các profile đã vào sảnh DG. Chọn bàn để đưa tất cả profile vào cùng bàn.'
+          : (scan.note || 'Các profile đã vào sảnh DG nhưng chưa đọc được danh sách bàn.')));
     } else {
       showNotice(failed
         ? `Đã gửi lệnh mở ${result.count} profile; ${failed} profile báo lỗi.`

@@ -10,6 +10,20 @@ MAX_FRAMES = 48
 MAX_DEPTH = 5
 MAX_OPTIONS = 120
 _SENSITIVE_LABEL = re.compile(r"token|jwt|session|password|username|authorization|cookie", re.I)
+# Iframe tiện ích của site (chat, captcha, analytics) không phải iframe game DG.
+# Không loại chúng thì inspect báo "đã mở game" oan và openDG bỏ qua bước bấm ảnh DG.
+_WIDGET_ORIGIN = re.compile(
+    r"(^|\.)(livechatinc\.com|livechat\.com|google\.com|gstatic\.com|googleapis\.com"
+    r"|recaptcha\.net|doubleclick\.net|facebook\.net|facebook\.com|zendesk\.com"
+    r"|tawk\.to|crisp\.chat|hotjar\.com|intercom\.io|clarity\.ms|cloudflare\.com)$", re.I)
+
+
+def _is_widget_origin(origin):
+    try:
+        host = urlsplit(origin or "").hostname or ""
+    except ValueError:
+        return True
+    return not host or bool(_WIDGET_ORIGIN.search(host))
 
 
 def _public_origin(url):
@@ -94,7 +108,7 @@ def inspect(driver):
             return {"ok": False, "error": "Profile cần mở sảnh FEBET Baccarat trước."}
 
         frames = []
-        option_map = {}
+        labels_by_path = {}
         for path, info in _frame_contexts(driver):
             if not path:
                 continue
@@ -102,24 +116,37 @@ def inspect(driver):
             title = re.sub(r"\s+", " ", str(info.get("title") or "")).strip()[:100]
             frames.append({"path": list(path), "origin": origin, "title": title,
                            "has_content": bool(info.get("labels"))})
-            for item in info.get("labels", []):
+            labels_by_path[tuple(path)] = (origin, info.get("labels", []))
+        driver.switch_to.window(target)
+        driver.switch_to.default_content()
+        # Iframe DG vẽ sảnh bằng canvas nên có thể không có nhãn DOM nào;
+        # chỉ cần origin lạ (không phải site/widget) là dấu hiệu game đã mở.
+        game_frames = [frame for frame in frames
+                       if frame["origin"] and frame["origin"] != "https://febet.kiwi"
+                       and not _is_widget_origin(frame["origin"])]
+        game_paths = {tuple(frame["path"]) for frame in game_frames}
+        option_map = {}
+        for path, (origin, labels) in labels_by_path.items():
+            if path not in game_paths:
+                continue
+            for item in labels:
                 label = re.sub(r"\s+", " ", str(item.get("text") or "")).strip()
                 normalized = label.upper()
                 if (not label or len(label) > 80 or _SENSITIVE_LABEL.search(label)
                         or normalized == "XEM GAME"):
                     continue
-                key = (tuple(path), label)
-                option_map[key] = {"path": list(path), "label": label, "origin": origin}
+                option_map[(path, label)] = {"path": list(path), "label": label, "origin": origin}
                 if len(option_map) >= MAX_OPTIONS:
                     break
-        driver.switch_to.window(target)
-        driver.switch_to.default_content()
         options = list(option_map.values())
-        game_frames = [frame for frame in frames
-                       if frame["origin"] and frame["origin"] != "https://febet.kiwi"]
+        if game_frames and not options:
+            note = "Game DG đã mở nhưng sảnh vẽ bằng canvas, không có nhãn bàn DOM."
+        elif game_frames:
+            note = "Đã quét iframe của game FEBET."
+        else:
+            note = "Chưa thấy iframe game; mở DG/XEM GAME rồi quét lại."
         return {"ok": True, "frames": frames, "options": options if game_frames else [],
-                "loaded": bool(game_frames), "note": "Đã quét iframe của game FEBET." if game_frames
-                else "Chưa thấy iframe game; mở DG/XEM GAME rồi quét lại."}
+                "loaded": bool(game_frames), "note": note}
     except Exception as exc:
         try:
             driver.switch_to.default_content()
@@ -157,17 +184,28 @@ def open_dream_gaming_baccarat(driver):
             return {"ok": True, "already_open": True, "note": "Iframe game đã mở trong profile này."}
 
         from selenium.webdriver.support.ui import WebDriverWait
+        from selenium.common.exceptions import ElementClickInterceptedException
 
         image = WebDriverWait(driver, 20).until(lambda current: next((item for item in
             current.find_elements(By.CSS_SELECTOR, 'img[alt="partner"]')
             if "dream-gaming-square.webp" in (item.get_attribute("src") or "").lower()), None))
+        # Ảnh DG chỉ là logo nhỏ trong thẻ game; lớp phủ hover của thẻ che mất ảnh
+        # nên phải bấm cả thẻ (div cursor-pointer), không bấm thẳng vào ảnh.
+        try:
+            card = image.find_element(
+                By.XPATH, "./ancestor::*[contains(@class,'cursor-pointer')][1]")
+        except Exception:
+            card = image
         driver.execute_script(
             "arguments[0].scrollIntoView({block:'center',inline:'center',behavior:'instant'});",
-            image)
+            card)
         WebDriverWait(driver, 10).until(lambda _:
-            image.is_displayed() and image.size.get("width", 0) > 0 and image.size.get("height", 0) > 0)
+            card.is_displayed() and card.size.get("width", 0) > 0 and card.size.get("height", 0) > 0)
         time.sleep(0.25)
-        image.click()
+        try:
+            card.click()
+        except ElementClickInterceptedException:
+            driver.execute_script("arguments[0].click();", card)
         clicked_xem_game = _click_xem_game(driver)
 
         frame_deadline = time.monotonic() + 25
