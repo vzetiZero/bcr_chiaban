@@ -9,6 +9,8 @@ const notice = $('#notice');
 const statusByIndex = new Map();
 const settingsByIndex = new Map();
 const profileStateByIndex = new Map();
+let proxyItems = [];
+let proxyAssignments = {};
 let lastSiteLabel = 'Chưa chạy';
 
 window.addEventListener('error', (event) => showNotice(String(event.message || event.error), true));
@@ -78,11 +80,25 @@ function updateSitePreview() {
   runButton.disabled = !site || !site.value;
 }
 
+function populateProxySelect(select, selectedId = '') {
+  select.replaceChildren();
+  const direct = document.createElement('option');
+  direct.value = '';
+  direct.textContent = 'Không dùng proxy';
+  select.append(direct);
+  for (const proxy of proxyItems) {
+    const option = document.createElement('option');
+    option.value = proxy.id;
+    option.textContent = `${proxy.label}${proxy.status === 'live' ? ' · Còn sống' : proxy.status === 'dead' ? ' · Lỗi' : ''}`;
+    select.append(option);
+  }
+  select.value = proxyItems.some((proxy) => proxy.id === selectedId) ? selectedId : '';
+}
+
 function renderSettings(count) {
   const previous = new Map();
   for (const [index, card] of settingsByIndex) {
     previous.set(index, {
-      proxy: card.querySelector('[data-setting="proxy"]').value,
       width: card.querySelector('[data-setting="width"]').value,
       height: card.querySelector('[data-setting="height"]').value,
       scale: card.querySelector('[data-setting="scale"]').value,
@@ -95,11 +111,9 @@ function renderSettings(count) {
     const card = document.createElement('article');
     card.className = 'settings-card';
     card.innerHTML = `<div class="settings-title"><strong>Profile ${index}</strong><span>Thiết lập riêng</span></div>
-      <label class="setting-field proxy-field"><span>Proxy</span><input data-setting="proxy" type="password" autocomplete="off" spellcheck="false" placeholder="Để trống = IP trực tiếp" /></label>
       <label class="setting-field"><span>Rộng (px)</span><input data-setting="width" type="number" min="520" max="3840" step="1" /></label>
       <label class="setting-field"><span>Cao (px)</span><input data-setting="height" type="number" min="200" max="2160" step="1" /></label>
       <label class="setting-field"><span>Scale (%)</span><input data-setting="scale" type="number" min="50" max="200" step="1" /></label>`;
-    card.querySelector('[data-setting="proxy"]').value = saved.proxy || '';
     card.querySelector('[data-setting="width"]').value = saved.width || '900';
     card.querySelector('[data-setting="height"]').value = saved.height || '500';
     card.querySelector('[data-setting="scale"]').value = saved.scale || '100';
@@ -112,12 +126,54 @@ function collectSettings(count) {
   return Array.from({ length: count }, (_, offset) => {
     const card = settingsByIndex.get(offset + 1);
     return {
-      proxy: card.querySelector('[data-setting="proxy"]').value.trim(),
+      proxyId: proxyAssignments[String(offset + 1)] || '',
       width: Number(card.querySelector('[data-setting="width"]').value) || 900,
       height: Number(card.querySelector('[data-setting="height"]').value) || 500,
       scale: Number(card.querySelector('[data-setting="scale"]').value) || 100,
     };
   });
+}
+
+function renderProxyList() {
+  const list = $('#proxy-list');
+  list.replaceChildren();
+  $('#proxy-total').textContent = `${proxyItems.length} proxy`;
+  $('#proxy-empty').hidden = proxyItems.length > 0;
+  for (const proxy of proxyItems) {
+    const row = document.createElement('tr');
+    row.innerHTML = '<td class="proxy-label"></td><td><span class="proxy-status"></span><small class="proxy-message"></small></td><td><button class="proxy-remove" type="button">Xóa</button></td>';
+    row.querySelector('.proxy-label').textContent = proxy.label;
+    const status = row.querySelector('.proxy-status');
+    status.textContent = proxy.status === 'live' ? 'Còn sống'
+      : proxy.status === 'dead' ? 'Không kết nối' : 'Chưa kiểm tra';
+    status.dataset.state = proxy.status;
+    row.querySelector('.proxy-message').textContent = proxy.message || '';
+    row.querySelector('.proxy-remove').dataset.proxyId = proxy.id;
+    list.append(row);
+  }
+  renderProxyAssignments(Math.max(1, Math.min(8, Number(profileCount.value) || 1)));
+}
+
+function setProxyState(result) {
+  proxyItems = result.items || [];
+  proxyAssignments = result.assignments || proxyAssignments;
+  renderProxyList();
+}
+
+function renderProxyAssignments(count) {
+  const list = $('#proxy-assignments');
+  if (!list) return;
+  list.replaceChildren();
+  for (let index = 1; index <= count; index += 1) {
+    const row = document.createElement('label');
+    row.className = 'proxy-assignment-row';
+    row.innerHTML = '<span></span><select></select>';
+    row.querySelector('span').textContent = `Profile ${index}`;
+    const select = row.querySelector('select');
+    select.dataset.profile = String(index);
+    populateProxySelect(select, proxyAssignments[String(index)] || '');
+    list.append(row);
+  }
 }
 
 profileSelect.addEventListener('change', updateSitePreview);
@@ -138,7 +194,86 @@ $('#profile-count').addEventListener('change', () => {
   const value = Math.max(1, Math.min(8, Number(profileCount.value) || 1));
   profileCount.value = String(value);
   renderSettings(value);
+  renderProxyAssignments(value);
   renderProfiles(value, lastSiteLabel);
+});
+
+$('#proxy-assignments').addEventListener('change', async (event) => {
+  const select = event.target.closest('select[data-profile]');
+  if (!select) return;
+  const index = Number(select.dataset.profile);
+  const result = await api.assignProxy(index, select.value || null);
+  if (!result || !result.ok) {
+    $('#proxy-notice').textContent = (result && result.error) || 'Không lưu được proxy cho profile.';
+    return;
+  }
+  proxyAssignments = result.assignments || {};
+  $('#proxy-notice').textContent = select.value
+    ? `Đã gán proxy cho Profile ${index}; áp dụng khi mở profile.`
+    : `Đã bỏ proxy ở Profile ${index}.`;
+});
+
+$('#proxy-choose-file').addEventListener('click', () => $('#proxy-file').click());
+$('#proxy-file').addEventListener('change', async (event) => {
+  const file = event.target.files && event.target.files[0];
+  if (!file) return;
+  try { $('#proxy-import-text').value = await file.text(); }
+  catch (error) { $('#proxy-notice').textContent = `Không đọc được file: ${error.message || error}`; }
+  event.target.value = '';
+});
+
+$('#proxy-import').addEventListener('click', async (event) => {
+  const button = event.currentTarget;
+  const text = $('#proxy-import-text').value;
+  if (!text.trim()) {
+    $('#proxy-notice').textContent = 'Nhập danh sách proxy hoặc chọn file trước.';
+    return;
+  }
+  button.disabled = true;
+  try {
+    const result = await api.importProxyText(text);
+    setProxyState(result);
+    $('#proxy-import-text').value = '';
+    const invalid = result.invalid || [];
+    $('#proxy-notice').textContent = `Đã thêm ${result.added}, trùng ${result.duplicate}${invalid.length ? `, sai định dạng ${invalid.length} dòng` : ''}.`;
+  } catch (error) {
+    $('#proxy-notice').textContent = String(error.message || error);
+  } finally {
+    button.disabled = false;
+  }
+});
+
+$('#proxy-check').addEventListener('click', async (event) => {
+  const button = event.currentTarget;
+  if (!proxyItems.length) {
+    $('#proxy-notice').textContent = 'Chưa có proxy để kiểm tra.';
+    return;
+  }
+  button.disabled = true;
+  button.textContent = 'Đang kiểm tra…';
+  $('#proxy-notice').textContent = 'Đang kiểm tra kết nối HTTPS qua các proxy…';
+  try {
+    const result = await api.checkProxies();
+    setProxyState(result);
+    $('#proxy-notice').textContent = `Còn sống: ${result.live} · Không kết nối: ${result.dead}.`;
+  } catch (error) {
+    $('#proxy-notice').textContent = String(error.message || error);
+  } finally {
+    button.disabled = false;
+    button.textContent = 'Test proxy';
+  }
+});
+
+$('#proxy-list').addEventListener('click', async (event) => {
+  const button = event.target.closest('.proxy-remove');
+  if (!button) return;
+  button.disabled = true;
+  try {
+    setProxyState(await api.removeProxy(button.dataset.proxyId));
+    $('#proxy-notice').textContent = 'Đã xóa proxy.';
+  } catch (error) {
+    $('#proxy-notice').textContent = String(error.message || error);
+  }
 });
 
 runButton.addEventListener('click', async () => {
@@ -331,6 +466,7 @@ api.onEngineEvent(({ game, event, data }) => {
       profileSelect.append(option);
     }
     profileSelect.disabled = false;
+    setProxyState(await api.listProxies());
     renderSettings(Math.max(1, Math.min(8, Number(profileCount.value) || 1)));
     renderProfiles(Math.max(1, Math.min(8, Number(profileCount.value) || 1)), lastSiteLabel);
     updateSitePreview();

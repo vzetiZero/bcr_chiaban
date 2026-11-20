@@ -6,7 +6,8 @@
   "main": "main.js",
   "scripts": {
     "start": "electron .",
-    "start:debug": "electron . --remote-debugging-port=9333"
+    "start:debug": "electron . --remote-debugging-port=9333",
+    "test:proxy": "node test_proxy_bridge.cjs"
   },
   "devDependencies": {
     "electron": "^32.2.0"

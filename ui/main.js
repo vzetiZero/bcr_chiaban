@@ -5,7 +5,8 @@ const { app, BrowserWindow, ipcMain, shell, dialog } = require('electron');
 const { spawn } = require('node:child_process');
 const path = require('node:path');
 const fs = require('node:fs');
-const { parseProxy, proxyLabel, startProxyBridge } = require('./proxy_bridge');
+const { randomUUID } = require('node:crypto');
+const { parseProxy, proxyLabel, startProxyBridge, checkProxy } = require('./proxy_bridge');
 
 const PROJECT_ROOT = path.resolve(__dirname, '..');
 const PYTHON_CANDIDATES = [
@@ -23,6 +24,50 @@ const PROFILE_SITES = [
   { id: '888ae66', label: '888AE66', url: 'https://www.888ae66.com/' },
   { id: 'bum123', label: 'BUM123', url: 'https://www.bum123.com/aff/10459' },
 ];
+
+function proxyStorePath() {
+  return path.join(app.getPath('userData'), 'proxy-vault.json');
+}
+
+async function loadProxyStore() {
+  try {
+    const value = JSON.parse(await fs.promises.readFile(proxyStorePath(), 'utf8'));
+    return {
+      items: Array.isArray(value.items) ? value.items : [],
+      assignments: value.assignments && typeof value.assignments === 'object' ? value.assignments : {},
+    };
+  } catch {
+    return { items: [], assignments: {} };
+  }
+}
+
+async function saveProxyStore(store) {
+  const target = proxyStorePath();
+  await fs.promises.mkdir(path.dirname(target), { recursive: true });
+  await fs.promises.writeFile(target, JSON.stringify(store, null, 2), { encoding: 'utf8', mode: 0o600 });
+}
+
+function publicProxyItem(item) {
+  let parsed;
+  try { parsed = parseProxy(item.value); } catch { return null; }
+  return {
+    id: item.id,
+    label: proxyLabel(parsed),
+    status: item.status || 'unchecked',
+    message: item.message || '',
+    checkedAt: item.checkedAt || null,
+  };
+}
+
+function proxyForProfile(row, store) {
+  if (row && row.proxyId) {
+    const entry = store.items.find((item) => item.id === row.proxyId);
+    if (!entry) throw new Error('Proxy được gán cho profile không còn trong danh sách.');
+    return parseProxy(entry.value);
+  }
+  // Accept the legacy one-off field from older UI builds.
+  return parseProxy((row && row.proxy) || '');
+}
 
 let mainWindow = null;
 
@@ -296,7 +341,8 @@ ipcMain.handle('profile:open', async (_event, { index, count, profile, url }) =>
   let proxy;
   let newBridge = null;
   try {
-    proxy = parseProxy(row.proxy || '');
+    const proxyStore = await loadProxyStore();
+    proxy = proxyForProfile({ ...row, proxyId: row.proxyId || proxyStore.assignments[String(profileIndex)] }, proxyStore);
     let proxyServer = proxyServerUrl(proxy);
     if (proxy && proxy.username) {
       newBridge = await startProxyBridge(proxy);
@@ -431,6 +477,7 @@ ipcMain.handle('profiles:open', async (_event, { count, siteId, profiles }) => {
   const site = PROFILE_SITES.find((item) => item.id === siteId);
   if (!site) return { ok: false, error: 'Hãy chọn một site trong danh sách.' };
   const requested = Array.isArray(profiles) ? profiles : [];
+  const proxyStore = await loadProxyStore();
   const settings = [];
   const newBridges = [];
   try {
@@ -439,7 +486,7 @@ ipcMain.handle('profiles:open', async (_event, { count, siteId, profiles }) => {
       const width = Math.max(520, Math.min(3840, Math.round(Number(row.width) || 900)));
       const height = Math.max(200, Math.min(2160, Math.round(Number(row.height) || 500)));
       const scale = Math.max(50, Math.min(200, Math.round(Number(row.scale) || 100)));
-      const proxy = parseProxy(row.proxy || '');
+      const proxy = proxyForProfile({ ...row, proxyId: row.proxyId || proxyStore.assignments[String(index + 1)] }, proxyStore);
       let proxyServer = proxyServerUrl(proxy);
       if (proxy && proxy.username) {
         const bridge = await startProxyBridge(proxy);
@@ -549,6 +596,85 @@ ipcMain.handle('profiles:close', async () => {
   activeProfileIndices.clear();
   return { ok: true, count: targets.length, replies: replies.map((result) => result.status === 'fulfilled'
     ? result.value : { ok: false, error: result.reason.message }) };
+});
+
+ipcMain.handle('proxy:list', async () => {
+  const store = await loadProxyStore();
+  return { items: store.items.map(publicProxyItem).filter(Boolean), assignments: store.assignments };
+});
+
+ipcMain.handle('proxy:import', async (_event, { text }) => {
+  const store = await loadProxyStore();
+  const known = new Set(store.items.map((item) => {
+    try {
+      const proxy = parseProxy(item.value);
+      return `${proxy.protocol}|${proxy.host}|${proxy.port}|${proxy.username}`;
+    } catch { return ''; }
+  }));
+  const invalid = [];
+  let added = 0;
+  let duplicate = 0;
+  for (const [index, rawLine] of String(text || '').split(/\r?\n/).entries()) {
+    const value = rawLine.trim();
+    if (!value || value.startsWith('#') || value.startsWith('//')) continue;
+    let proxy;
+    try { proxy = parseProxy(value); }
+    catch (error) { invalid.push({ line: index + 1, message: error.message }); continue; }
+    const key = `${proxy.protocol}|${proxy.host}|${proxy.port}|${proxy.username}`;
+    if (known.has(key)) { duplicate += 1; continue; }
+    known.add(key);
+    store.items.push({ id: randomUUID(), value, status: 'unchecked', message: '', checkedAt: null });
+    added += 1;
+  }
+  if (added) await saveProxyStore(store);
+  return { ok: true, added, duplicate, invalid, items: store.items.map(publicProxyItem).filter(Boolean),
+    assignments: store.assignments };
+});
+
+ipcMain.handle('proxy:remove', async (_event, { id }) => {
+  const store = await loadProxyStore();
+  const before = store.items.length;
+  store.items = store.items.filter((item) => item.id !== id);
+  for (const [profile, assigned] of Object.entries(store.assignments)) {
+    if (assigned === id) delete store.assignments[profile];
+  }
+  if (store.items.length !== before) await saveProxyStore(store);
+  return { ok: true, items: store.items.map(publicProxyItem).filter(Boolean), assignments: store.assignments };
+});
+
+ipcMain.handle('proxy:assign', async (_event, { profile, proxyId }) => {
+  const index = Math.trunc(Number(profile));
+  if (!Number.isInteger(index) || index < 1 || index > 8) return { ok: false, error: 'Profile không hợp lệ.' };
+  const store = await loadProxyStore();
+  if (proxyId && !store.items.some((item) => item.id === proxyId)) {
+    return { ok: false, error: 'Không tìm thấy proxy cần gán.' };
+  }
+  if (proxyId) store.assignments[String(index)] = proxyId;
+  else delete store.assignments[String(index)];
+  await saveProxyStore(store);
+  return { ok: true, assignments: store.assignments };
+});
+
+ipcMain.handle('proxy:check', async () => {
+  const store = await loadProxyStore();
+  const queue = store.items.map((item, index) => ({ item, index }));
+  const workers = Array.from({ length: Math.min(8, queue.length) }, async () => {
+    while (queue.length) {
+      const next = queue.shift();
+      let result;
+      try { result = await checkProxy(parseProxy(next.item.value)); }
+      catch { result = { ok: false, message: 'Proxy không hợp lệ.' }; }
+      next.item.status = result.ok ? 'live' : 'dead';
+      next.item.message = result.message;
+      next.item.checkedAt = new Date().toISOString();
+    }
+  });
+  await Promise.all(workers);
+  await saveProxyStore(store);
+  const items = store.items.map(publicProxyItem).filter(Boolean);
+  return { ok: true, items, assignments: store.assignments,
+    live: items.filter((item) => item.status === 'live').length,
+    dead: items.filter((item) => item.status === 'dead').length };
 });
 
 ipcMain.handle('app:info', () => ({

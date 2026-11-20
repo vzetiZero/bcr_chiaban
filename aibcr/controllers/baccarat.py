@@ -619,7 +619,7 @@ class BaccaratController:
             try:
                 from urllib.parse import urlsplit
                 parsed = urlsplit(proxy_server)
-                if (parsed.scheme not in ("http", "https", "socks5") or not parsed.hostname
+                if (parsed.scheme not in ("http", "https", "socks4", "socks5") or not parsed.hostname
                         or parsed.username is not None or parsed.password is not None
                         or parsed.path not in ("", "/") or parsed.query or parsed.fragment):
                     raise ValueError("invalid_proxy")

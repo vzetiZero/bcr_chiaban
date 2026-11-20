@@ -28,6 +28,7 @@
     <nav class="tab-nav" role="tablist" aria-label="Menu chính">
       <button class="tab-button active" type="button" role="tab" aria-selected="true" data-tab-target="run">Chạy Tool</button>
       <button class="tab-button" type="button" role="tab" aria-selected="false" data-tab-target="profiles">Profiles</button>
+      <button class="tab-button" type="button" role="tab" aria-selected="false" data-tab-target="proxies">Proxy</button>
     </nav>
 
     <div class="tab-panel active" role="tabpanel" data-tab-panel="run">
@@ -83,6 +84,44 @@
       </div>
       <div id="profile-list" class="profile-list"></div>
     </section>
+    </div>
+
+    <div class="tab-panel" role="tabpanel" data-tab-panel="proxies">
+      <section class="card proxy-manager">
+        <div class="section-heading">
+          <div><div class="eyebrow">PROXY VAULT</div><h2>Quản lý proxy</h2></div>
+          <span id="proxy-total" class="total">0 proxy</span>
+        </div>
+        <label class="field proxy-import-field" for="proxy-import-text">
+          <span>Danh sách proxy · mỗi dòng một proxy</span>
+          <textarea id="proxy-import-text" rows="5" spellcheck="false" placeholder="host:port:user:password"></textarea>
+        </label>
+        <div class="proxy-actions">
+          <input id="proxy-file" type="file" accept=".txt,text/plain" hidden />
+          <button id="proxy-choose-file" class="close-button" type="button">Nhập file</button>
+          <button id="proxy-import" class="close-button" type="button">Thêm danh sách</button>
+          <button id="proxy-check" class="run-button" type="button">Test proxy</button>
+        </div>
+        <div id="proxy-notice" class="notice" role="status" aria-live="polite"></div>
+      </section>
+      <section class="profiles-section proxy-list-section">
+        <div class="section-heading">
+          <div><div class="eyebrow">DANH SÁCH</div><h2>Proxy đã nhập</h2></div>
+        </div>
+        <div class="proxy-table-wrap">
+          <table class="proxy-table">
+            <thead><tr><th>Proxy</th><th>Kiểm tra</th><th></th></tr></thead>
+            <tbody id="proxy-list"></tbody>
+          </table>
+          <div id="proxy-empty" class="empty">Chưa có proxy</div>
+        </div>
+      </section>
+      <section class="profiles-section proxy-assignment-section">
+        <div class="section-heading">
+          <div><div class="eyebrow">PROFILE</div><h2>Gán proxy</h2></div>
+        </div>
+        <div id="proxy-assignments" class="proxy-assignments"></div>
+      </section>
     </div>
 
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
