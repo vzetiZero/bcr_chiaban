@@ -78,6 +78,7 @@ function renderProfiles(count, siteLabel, replies = []) {
 function updateSitePreview() {
   const site = profileSelect.selectedOptions[0];
   runButton.disabled = !site || !site.value;
+  $('#febet-table-row').hidden = !site || site.value !== 'febet';
 }
 
 function populateProxySelect(select, selectedId = '') {
@@ -276,6 +277,111 @@ $('#proxy-list').addEventListener('click', async (event) => {
   }
 });
 
+function populateFebetTableSelect(result) {
+  const select = $('#febet-table-select');
+  const previous = select.value;
+  const tables = (result.tables || []).filter((table) =>
+    /^\d{1,12}$/.test(String(table.table_id || '')) && String(table.table_id) !== '10101');
+  select.replaceChildren();
+  for (const table of tables) {
+    const option = document.createElement('option');
+    option.value = String(table.table_id);
+    const name = String(table.name || `Bàn ${table.table_id}`);
+    option.textContent = `${name} · ${table.table_id}${table.online ? ` · ${table.online}` : ''}`;
+    select.append(option);
+  }
+  select.disabled = !tables.length;
+  if (!tables.length) {
+    const empty = document.createElement('option');
+    empty.value = '';
+    empty.textContent = 'Chưa tìm thấy bàn thật';
+    select.append(empty);
+  } else if (tables.some((table) => String(table.table_id) === previous)) {
+    select.value = previous;
+  } else {
+    select.selectedIndex = 0;
+  }
+  $('#sync-dg-table').disabled = !tables.length;
+  return tables;
+}
+
+async function scanFebetTables() {
+  const result = await api.listFebetTables();
+  if (!result || !result.ok) {
+    populateFebetTableSelect({ tables: [] });
+    return { ok: false, error: (result && result.error) || 'Không quét được danh sách bàn DG.' };
+  }
+  const tables = populateFebetTableSelect(result);
+  return tables.length ? { ok: true, tables }
+    : { ok: false, error: 'Sảnh DG chưa trả về mã bàn thật.' };
+}
+
+async function syncSelectedFebetTable() {
+  const tableId = $('#febet-table-select').value;
+  if (!/^\d{1,12}$/.test(tableId) || tableId === '10101') {
+    showNotice('Hãy quét và chọn mã bàn thật trước.', true);
+    return false;
+  }
+  showNotice(`Đang đưa tất cả profile vào bàn ${tableId}…`);
+  const sync = await api.syncFebetTableById(tableId);
+  if (!sync || !sync.ok) {
+    showNotice((sync && sync.error) || 'Chưa đồng bộ được bàn.', true);
+    return false;
+  }
+  const failed = (sync.replies || []).filter((reply) => !reply.ok);
+  if (failed.length) {
+    const detail = failed.map((reply) => `Profile ${reply.index}: ${reply.error}`).join(' · ');
+    showNotice(`Bàn ${sync.table_id}: ${failed.length}/${sync.count} profile lỗi. ${detail}`, true);
+    return false;
+  }
+  const notInTable = (sync.replies || []).filter((reply) => reply.in_table !== true);
+  if (notInTable.length) {
+    const detail = notInTable.map((reply) => `Profile ${reply.index}: ${reply.note || 'chưa vào bàn thật'}`).join(' · ');
+    showNotice(`${notInTable.length} profile vẫn ở sảnh, chưa có cửa cược. ${detail}`, true);
+    return false;
+  }
+  showNotice(`Cả ${sync.count} profile đã vào bàn ${sync.table_id}; đang áp dụng chip hai cửa…`);
+  const { amount, unit } = betStake();
+  const bets = await api.applyBets(amount, unit, $('#bet-split').value);
+  renderBetAssignments(bets);
+  if (!bets || !bets.ok) {
+    showNotice((bets && bets.error) || 'Không áp dụng được chip.', true);
+    return false;
+  }
+  const betFailed = (bets.replies || []).filter((reply) => !reply.ok);
+  showNotice(betFailed.length
+    ? `Đã vào bàn ${sync.table_id}; ${betFailed.length} profile lỗi cấu hình chip.`
+    : `Hoàn tất: cả ${sync.count} profile ở bàn ${sync.table_id}, chip đã chia hai cửa đối lập.`,
+  betFailed.length > 0);
+  return betFailed.length === 0;
+}
+
+$('#scan-dg-tables').addEventListener('click', async (event) => {
+  const button = event.currentTarget;
+  button.disabled = true;
+  showNotice('Đang chờ Laya tải danh sách bàn DG…');
+  try {
+    const result = await scanFebetTables();
+    showNotice(result.ok ? `Đã quét ${result.tables.length} bàn DG.` : result.error, !result.ok);
+  } catch (error) {
+    showNotice(String(error.message || error), true);
+  } finally {
+    button.disabled = false;
+  }
+});
+
+$('#febet-table-select').addEventListener('change', () => {
+  $('#sync-dg-table').disabled = !$('#febet-table-select').value;
+});
+
+$('#sync-dg-table').addEventListener('click', async (event) => {
+  const button = event.currentTarget;
+  button.disabled = true;
+  try { await syncSelectedFebetTable(); }
+  catch (error) { showNotice(String(error.message || error), true); }
+  finally { button.disabled = !$('#febet-table-select').value; }
+});
+
 runButton.addEventListener('click', async () => {
   const count = Math.max(1, Math.min(8, Math.trunc(Number(profileCount.value) || 1)));
   profileCount.value = String(count);
@@ -303,37 +409,13 @@ runButton.addEventListener('click', async () => {
         showNotice(`Đã chạy ${result.count} profile; ${dgFailed} profile chưa vào được sảnh DG.`, true);
         return;
       }
-      showNotice('Đang đưa tất cả profile vào cùng một bàn DG…');
-      const sync = await api.syncFebetTableById('');
-      if (!sync || !sync.ok) {
-        showNotice((sync && sync.error) || 'Các profile đã mở DG nhưng chưa đồng bộ được bàn.', true);
+      showNotice('Đang quét mã bàn thật từ Laya…');
+      const tables = await scanFebetTables();
+      if (!tables.ok) {
+        showNotice(tables.error, true);
         return;
       }
-      const syncFailed = (sync.replies || []).filter((reply) => !reply.ok);
-      if (syncFailed.length) {
-        const detail = syncFailed.map((reply) => `Profile ${reply.index}: ${reply.error}`).join(' · ');
-        showNotice(`Bàn ${sync.table_id}: ${syncFailed.length}/${sync.count} profile lỗi. ${detail}`, true);
-        return;
-      }
-      const lobbyOnly = (sync.replies || []).filter((reply) => reply.in_table === false);
-      if (lobbyOnly.length) {
-        showNotice(`${lobbyOnly.length} profile mới đứng ở lưới sảnh, chưa vào bàn thật.`, true);
-        return;
-      }
-      showNotice(`Cả ${sync.count} profile đã vào bàn ${sync.table_id}; đang áp dụng cấu hình cược…`);
-      const { amount, unit } = betStake();
-      const bets = await api.applyBets(amount, unit, $('#bet-split').value);
-      renderBetAssignments(bets);
-      if (!bets || !bets.ok) {
-        showNotice((bets && bets.error) || 'Không áp dụng được cấu hình cược.', true);
-        return;
-      }
-      const betFailed = (bets.replies || []).filter((reply) => !reply.ok);
-      showNotice(betFailed.length
-        ? `Đã vào bàn ${sync.table_id}; ${betFailed.length} profile lỗi cấu hình cược.`
-        : `Hoàn tất: ${result.count} profile cùng bàn ${sync.table_id},`
-          + ` mỗi tay ${Number(bets.stake).toLocaleString('vi-VN')} đv, hai cửa đối lập.`,
-        betFailed.length > 0);
+      await syncSelectedFebetTable();
     } else {
       showNotice(failed
         ? `Đã gửi lệnh mở ${result.count} profile; ${failed} profile báo lỗi.`

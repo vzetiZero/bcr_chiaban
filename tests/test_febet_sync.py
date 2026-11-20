@@ -24,7 +24,8 @@ class FakeSwitch:
 
 LOBBY = "https://febet.kiwi/live-casino/baccarat"
 DG_LOC = ("https://new-dd-cloudfront.example.com/ddnewpc/index.html"
-          "?token=SECRET&language=vi&tableId=10101&backUrl=https%3A%2F%2Ffebet.kiwi")
+          "?token=SECRET&language=vi&tableId=60101&backUrl=https%3A%2F%2Ffebet.kiwi")
+DG_HALL_LOC = DG_LOC.replace("tableId=60101", "tableId=10101")
 DG_SRC = ("https://new-dd-cloudfront.example.com/ddnewpc/direct1.html"
           "?token=SECRET&language=vi&tableId=10101")
 
@@ -52,13 +53,14 @@ class FakeDriver:
         self.scripts.append(js)
         if "return location.href" in js:
             return self.dg_location if self.frame == "dg" else "https://secure.livechatinc.com/x"
-        if "typeof Laya" in js and "n.tableId && n.tableInfo" in js:
+        if "typeof Laya" in js and "tableInfo || n._tableInfo" in js:
             return {"ready": True, "tables": [
                 {"table_id": "60101", "name": "RB01", "online": 10}]}
         if "typeof Laya" in js:
             table = re.search(r"tableId=(\d+)", self.dg_location)
-            return {"ready": True, "lobby": "direct1" in self.dg_location,
-                    "in_table": "index.html" in self.dg_location,
+            is_hall = bool(table and table.group(1) == "10101")
+            return {"ready": True, "lobby": "direct1" in self.dg_location or is_hall,
+                    "in_table": "index.html" in self.dg_location and not is_hall,
                     "label": "RB01", "url_table": table.group(1) if table else ""}
         if "getAttribute('src')" in js:
             return self.src_value
@@ -95,8 +97,16 @@ class CurrentTableTest(unittest.TestCase):
     def test_reads_table_id_from_frame_location(self):
         result = F.current_table(FakeDriver(LOBBY, DG_LOC))
         self.assertTrue(result["ok"])
-        self.assertEqual(result["table_id"], "10101")
+        self.assertEqual(result["table_id"], "60101")
         self.assertNotIn("SECRET", str(result))
+
+    def test_hall_id_is_never_reported_as_an_open_table(self):
+        url = DG_LOC.replace("tableId=60101", "tableId=10101")
+        result = F.current_table(FakeDriver(LOBBY, url))
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["table_id"], "10101")
+        self.assertFalse(result["in_table"])
+        self.assertTrue(result["lobby"])
 
     def test_no_driver(self):
         self.assertFalse(F.current_table(None)["ok"])
@@ -117,7 +127,7 @@ class CurrentTableTest(unittest.TestCase):
 class SyncTableTest(unittest.TestCase):
     def test_rejects_invalid_ids(self):
         driver = FakeDriver(LOBBY, DG_LOC)
-        for bad in ("", "abc", "10101;alert(1)", "1" * 13, "10 101", "-1"):
+        for bad in ("", "abc", "10101", "10101;alert(1)", "1" * 13, "10 101", "-1"):
             result = F.sync_table(driver, bad)
             self.assertFalse(result["ok"], bad)
         self.assertEqual(driver.scripts, [])
@@ -154,15 +164,24 @@ class SyncTableTest(unittest.TestCase):
 
     def test_no_dg_frame_reports_error(self):
         driver = FakeDriver(LOBBY, "https://febet.kiwi/other")
-        self.assertFalse(F.sync_table(driver, "10101", wait=0)["ok"])
+        self.assertFalse(F.sync_table(driver, "60101", wait=0)["ok"])
 
     def test_same_table_skips_reload(self):
         driver = FakeDriver(LOBBY, DG_LOC)
-        result = F.sync_table(driver, "10101")
+        result = F.sync_table(driver, "60101")
         self.assertTrue(result["ok"])
         self.assertTrue(result.get("already"))
         self.assertTrue(result.get("in_table"))
         self.assertNotIn("f.src =", "".join(driver.scripts))
+
+    def test_same_url_id_still_reloads_when_laya_says_lobby(self):
+        hall_url = DG_LOC.replace("tableId=60101", "tableId=60102")
+        driver = FakeDriver(LOBBY, hall_url)
+        driver.dg_location = hall_url.replace("index.html", "direct1.html")
+        result = F.sync_table(driver, "60102", settle=5)
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["in_table"])
+        self.assertIn("f.src =", "".join(driver.scripts))
 
     def test_tab_mode_navigates_loader(self):
         driver = FakeDriver(DG_LOC, DG_LOC)
@@ -173,11 +192,31 @@ class SyncTableTest(unittest.TestCase):
         self.assertIn("direct1.html", driver.current_url)
 
     def test_lobby_tables_reads_laya_cards(self):
-        driver = FakeDriver(LOBBY, DG_LOC)
+        driver = FakeDriver(LOBBY, DG_HALL_LOC)
         result = F.lobby_tables(driver)
         self.assertTrue(result["ok"])
         self.assertEqual(result["tables"][0]["table_id"], "60101")
         self.assertEqual(result["tables"][0]["name"], "RB01")
+
+    def test_lobby_scan_waits_for_laya_cards_and_filters_hall_id(self):
+        class DelayedTables(FakeDriver):
+            reads = 0
+
+            def execute_script(self, js, *args):
+                if "tableInfo || n._tableInfo" in js:
+                    self.reads += 1
+                    if self.reads < 3:
+                        return {"ready": False, "tables": []}
+                    return {"ready": True, "tables": [
+                        {"table_id": "10101", "name": "Lobby"},
+                        {"table_id": "60101", "name": "RB01", "online": 10},
+                        {"table_id": "60101", "name": "RB01", "online": 10}]}
+                return super().execute_script(js, *args)
+
+        result = F.lobby_tables(DelayedTables(LOBBY, DG_HALL_LOC), wait=2)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["tables"], [
+            {"table_id": "60101", "name": "RB01", "online": 10}])
 
 
 if __name__ == "__main__":

@@ -388,9 +388,27 @@ ipcMain.handle('febet:open-dg', async (_event) => {
       : { index: indices[offset], ok: false, error: result.reason.message }) };
 });
 
-// Đồng bộ bàn DG: mã bàn nhập tay, hoặc trống thì lấy bàn hiện tại của profile dẫn đầu.
-// Sảnh DG vẽ bằng canvas nên không chọn bàn theo nhãn DOM được; chuyển bàn bằng
-// tableId trong URL iframe (mỗi profile giữ token riêng, chỉ đổi mã bàn).
+ipcMain.handle('febet:tables', async () => {
+  const indices = Array.from(activeProfileIndices).sort((a, b) => a - b);
+  if (!indices.length) return { ok: false, error: 'Chưa có profile nào đang mở.' };
+  const leader = profileEngine(indices[0]);
+  try {
+    const current = await leader.call('febet.table', {}, 30000);
+    if (current && current.ok && current.in_table && current.table_id && current.table_id !== '10101') {
+      return { ok: true, tables: [{ table_id: current.table_id,
+        name: current.label || `Bàn ${current.table_id}`, online: 0 }], current_table: true };
+    }
+    const result = await leader.call('febet.tables', {}, 60000);
+    if (!result || !result.ok || !(result.tables || []).length) {
+      return { ok: false, error: (result && result.error) || 'Chưa đọc được bàn thật từ sảnh DG.' };
+    }
+    return { ok: true, tables: result.tables, current_table: false };
+  } catch (error) {
+    return { ok: false, error: error.message || 'Không đọc được danh sách bàn DG.' };
+  }
+});
+
+// Đồng bộ bằng mã bàn thật đọc từ Laya; mỗi profile giữ URL/token phiên riêng.
 ipcMain.handle('febet:sync-table', async (_event, { tableId }) => {
   const indices = Array.from(activeProfileIndices).sort((a, b) => a - b);
   if (!indices.length) return { ok: false, error: 'Chưa có profile nào đang mở.' };
@@ -399,8 +417,8 @@ ipcMain.handle('febet:sync-table', async (_event, { tableId }) => {
     try {
       const leader = profileEngine(indices[0]);
       const read = await leader.call('febet.table', {}, 30000);
-      if (read && read.ok && read.in_table) {
-        target = String(read.table_id || '');
+      if (read && read.ok && read.in_table && read.table_id && read.table_id !== '10101') {
+        target = String(read.table_id);
       } else {
         const scan = await leader.call('febet.tables', {}, 60000);
         if (!scan || !scan.ok || !(scan.tables || []).length) {
@@ -412,7 +430,9 @@ ipcMain.handle('febet:sync-table', async (_event, { tableId }) => {
       return { ok: false, error: error.message || 'Không đọc được bàn của profile dẫn đầu.' };
     }
   }
-  if (!/^[0-9]{1,12}$/.test(target)) return { ok: false, error: 'Mã bàn DG không hợp lệ (chỉ chữ số).' };
+  if (!/^[0-9]{1,12}$/.test(target) || target === '10101') {
+    return { ok: false, error: 'Mã bàn DG không hợp lệ; 10101 là mã lưới sảnh, không phải bàn.' };
+  }
   const results = await Promise.allSettled(indices.map((index) =>
     profileEngine(index).call('febet.syncTable', { table_id: target }, 60000)));
   return { ok: true, count: indices.length, table_id: target, replies: results.map((result, offset) =>

@@ -266,6 +266,11 @@ def _click_xem_game(driver):
 
 
 _TABLE_ID = re.compile(r"^[0-9]{1,12}$")
+_HALL_TABLE_IDS = {"10101"}
+
+
+def _is_real_table_id(table_id):
+    return bool(_TABLE_ID.fullmatch(str(table_id or ""))) and str(table_id) not in _HALL_TABLE_IDS
 
 
 def _lobby_handle(driver):
@@ -331,8 +336,9 @@ return (() => {
   let lobby = false, inTable = false, label = '';
   const walk = (n, d) => {
     if (d > 10) return;
-    if (n.name === 'enterMC') lobby = true;
-    if (n.name === 'Banker' && n.visible) inTable = true;
+    const name = String(n.name || '');
+    if (name === 'enterMC') lobby = true;
+    if (name.toLowerCase() === 'banker' && n.visible) inTable = true;
     const t = typeof n.text === 'string' ? n.text.trim() : '';
     if (!label && t && t.length <= 30 && /(RB|S|SB)[0-9]+/.test(t)) label = t;
     for (let i = 0; i < (n.numChildren || 0); i++) walk(n.getChildAt(i), d + 1);
@@ -343,21 +349,46 @@ return (() => {
 })()
 """
 
-_DG_LOBBY_JS = """
+_DG_LOBBY_JS = r"""
 return (() => {
   if (typeof Laya === 'undefined' || !Laya.stage) return {ready: false, tables: []};
   const tables = [];
+  const seen = new Set();
+  const valueOf = (objects, keys) => {
+    for (const object of objects) {
+      if (!object || typeof object !== 'object') continue;
+      for (const key of keys) {
+        const value = object[key];
+        if (value !== undefined && value !== null && value !== '') return value;
+      }
+    }
+    return '';
+  };
   const walk = (n, d) => {
     if (d > 12 || tables.length >= 60) return;
-    if (n.tableId && n.tableInfo) {
-      tables.push({table_id: String(n.tableId),
-                   name: String(n.tableInfo.tableName || ''),
-                   online: Number(n.onlineCount || 0)});
+    // Laya build versions expose card data on different wrappers. Keep the
+    // table item itself and its common data/model fields, without walking the
+    // whole object graph (which also contains session and loader internals).
+    const info = n.tableInfo || n._tableInfo || n.tableData || n._tableData
+      || n.data || n._data || n.dataSource || n._dataSource || n.model || n._model;
+    const objects = [n, info];
+    const tableId = String(valueOf(objects,
+      ['tableId', 'tableID', 'table_id', 'gameTableId', 'game_table_id']));
+    const name = String(valueOf(objects,
+      ['tableName', 'table_name', 'name', 'tableCode', 'code', 'label']));
+    if (tableId && /^\d{1,12}$/.test(tableId) && tableId !== '10101'
+        && (n.tableInfo || n._tableInfo || n.tableData || n._tableData
+            || /\b(RB|SB|S)\s*\d+\b/i.test(name))) {
+      if (!seen.has(tableId)) {
+        seen.add(tableId);
+        tables.push({table_id: tableId, name: name.trim(),
+                     online: Number(valueOf(objects, ['onlineCount', 'online_count', 'playerCount'])) || 0});
+      }
     }
     for (let i = 0; i < (n.numChildren || 0); i++) walk(n.getChildAt(i), d + 1);
   };
   walk(Laya.stage, 0);
-  return {ready: true, tables: tables};
+  return {ready: true, lobby: tables.length > 0, tables: tables};
 })()
 """
 
@@ -417,27 +448,58 @@ def current_table(driver, wait=15.0):
         if ctx is None:
             return {"ok": False, "error": "Chưa mở game DG hoặc bàn chưa tải xong."}
         state = driver.execute_script(_DG_STATE_JS) or {}
+        table_id = state.get("url_table") or _table_id_from_src(ctx["location"])
+        in_table = bool(state.get("in_table")) and _is_real_table_id(table_id)
         return {"ok": True, "mode": ctx["mode"],
-                "table_id": state.get("url_table") or _table_id_from_src(ctx["location"]),
-                "in_table": bool(state.get("in_table")),
-                "lobby": bool(state.get("lobby")),
+                "table_id": table_id,
+                "in_table": in_table,
+                "lobby": bool(state.get("lobby")) or not in_table,
                 "label": state.get("label") or ""}
     except Exception as exc:
         return {"ok": False, "error": "Không đọc được bàn DG (%s)." % type(exc).__name__}
 
 
-def lobby_tables(driver, wait=15.0):
+def lobby_tables(driver, wait=25.0):
     """Danh sách bàn thật (tableId 60101…) đọc từ các thẻ sảnh Laya của DG."""
     if driver is None:
         return {"ok": False, "error": "Mở profile Chrome trước khi quét sảnh DG."}
     try:
-        ctx = _dg_context(driver, wait)
-        if ctx is None:
-            return {"ok": False, "error": "Chưa mở game DG trong profile này; bấm chạy DG trước."}
-        state = driver.execute_script(_DG_STATE_JS) or {}
-        data = driver.execute_script(_DG_LOBBY_JS) or {}
-        return {"ok": True, "in_table": bool(state.get("in_table")),
-                "tables": data.get("tables") or []}
+        deadline = time.monotonic() + max(0.0, wait)
+        last_data = {"ready": False, "tables": []}
+        last_state = {}
+        while True:
+            ctx = _dg_context(driver, wait=min(0.5, max(0.0, deadline - time.monotonic())))
+            if ctx is not None:
+                last_state = driver.execute_script(_DG_STATE_JS) or {}
+                last_data = driver.execute_script(_DG_LOBBY_JS) or last_data
+                current_id = str(last_state.get("url_table") or _table_id_from_src(ctx["location"]))
+                if last_state.get("in_table") and _is_real_table_id(current_id):
+                    return {"ok": True, "in_table": True,
+                            "tables": [{"table_id": current_id,
+                                        "name": last_state.get("label") or "Bàn " + current_id,
+                                        "online": 0}], "current_table": True}
+                tables = []
+                seen = set()
+                for row in last_data.get("tables") or []:
+                    table_id = str(row.get("table_id") or "").strip()
+                    if not _is_real_table_id(table_id) or table_id in seen:
+                        continue
+                    seen.add(table_id)
+                    tables.append({"table_id": table_id,
+                                   "name": str(row.get("name") or "Bàn " + table_id).strip(),
+                                   "online": max(0, int(row.get("online") or 0))})
+                if tables:
+                    return {"ok": True, "in_table": bool(last_state.get("in_table")),
+                            "tables": tables}
+            if time.monotonic() >= deadline:
+                if last_data.get("ready"):
+                    return {"ok": False,
+                            "error": "Laya đã tải nhưng chưa tìm thấy node bàn thật trong sảnh DG.",
+                            "laya_ready": True, "table_count": 0}
+                return {"ok": False,
+                        "error": "Laya của sảnh DG chưa tải xong nên chưa đọc được danh sách bàn.",
+                        "laya_ready": False, "table_count": 0}
+            time.sleep(0.25)
     except Exception as exc:
         return {"ok": False, "error": "Không quét được sảnh DG (%s)." % type(exc).__name__}
 
@@ -449,8 +511,8 @@ def sync_table(driver, table_id, wait=15.0, settle=30.0):
     Gán thẳng index.html khiến game thoát iframe; mã sảnh (10101) chỉ ra lưới bàn.
     """
     table_id = str(table_id or "").strip()
-    if not _TABLE_ID.match(table_id):
-        return {"ok": False, "error": "Mã bàn DG không hợp lệ (chỉ chữ số, tối đa 12)."}
+    if not _is_real_table_id(table_id):
+        return {"ok": False, "error": "Mã không phải mã bàn DG hợp lệ; 10101 là mã lưới sảnh."}
     if driver is None:
         return {"ok": False, "error": "Mở profile Chrome trước khi đồng bộ bàn DG."}
     try:
@@ -459,7 +521,7 @@ def sync_table(driver, table_id, wait=15.0, settle=30.0):
             return {"ok": False, "error": "Chưa mở game DG trong profile này; bấm chạy DG trước."}
         state = driver.execute_script(_DG_STATE_JS) or {}
         current = state.get("url_table") or _table_id_from_src(ctx["location"])
-        if current == table_id and (state.get("in_table") or state.get("lobby")):
+        if current == table_id and state.get("in_table"):
             return {"ok": True, "table_id": table_id, "already": True,
                     "in_table": bool(state.get("in_table")),
                     "note": "Profile đã ở sẵn bàn %s, giữ nguyên phiên game." % table_id}
