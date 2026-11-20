@@ -1,8 +1,9 @@
 """User-driven FEBET Dream Gaming table selection across independent Chrome profiles."""
 
+import json
 import re
 import time
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urlunsplit, parse_qs, urlencode
 
 
 LOBBY_URL = "https://febet.kiwi/live-casino/baccarat"
@@ -244,6 +245,109 @@ def _click_xem_game(driver):
     except Exception:
         pass
     return False
+
+
+_TABLE_ID = re.compile(r"^[0-9]{1,12}$")
+
+
+def _lobby_handle(driver):
+    for handle in reversed(driver.window_handles):
+        try:
+            driver.switch_to.window(handle)
+            driver.switch_to.default_content()
+            if _is_lobby(driver.current_url):
+                return handle
+        except Exception:
+            continue
+    return None
+
+
+def _table_id_from_src(src):
+    try:
+        return (parse_qs(urlsplit(src or "").query).get("tableId") or [""])[0]
+    except ValueError:
+        return ""
+
+
+def _dg_frame(driver, wait=15.0):
+    """ ``(index, location)`` của iframe DG.
+
+    Site có thể nạp qua trang chờ ``direct1.html`` rồi mới redirect sang
+    ``index.html?...tableId=...``; thuộc tính ``src`` không phản ánh URL thật,
+    nên phải vào từng frame đọc ``location.href`` và chờ tới khi có mã bàn.
+    """
+    from selenium.webdriver.common.by import By
+
+    deadline = time.monotonic() + max(0.0, wait)
+    while True:
+        try:
+            driver.switch_to.default_content()
+            frames = driver.find_elements(By.CSS_SELECTOR, "iframe, frame")
+        except Exception:
+            frames = []
+        for index in range(len(frames)):
+            location = ""
+            try:
+                driver.switch_to.default_content()
+                driver.switch_to.frame(frames[index])
+                location = driver.execute_script("return location.href") or ""
+            except Exception:
+                pass
+            finally:
+                try:
+                    driver.switch_to.default_content()
+                except Exception:
+                    pass
+            if "ddnewpc" in location and _TABLE_ID.match(_table_id_from_src(location)):
+                return index, location
+        if time.monotonic() >= deadline:
+            return None, None
+        time.sleep(0.5)
+
+
+def current_table(driver, wait=15.0):
+    """Read the DG tableId of the game iframe; never expose the iframe URL/token."""
+    if driver is None:
+        return {"ok": False, "error": "Mở profile Chrome trước khi đọc bàn DG."}
+    try:
+        if _lobby_handle(driver) is None:
+            return {"ok": False, "error": "Profile cần mở sảnh FEBET Baccarat trước."}
+        index, location = _dg_frame(driver, wait)
+        if index is None:
+            return {"ok": False, "error": "Chưa mở game DG hoặc bàn chưa tải xong."}
+        return {"ok": True, "table_id": _table_id_from_src(location)}
+    except Exception as exc:
+        return {"ok": False, "error": "Không đọc được bàn DG (%s)." % type(exc).__name__}
+
+
+def sync_table(driver, table_id, wait=15.0):
+    """Point this profile's DG iframe at the same tableId as the leader profile."""
+    table_id = str(table_id or "").strip()
+    if not _TABLE_ID.match(table_id):
+        return {"ok": False, "error": "Mã bàn DG không hợp lệ (chỉ chữ số, tối đa 12)."}
+    if driver is None:
+        return {"ok": False, "error": "Mở profile Chrome trước khi đồng bộ bàn DG."}
+    try:
+        if _lobby_handle(driver) is None:
+            return {"ok": False, "error": "Profile cần mở sảnh FEBET Baccarat trước."}
+        index, location = _dg_frame(driver, wait)
+        if index is None:
+            return {"ok": False, "error": "Chưa mở game DG trong profile này; bấm chạy DG trước."}
+        parsed = urlsplit(location)
+        query = parse_qs(parsed.query, keep_blank_values=True)
+        query["tableId"] = [table_id]
+        new_url = urlunsplit((parsed.scheme, parsed.netloc, parsed.path,
+                              urlencode(query, doseq=True), ""))
+        # URL chứa token phiên chỉ nhúng vào JS trong trang, không trả ra ngoài/log.
+        script = ("return (() => { const f = document.querySelectorAll('iframe,frame')[%d];"
+                  " if (!f) return {ok: false}; f.src = %s; return {ok: true}; })()"
+                  % (index, json.dumps(new_url)))
+        result = driver.execute_script(script) or {}
+        if not result.get("ok"):
+            return {"ok": False, "error": "Không đổi được iframe DG của profile này."}
+        return {"ok": True, "table_id": table_id, "note": "Đã chuyển DG sang bàn %s." % table_id}
+    except Exception as exc:
+        return {"ok": False, "error": "Không đồng bộ được bàn DG (%s)." % type(exc).__name__}
 
 
 def select_table(driver, label):

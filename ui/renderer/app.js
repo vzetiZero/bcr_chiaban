@@ -441,6 +441,86 @@ $('#sync-dg-table').addEventListener('click', async (event) => {
   }
 });
 
+$('#sync-dg-table-id').addEventListener('click', async (event) => {
+  const button = event.currentTarget;
+  const tableId = $('#dg-table-id').value.trim();
+  if (tableId && !/^[0-9]{1,12}$/.test(tableId)) {
+    setFebetNote('Mã bàn DG chỉ gồm chữ số (tối đa 12).', true);
+    return;
+  }
+  button.disabled = true;
+  setFebetNote(tableId ? `Đang đồng bộ bàn DG ${tableId}…` : 'Đang lấy bàn profile 1 và đồng bộ…');
+  try {
+    const result = await api.syncFebetTableById(tableId);
+    if (!result || !result.ok) {
+      setFebetNote((result && result.error) || 'Không đồng bộ được bàn DG.', true);
+      return;
+    }
+    $('#dg-table-id').value = result.table_id;
+    const failed = (result.replies || []).filter((reply) => !reply.ok);
+    const detail = failed.map((reply) => `Profile ${reply.index}: ${reply.error}`).join(' · ');
+    setFebetNote(failed.length
+      ? `Đã gửi bàn ${result.table_id} tới ${result.count} profile; ${failed.length} lỗi. ${detail}`
+      : `Tất cả ${result.count} profile đã vào cùng bàn DG ${result.table_id}.`, failed.length > 0);
+  } catch (error) {
+    setFebetNote(String(error.message || error), true);
+  } finally {
+    button.disabled = false;
+  }
+});
+
+function betStake() {
+  const amount = Math.max(1, Math.trunc(Number($('#bet-amount').value) || 1));
+  const unit = Number($('#bet-unit').value) === 10000 ? 10000 : 10;
+  return { amount, unit, stake: amount * unit };
+}
+
+function updateBetPreview() {
+  const { amount, unit, stake } = betStake();
+  const unitLabel = unit === 10000 ? '10k' : '10';
+  $('#bet-stake-preview').textContent =
+    `Mỗi tay: ${amount} chip × ${unitLabel} = ${stake.toLocaleString('vi-VN')} đơn vị sảnh`
+    + ` (thang WM: 1 đv = 1.000đ → ${(stake * 1000).toLocaleString('vi-VN')}đ).`
+    + ' Hai nhóm profile đặt cùng số tiền này ở hai cửa đối lập.';
+}
+
+$('#bet-amount').addEventListener('input', updateBetPreview);
+$('#bet-unit').addEventListener('change', updateBetPreview);
+updateBetPreview();
+
+$('#apply-bets').addEventListener('click', async (event) => {
+  const button = event.currentTarget;
+  const { amount, unit } = betStake();
+  button.disabled = true;
+  $('#bet-notice').textContent = 'Đang áp dụng cấu hình cược…';
+  try {
+    const result = await api.applyBets(amount, unit, $('#bet-split').value);
+    if (!result || !result.ok) {
+      $('#bet-notice').textContent = (result && result.error) || 'Không áp dụng được cấu hình cược.';
+      return;
+    }
+    const list = $('#bet-assignments');
+    list.replaceChildren();
+    const failed = [];
+    for (const reply of result.replies || []) {
+      const row = document.createElement('div');
+      row.className = 'proxy-assignment';
+      row.textContent = reply.ok
+        ? `Profile ${reply.index}: cửa ${reply.side} · ${Number(reply.stake).toLocaleString('vi-VN')} đv mỗi tay`
+        : `Profile ${reply.index}: lỗi — ${reply.error}`;
+      list.append(row);
+      if (!reply.ok) failed.push(reply.index);
+    }
+    $('#bet-notice').textContent = failed.length
+      ? `Đã áp dụng ${result.count - failed.length}/${result.count} profile; lỗi: ${failed.join(', ')}.`
+      : `Đã áp dụng cho ${result.count} profile: cùng ${Number(result.stake).toLocaleString('vi-VN')} đv/tay, hai cửa đối lập.`;
+  } catch (error) {
+    $('#bet-notice').textContent = String(error.message || error);
+  } finally {
+    button.disabled = false;
+  }
+});
+
 document.querySelectorAll('[data-win]').forEach((button) => {
   button.addEventListener('click', () => api.windowControl(button.dataset.win));
 });

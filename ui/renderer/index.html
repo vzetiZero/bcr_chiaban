@@ -29,6 +29,7 @@
       <button class="tab-button active" type="button" role="tab" aria-selected="true" data-tab-target="run">Chạy Tool</button>
       <button class="tab-button" type="button" role="tab" aria-selected="false" data-tab-target="profiles">Profiles</button>
       <button class="tab-button" type="button" role="tab" aria-selected="false" data-tab-target="proxies">Proxy</button>
+      <button class="tab-button" type="button" role="tab" aria-selected="false" data-tab-target="bets">Cược</button>
     </nav>
 
     <div class="tab-panel active" role="tabpanel" data-tab-panel="run">
@@ -66,6 +67,13 @@
           <select id="dg-table-select" disabled><option value="">Chưa quét bàn</option></select>
         </label>
         <button id="sync-dg-table" class="run-button" disabled>Đưa profiles vào bàn</button>
+      </div>
+      <div class="febet-select-row">
+        <label class="setting-field" for="dg-table-id"><span>Mã bàn DG (canvas)</span>
+          <input id="dg-table-id" type="text" inputmode="numeric" maxlength="12"
+                 placeholder="Trống = theo bàn profile 1" />
+        </label>
+        <button id="sync-dg-table-id" class="run-button">Đồng bộ bàn DG</button>
       </div>
     </section>
     </div>
@@ -121,6 +129,40 @@
           <div><div class="eyebrow">PROFILE</div><h2>Gán proxy</h2></div>
         </div>
         <div id="proxy-assignments" class="proxy-assignments"></div>
+      </section>
+    </div>
+
+    <div class="tab-panel" role="tabpanel" data-tab-panel="bets">
+      <section class="card">
+        <div class="section-heading">
+          <div><div class="eyebrow">CẤU HÌNH CƯỢC</div><h2>Số chip mỗi tay · hai cửa đối lập</h2></div>
+        </div>
+        <div class="form-grid">
+          <label class="field">
+            <span>Số chip mỗi tay</span>
+            <input id="bet-amount" type="number" min="1" max="100000" step="1" value="1" />
+          </label>
+          <label class="field">
+            <span>Đơn vị chip</span>
+            <select id="bet-unit">
+              <option value="10" selected>10</option>
+              <option value="10000">10k</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Chia cửa đối lập</span>
+            <select id="bet-split">
+              <option value="odd-p" selected>Profile lẻ: Player · chẵn: Banker</option>
+              <option value="odd-b">Profile lẻ: Banker · chẵn: Player</option>
+            </select>
+          </label>
+        </div>
+        <div id="bet-stake-preview" class="notice" role="status"></div>
+        <div class="action-row">
+          <button id="apply-bets" class="run-button">Áp dụng cho các profile</button>
+        </div>
+        <div id="bet-notice" class="notice" role="status" aria-live="polite"></div>
+        <div id="bet-assignments" class="proxy-assignments"></div>
       </section>
     </div>
 

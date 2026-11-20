@@ -407,6 +407,56 @@ ipcMain.handle('febet:select-table', async (_event, { label }) => {
       : { index: indices[offset], ok: false, error: result.reason.message }) };
 });
 
+// Đồng bộ bàn DG: mã bàn nhập tay, hoặc trống thì lấy bàn hiện tại của profile dẫn đầu.
+// Sảnh DG vẽ bằng canvas nên không chọn bàn theo nhãn DOM được; chuyển bàn bằng
+// tableId trong URL iframe (mỗi profile giữ token riêng, chỉ đổi mã bàn).
+ipcMain.handle('febet:sync-table', async (_event, { tableId }) => {
+  const indices = Array.from(activeProfileIndices).sort((a, b) => a - b);
+  if (!indices.length) return { ok: false, error: 'Chưa có profile nào đang mở.' };
+  let target = String(tableId || '').trim();
+  if (!target) {
+    try {
+      const read = await profileEngine(indices[0]).call('febet.table', {}, 30000);
+      if (!read || !read.ok) {
+        return { ok: false, error: (read && read.error) || 'Không đọc được bàn của profile dẫn đầu.' };
+      }
+      target = String(read.table_id || '');
+    } catch (error) {
+      return { ok: false, error: error.message || 'Không đọc được bàn của profile dẫn đầu.' };
+    }
+  }
+  if (!/^[0-9]{1,12}$/.test(target)) return { ok: false, error: 'Mã bàn DG không hợp lệ (chỉ chữ số).' };
+  const results = await Promise.allSettled(indices.map((index) =>
+    profileEngine(index).call('febet.syncTable', { table_id: target }, 60000)));
+  return { ok: true, count: indices.length, table_id: target, replies: results.map((result, offset) =>
+    result.status === 'fulfilled' ? { index: indices[offset], ...result.value }
+      : { index: indices[offset], ok: false, error: result.reason.message }) };
+});
+
+// Cấu hình cược: cùng số chip mỗi tay, hai nhóm profile đặt hai cửa đối lập (P/B).
+// stake tính theo đơn vị sảnh (WM: 1 đv = 1.000đ); đơn vị chip 10 hoặc 10k.
+ipcMain.handle('bets:apply', async (_event, { amount, unit, split }) => {
+  const indices = Array.from(activeProfileIndices).sort((a, b) => a - b);
+  if (!indices.length) return { ok: false, error: 'Chưa có profile nào đang mở.' };
+  const count = Math.trunc(Number(amount));
+  const multiplier = Number(unit) === 10000 ? 10000 : 10;
+  if (!Number.isInteger(count) || count < 1 || count > 100000) {
+    return { ok: false, error: 'Số chip phải từ 1 đến 100.000.' };
+  }
+  const stake = count * multiplier;
+  if (stake > 1000000) return { ok: false, error: 'Tổng mỗi tay vượt 1.000.000 đơn vị sảnh.' };
+  const oddSide = split === 'odd-b' ? 'B' : 'P';
+  const evenSide = oddSide === 'P' ? 'B' : 'P';
+  const results = await Promise.allSettled(indices.map((index) => {
+    const side = index % 2 === 1 ? oddSide : evenSide;
+    return profileEngine(index).call('bet.config', { side, stake }, 30000)
+      .then((reply) => ({ index, side, stake, ...reply }));
+  }));
+  return { ok: true, count: indices.length, stake, replies: results.map((result, offset) =>
+    result.status === 'fulfilled' ? result.value
+      : { index: indices[offset], ok: false, error: result.reason.message }) };
+});
+
 ipcMain.handle('profile:close', async (_event, { index }) => {
   const profileIndex = Math.trunc(Number(index));
   if (!Number.isInteger(profileIndex) || profileIndex < 1 || profileIndex > 8) {

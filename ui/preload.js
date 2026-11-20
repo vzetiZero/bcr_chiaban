@@ -16,6 +16,8 @@ contextBridge.exposeInMainWorld('aibcr', {
   openDreamGaming: () => ipcRenderer.invoke('febet:open-dg'),
   inspectFebet: () => ipcRenderer.invoke('febet:inspect'),
   selectFebetTable: (label) => ipcRenderer.invoke('febet:select-table', { label }),
+  syncFebetTableById: (tableId) => ipcRenderer.invoke('febet:sync-table', { tableId }),
+  applyBets: (amount, unit, split) => ipcRenderer.invoke('bets:apply', { amount, unit, split }),
   openExternal: (url) => ipcRenderer.invoke('app:openExternal', url),
   saveText: (name, text) => ipcRenderer.invoke('app:saveText', { name, text }),
   windowControl: (action) => ipcRenderer.send('window:control', action),
