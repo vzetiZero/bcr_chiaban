@@ -394,7 +394,7 @@ ipcMain.handle('febet:tables', async () => {
   const leader = profileEngine(indices[0]);
   try {
     const current = await leader.call('febet.table', {}, 30000);
-    if (current && current.ok && current.in_table && current.table_id && current.table_id !== '10101') {
+    if (current && current.ok && current.in_table && /^60\d{3,}$/.test(String(current.table_id || ''))) {
       return { ok: true, tables: [{ table_id: current.table_id,
         name: current.label || `Bàn ${current.table_id}`, online: 0 }], current_table: true };
     }
@@ -417,7 +417,7 @@ ipcMain.handle('febet:sync-table', async (_event, { tableId }) => {
     try {
       const leader = profileEngine(indices[0]);
       const read = await leader.call('febet.table', {}, 30000);
-      if (read && read.ok && read.in_table && read.table_id && read.table_id !== '10101') {
+      if (read && read.ok && read.in_table && /^60\d{3,}$/.test(String(read.table_id || ''))) {
         target = String(read.table_id);
       } else {
         const scan = await leader.call('febet.tables', {}, 60000);
@@ -430,11 +430,11 @@ ipcMain.handle('febet:sync-table', async (_event, { tableId }) => {
       return { ok: false, error: error.message || 'Không đọc được bàn của profile dẫn đầu.' };
     }
   }
-  if (!/^[0-9]{1,12}$/.test(target) || target === '10101') {
-    return { ok: false, error: 'Mã bàn DG không hợp lệ; 10101 là mã lưới sảnh, không phải bàn.' };
+  if (!/^60[0-9]{3,}$/.test(target)) {
+    return { ok: false, error: 'Mã bàn DG không hợp lệ; mã bàn Baccarat DG phải thuộc dải 60xxx (ví dụ 60102).' };
   }
   const results = await Promise.allSettled(indices.map((index) =>
-    profileEngine(index).call('febet.syncTable', { table_id: target }, 60000)));
+    profileEngine(index).call('febet.syncTable', { table_id: target }, 180000)));
   return { ok: true, count: indices.length, table_id: target, replies: results.map((result, offset) =>
     result.status === 'fulfilled' ? { index: indices[offset], ...result.value }
       : { index: indices[offset], ok: false, error: result.reason.message }) };

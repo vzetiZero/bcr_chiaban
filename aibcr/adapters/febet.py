@@ -268,11 +268,12 @@ def _click_xem_game(driver):
 
 
 _TABLE_ID = re.compile(r"^[0-9]{1,12}$")
-_HALL_TABLE_IDS = {"10101"}
+_REAL_DG_TABLE_ID = re.compile(r"^60[0-9]{3,}$")
 
 
 def _is_real_table_id(table_id):
-    return bool(_TABLE_ID.fullmatch(str(table_id or ""))) and str(table_id) not in _HALL_TABLE_IDS
+    value = str(table_id or "")
+    return bool(_TABLE_ID.fullmatch(value) and _REAL_DG_TABLE_ID.fullmatch(value))
 
 
 def _lobby_handle(driver):
@@ -378,7 +379,7 @@ return (() => {
       ['tableId', 'tableID', 'table_id', 'gameTableId', 'game_table_id']));
     const name = String(valueOf(objects,
       ['tableName', 'table_name', 'name', 'tableCode', 'code', 'label']));
-    if (tableId && /^\d{1,12}$/.test(tableId) && tableId !== '10101'
+    if (tableId && /^60\d{3,}$/.test(tableId)
         && (n.tableInfo || n._tableInfo || n.tableData || n._tableData
             || /\b(RB|SB|S)\s*\d+\b/i.test(name))) {
       if (!seen.has(tableId)) {
@@ -506,7 +507,7 @@ def lobby_tables(driver, wait=25.0):
         return {"ok": False, "error": "Không quét được sảnh DG (%s)." % type(exc).__name__}
 
 
-def sync_table(driver, table_id, wait=15.0, settle=30.0):
+def sync_table(driver, table_id, wait=30.0, settle=120.0):
     """Đưa profile này vào bàn DG mang table_id (mã thật, vd 60101 = RB01).
 
     Nạp qua trang chờ direct1.html với tableId thật: game tự vào thẳng bàn.
@@ -514,7 +515,7 @@ def sync_table(driver, table_id, wait=15.0, settle=30.0):
     """
     table_id = str(table_id or "").strip()
     if not _is_real_table_id(table_id):
-        return {"ok": False, "error": "Mã không phải mã bàn DG hợp lệ; 10101 là mã lưới sảnh."}
+        return {"ok": False, "error": "Mã bàn DG không hợp lệ; dùng mã bàn Baccarat dải 60xxx (ví dụ 60102)."}
     if driver is None:
         return {"ok": False, "error": "Mở profile Chrome trước khi đồng bộ bàn DG."}
     try:
@@ -557,9 +558,7 @@ def sync_table(driver, table_id, wait=15.0, settle=30.0):
                 return {"ok": True, "table_id": table_id, "in_table": True,
                         "label": landed.get("label") or "",
                         "note": "Đã vào bàn DG %s." % table_id}
-            if landed.get("lobby"):
-                return {"ok": True, "table_id": table_id, "in_table": False,
-                        "note": "Đã mở sảnh lưới bàn DG (mã %s là mã sảnh)." % table_id}
-        return {"ok": False, "error": "Đã gửi bàn %s nhưng game chưa tải xong bàn mới." % table_id}
+        return {"ok": False, "table_id": table_id, "in_table": False,
+                "error": "Đã yêu cầu vào bàn %s nhưng DG vẫn chưa xác nhận màn hình bàn sau 120 giây." % table_id}
     except Exception as exc:
         return {"ok": False, "error": "Không đồng bộ được bàn DG (%s)." % type(exc).__name__}

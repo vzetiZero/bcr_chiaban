@@ -27,7 +27,7 @@ DG_LOC = ("https://new-dd-cloudfront.example.com/ddnewpc/index.html"
           "?token=SECRET&language=vi&tableId=60101&backUrl=https%3A%2F%2Ffebet.kiwi")
 DG_HALL_LOC = DG_LOC.replace("tableId=60101", "tableId=10101")
 DG_SRC = ("https://new-dd-cloudfront.example.com/ddnewpc/direct1.html"
-          "?token=SECRET&language=vi&tableId=10101")
+          "?token=SECRET&language=vi&tableId=60101")
 
 
 class FakeDriver:
@@ -94,6 +94,12 @@ class WidgetOriginTest(unittest.TestCase):
 
 
 class CurrentTableTest(unittest.TestCase):
+    def test_only_confirmed_60xxx_ids_are_real_tables(self):
+        self.assertTrue(F._is_real_table_id("60101"))
+        self.assertTrue(F._is_real_table_id("60102"))
+        for hall_id in ("10101", "10102", "601", "6010", "70101"):
+            self.assertFalse(F._is_real_table_id(hall_id), hall_id)
+
     def test_reads_table_id_from_frame_location(self):
         result = F.current_table(FakeDriver(LOBBY, DG_LOC))
         self.assertTrue(result["ok"])
@@ -127,17 +133,17 @@ class CurrentTableTest(unittest.TestCase):
 class SyncTableTest(unittest.TestCase):
     def test_rejects_invalid_ids(self):
         driver = FakeDriver(LOBBY, DG_LOC)
-        for bad in ("", "abc", "10101", "10101;alert(1)", "1" * 13, "10 101", "-1"):
+        for bad in ("", "abc", "10101", "10102", "10101;alert(1)", "1" * 13, "10 101", "-1"):
             result = F.sync_table(driver, bad)
             self.assertFalse(result["ok"], bad)
         self.assertEqual(driver.scripts, [])
 
     def test_sets_table_id_keeps_token_inside_page(self):
         driver = FakeDriver(LOBBY, DG_LOC)
-        result = F.sync_table(driver, "10102", settle=5)
+        result = F.sync_table(driver, "60102", settle=5)
         self.assertTrue(result["ok"])
-        self.assertEqual(result["table_id"], "10102")
-        self.assertIn("tableId=10102", driver.src_attr)
+        self.assertEqual(result["table_id"], "60102")
+        self.assertIn("tableId=60102", driver.src_attr)
         self.assertIn("token=SECRET", driver.src_attr)  # token giữ lại trong trang
         self.assertNotIn("SECRET", str(result))         # nhưng không lộ ra kết quả
         self.assertIn("[1]", driver.src_attr)           # đúng iframe DG
@@ -146,11 +152,11 @@ class SyncTableTest(unittest.TestCase):
         # Phải đi qua loader direct1.html; gán thẳng index.html làm game thoát iframe.
         self.assertIn("direct1.html", driver.src_attr)
         self.assertIn("index.html", driver.dg_location)
-        self.assertIn("tableId=10102", driver.dg_location)
+        self.assertIn("tableId=60102", driver.dg_location)
 
     def test_empty_src_falls_back_to_loader_from_location(self):
         driver = FakeDriver(LOBBY, DG_LOC, src_value="")
-        result = F.sync_table(driver, "10102", settle=5)
+        result = F.sync_table(driver, "60102", settle=5)
         self.assertTrue(result["ok"])
         self.assertIn("direct1.html", driver.src_attr)
 
@@ -159,7 +165,7 @@ class SyncTableTest(unittest.TestCase):
             redirect = False
 
         driver = NoRedirect(LOBBY, DG_LOC)
-        result = F.sync_table(driver, "10102", settle=0)
+        result = F.sync_table(driver, "60102", settle=0)
         self.assertFalse(result["ok"])
 
     def test_no_dg_frame_reports_error(self):
@@ -185,7 +191,7 @@ class SyncTableTest(unittest.TestCase):
 
     def test_tab_mode_navigates_loader(self):
         driver = FakeDriver(DG_LOC, DG_LOC)
-        result = F.sync_table(driver, "10102", settle=5)
+        result = F.sync_table(driver, "60102", settle=5)
         self.assertTrue(result["ok"])
         self.assertTrue(result.get("in_table"))
         self.assertTrue(any(js.startswith("location.href =") for js in driver.scripts))
@@ -209,6 +215,7 @@ class SyncTableTest(unittest.TestCase):
                         return {"ready": False, "tables": []}
                     return {"ready": True, "tables": [
                         {"table_id": "10101", "name": "Lobby"},
+                        {"table_id": "10102", "name": "False RB02"},
                         {"table_id": "60101", "name": "RB01", "online": 10},
                         {"table_id": "60101", "name": "RB01", "online": 10}]}
                 return super().execute_script(js, *args)

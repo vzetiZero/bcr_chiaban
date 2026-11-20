@@ -673,7 +673,8 @@ class BaccaratController:
 
     def febet_sync_table(self, params):
         with self.browser.lock:
-            return FEBET.sync_table(self.browser.driver, (params or {}).get("table_id"))
+            return FEBET.sync_table(self.browser.driver, (params or {}).get("table_id"),
+                                    wait=30.0, settle=120.0)
 
     def chrome_attach(self):
         if self.chrome_busy:

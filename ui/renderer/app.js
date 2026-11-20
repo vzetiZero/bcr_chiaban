@@ -79,6 +79,7 @@ function updateSitePreview() {
   const site = profileSelect.selectedOptions[0];
   runButton.disabled = !site || !site.value;
   $('#febet-table-row').hidden = !site || site.value !== 'febet';
+  $('#sync-dg-table').disabled = !$('#febet-table-select').value;
 }
 
 function populateProxySelect(select, selectedId = '') {
@@ -281,7 +282,7 @@ function populateFebetTableSelect(result) {
   const select = $('#febet-table-select');
   const previous = select.value;
   const tables = (result.tables || []).filter((table) =>
-    /^\d{1,12}$/.test(String(table.table_id || '')) && String(table.table_id) !== '10101');
+    /^60\d{3,}$/.test(String(table.table_id || '')));
   select.replaceChildren();
   for (const table of tables) {
     const option = document.createElement('option');
@@ -308,8 +309,10 @@ function populateFebetTableSelect(result) {
 async function scanFebetTables() {
   const result = await api.listFebetTables();
   if (!result || !result.ok) {
-    populateFebetTableSelect({ tables: [] });
     return { ok: false, error: (result && result.error) || 'Không quét được danh sách bàn DG.' };
+  }
+  if (!(result.tables || []).length) {
+    return { ok: false, error: 'Quét Laya không trả về bàn; vẫn có thể dùng mã bàn đã chọn.' };
   }
   const tables = populateFebetTableSelect(result);
   return tables.length ? { ok: true, tables }
@@ -318,8 +321,8 @@ async function scanFebetTables() {
 
 async function syncSelectedFebetTable() {
   const tableId = $('#febet-table-select').value;
-  if (!/^\d{1,12}$/.test(tableId) || tableId === '10101') {
-    showNotice('Hãy quét và chọn mã bàn thật trước.', true);
+  if (!/^60\d{3,}$/.test(tableId)) {
+    showNotice('Hãy chọn mã bàn Baccarat DG thuộc dải 60xxx.', true);
     return false;
   }
   showNotice(`Đang đưa tất cả profile vào bàn ${tableId}…`);
@@ -409,12 +412,8 @@ runButton.addEventListener('click', async () => {
         showNotice(`Đã chạy ${result.count} profile; ${dgFailed} profile chưa vào được sảnh DG.`, true);
         return;
       }
-      showNotice('Đang quét mã bàn thật từ Laya…');
-      const tables = await scanFebetTables();
-      if (!tables.ok) {
-        showNotice(tables.error, true);
-        return;
-      }
+      // Laya renders the lobby as canvas and does not expose stable table nodes.
+      // Use the selected, confirmed DG tableId directly through direct1.html.
       await syncSelectedFebetTable();
     } else {
       showNotice(failed
