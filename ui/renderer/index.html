@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:;" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Profile Manager</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="titlebar">
+    <div class="brand"><span class="brand-mark">P</span><span>PROFILE MANAGER</span></div>
+    <div class="drag"></div>
+    <div class="window-controls">
+      <button data-win="minimize" title="Thu nhỏ">&#8211;</button>
+      <button data-win="maximize" title="Phóng to">&#9723;</button>
+      <button data-win="close" class="close" title="Đóng">&#10005;</button>
+    </div>
+  </header>
+
+  <main class="page">
+    <section class="intro">
+      <div class="eyebrow">QUẢN LÝ TÀI KHOẢN</div>
+      <h1>Mở nhiều profile cùng lúc</h1>
+      <p>Chọn số lượng profile và site. Mỗi profile mở một cửa sổ Chrome riêng tại cùng đường dẫn.</p>
+    </section>
+
+    <section class="manager card">
+      <div class="form-grid">
+        <label class="field">
+          <span>Số lượng tài khoản</span>
+          <input id="profile-count" type="number" min="1" max="8" step="1" value="4" />
+          <small>Tối đa 8 profile, mỗi profile có phiên đăng nhập riêng.</small>
+        </label>
+        <label class="field">
+          <span>Website</span>
+          <select id="site-select" disabled>
+            <option>Đang tải danh sách…</option>
+          </select>
+          <small id="site-url" class="url-preview"></small>
+        </label>
+      </div>
+      <div class="action-row">
+        <button id="run-profiles" class="run-button" disabled>
+          <span class="run-icon">▶</span> Chạy đồng thời
+        </button>
+        <button id="close-profiles" class="close-button" disabled>Đóng profiles</button>
+      </div>
+      <div id="notice" class="notice" role="status" aria-live="polite">Chọn website để bắt đầu.</div>
+    </section>
+
+    <section class="profiles-section settings-section">
+      <div class="section-heading">
+        <div><div class="eyebrow">CẤU HÌNH RIÊNG</div><h2>Proxy và cửa sổ</h2></div>
+        <span class="total">Thông tin proxy chỉ giữ trong phiên chạy</span>
+      </div>
+      <div id="profile-settings" class="profile-settings"></div>
+      <p class="footnote">Proxy để trống sẽ dùng kết nối trực tiếp. Hỗ trợ http://host:port, http://user:pass@host:port, socks5://host:port hoặc host:port:user:pass. Kích thước tính bằng pixel; scale từ 50% đến 200%.</p>
+    </section>
+
+    <section class="profiles-section">
+      <div class="section-heading">
+        <div><div class="eyebrow">PHIÊN CHROME</div><h2>Profiles</h2></div>
+        <span id="profile-total" class="total">0 profile</span>
+      </div>
+      <div id="profile-list" class="profile-list">
+        <div class="empty">Các cửa sổ sẽ hiện ở đây sau khi bấm Chạy đồng thời.</div>
+      </div>
+      <p class="footnote">Lần đầu mở một profile, hãy đăng nhập trực tiếp trên cửa sổ Chrome đó. Thông tin đăng nhập được Chrome lưu riêng theo profile.</p>
+    </section>
+
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>

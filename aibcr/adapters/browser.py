@@ -1,0 +1,1581 @@
+# -*- coding: utf-8 -*-
+"""Chrome riêng cho BCR: đăng nhập thủ công, chỉ đọc kết quả từ trang được phép.
+
+Chrome tự quản lý việc lưu profile; phiên có thể hết hạn. Không kiểm tra thông tin
+đăng nhập, không đặt cược thật, không nạp extension; CDP chỉ đọc Chrome có sẵn.
+"""
+
+import json
+import os
+import re
+import socket
+import subprocess
+import threading
+import time
+from urllib.parse import urlsplit, urlunsplit
+from urllib.request import urlopen
+
+from aibcr.adapters import wm as WM
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+PROFILE_DIR = os.path.join(HERE, "chrome_profile")
+WINDOW_POSITION = (40, 40)
+PROXY_SERVER = ""
+READER_JS = os.path.join(HERE, "reader.js")
+DRIVER_PATH = os.path.join(HERE, "drivers", "chromedriver.exe")
+LOBBY_PATH = "/frontend/evo/r3"
+# Sảnh Baccarat của Petalive (site đang dùng) không đi qua EVO /frontend/evo/r3.
+PETALIVE_LOBBY_PATH = "/live-games/lobby/bcr"
+PETALIVE_TABLE_PREFIX = "/live-games/bcr/"
+LOBBY_PATHS_TEXT = "%s hoặc %s" % (LOBBY_PATH, PETALIVE_LOBBY_PATH)
+START_URL = "https://www.neo179.com/gamelobby/live"
+PORTAL_HOST = urlsplit(START_URL).hostname
+PORTAL_PATH = urlsplit(START_URL).path
+WIN_W, WIN_H = 1200, 900
+# Giá trị mở đầu cho cửa sổ thường; người dùng sửa trong Cài đặt → Cửa sổ Chrome và
+# app lưu vào aibcr_state.json nên các con số dưới đây chỉ là mức dự phòng.
+# Tỉ lệ render là cờ khởi động nên chỉ đổi có hiệu lực ở lần mở Chrome kế tiếp.
+WIN_SCALE = 0.8
+WIN_FULLSCREEN = False
+SCALE_MIN, SCALE_MAX = 50, 200
+SIZE_MIN, SIZE_MAX = (800, 600), (7680, 4320)
+# Sảnh EVO mở từ trang vào chỉ còn sống nhờ các nhịp tim của chính tab trang vào.
+# Chrome giảm nhịp/đóng băng tab bị che hoặc bị ẩn nên nhịp tim tắt, sảnh đang tốt
+# chuyển thành "User authentication failed (EV.7)". Ba cờ dưới giữ nhịp JS đầy đủ
+# cho mọi tab, không đổi dữ liệu gửi đi.
+KEEPALIVE_FLAGS = [
+    "--disable-backgrounding-occluded-windows",
+    "--disable-renderer-backgrounding",
+    "--disable-background-timer-throttling",
+    "--disable-features=CalculateNativeWinOcclusion",
+]
+MAX_FRAME_DEPTH = 4
+MAX_SCAN_FRAMES = 64
+PAGE_LOAD_TIMEOUT = 20
+SCRIPT_TIMEOUT = 8
+COMMAND_TIMEOUT = 25
+CDP_PORT = 9222
+CHROME_CANDIDATES = (
+    r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+    r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+    r"E:\Tools\Google Chrome\App\Chrome-bin\chrome.exe",
+    os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe"),
+    os.path.expandvars(r"%PROGRAMFILES%\Google\Chrome\Application\chrome.exe"),
+    os.path.expandvars(r"%USERPROFILE%\Desktop\Google Chrome\App\Chrome-bin\chrome.exe"),
+)
+
+
+def is_lobby_host(host):
+    """Sảnh Evolution đổi mirror liên tục nên chỉ cần một tên miền DNS công khai.
+
+    Không nhận IP, localhost hay tên nội bộ. Đường dẫn sảnh (/frontend/evo/r3 hoặc
+    /live-games/lobby/bcr) được kiểm tra riêng trong is_lobby_url; nhờ vậy mirror hiện
+    tại vẫn dùng được mà không phải sửa danh sách đuôi cứng mỗi lần site đổi tên.
+    """
+    return is_public_host(host)
+
+
+def is_lobby_url(url):
+    """URL sảnh hợp lệ: EVO `/frontend/evo/r3` hoặc Petalive `/live-games/lobby/bcr`."""
+    if not isinstance(url, str) or not url or "\\" in url:
+        return False
+    if any(ch.isspace() or ord(ch) < 32 or ord(ch) == 127 for ch in url):
+        return False
+    try:
+        parsed = urlsplit(url)
+        path = parsed.path.rstrip("/") or "/"
+        evo = path == LOBBY_PATH or path.startswith(LOBBY_PATH + "/")
+        petalive = path == PETALIVE_LOBBY_PATH or path.startswith(PETALIVE_LOBBY_PATH + "/")
+        return (parsed.scheme == "https" and is_lobby_host(parsed.hostname)
+                and (evo or petalive)
+                and parsed.username is None and parsed.password is None
+                and parsed.port in (None, 443))
+    except (ValueError, TypeError):
+        return False
+
+
+def is_petalive_table_url(url):
+    """URL màn hình bàn Petalive: `/live-games/bcr/<room-id>` (không phải sảnh)."""
+    if not isinstance(url, str) or not url or "\\" in url:
+        return False
+    if any(ch.isspace() or ord(ch) < 32 or ord(ch) == 127 for ch in url):
+        return False
+    try:
+        parsed = urlsplit(url)
+        path = parsed.path.rstrip("/")
+        room_id = path[len(PETALIVE_TABLE_PREFIX):] if path.startswith(PETALIVE_TABLE_PREFIX) else ""
+        return (parsed.scheme == "https" and is_public_host(parsed.hostname)
+                and bool(valid_table_id(room_id))
+                and parsed.username is None and parsed.password is None
+                and parsed.port in (None, 443))
+    except (ValueError, TypeError):
+        return False
+
+
+def is_evo_entry_url(url):
+    """One-time Evolution handoff; it is never a readable lobby."""
+    if not isinstance(url, str) or not url or "\\" in url:
+        return False
+    if any(ch.isspace() or ord(ch) < 32 or ord(ch) == 127 for ch in url):
+        return False
+    try:
+        parsed = urlsplit(url)
+        return (parsed.scheme == "https" and is_lobby_host(parsed.hostname)
+                and parsed.path == "/entry" and parsed.username is None
+                and parsed.password is None and parsed.port in (None, 443))
+    except (ValueError, TypeError):
+        return False
+
+
+def is_public_host(host):
+    """Tên miền công khai hợp lệ: có dấu chấm, không phải IP/localhost/tên nội bộ."""
+    if not isinstance(host, str) or not 4 <= len(host) <= 253:
+        return False
+    if host != host.lower() or host.startswith(".") or host.endswith(".") or ".." in host:
+        return False
+    if host == "localhost" or host.endswith(".localhost") or host.endswith(".local"):
+        return False
+    if re.fullmatch(r"[0-9.]+", host) or ":" in host:
+        return False
+    return re.fullmatch(
+        r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
+        r"(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+", host) is not None
+
+
+def is_portal_host(host):
+    """Giữ tên cũ cho tương thích; nay nhận mọi tên miền công khai.
+
+    App không còn phụ thuộc trang chủ cụ thể: bạn có thể vào bất kỳ cổng nào rồi tự
+    mở sảnh. Việc nhận diện sảnh EVO vẫn dựa trên đường dẫn /frontend/evo/r3.
+    """
+    return is_public_host(host)
+
+
+def is_public_https_url(url):
+    """HTTPS trên tên miền công khai, cổng 443, không userinfo/ký tự điều khiển."""
+    if not isinstance(url, str) or not url or "\\" in url:
+        return False
+    if any(ch.isspace() or ord(ch) < 32 or ord(ch) == 127 for ch in url):
+        return False
+    try:
+        parsed = urlsplit(url)
+        return (parsed.scheme == "https" and is_public_host(parsed.hostname)
+                and parsed.username is None and parsed.password is None
+                and parsed.port in (None, 443))
+    except (ValueError, TypeError):
+        return False
+
+
+def is_portal_url(url):
+    """Trang thường (không phải sảnh EVO, không phải /entry) trên tên miền công khai.
+
+    Dùng để nhận diện "tab cổng" khi cần mở sảnh hoặc tải lại trang vào. Không ràng
+    buộc tên miền nào, nên đổi nhà cái/cổng không phải sửa code.
+    """
+    return (is_public_https_url(url) and not is_lobby_url(url)
+            and not is_evo_entry_url(url))
+
+
+def valid_site_url(url):
+    """Cho phép mọi trang HTTPS công khai (trừ trang /entry dùng-một-lần của EVO).
+
+    App không còn gắn với một trang chủ cụ thể: bạn vào cổng nào cũng được. Trang
+    /entry bị loại vì tải lại nó là mất phiên; đọc/đặt chip vẫn chỉ chạy khi trang
+    thật sự có sảnh EVO hoặc bảng cầu.
+    """
+    if not is_public_https_url(url):
+        return False
+    return not is_evo_entry_url(url)
+
+
+def _safe_url(url):
+    """Chỉ giữ origin/path, không chuyển query, hash hay userinfo sang UI."""
+    try:
+        parsed = urlsplit(url)
+        if parsed.scheme not in ("https", "http") or not parsed.hostname:
+            return ""
+        host = parsed.hostname
+        if ":" in host:
+            host = "[" + host + "]"
+        port = parsed.port
+        if port is not None and port != (443 if parsed.scheme == "https" else 80):
+            host += ":%d" % port
+        return urlunsplit((parsed.scheme, host, parsed.path, "", ""))
+    except (ValueError, TypeError, AttributeError):
+        return ""
+
+
+def _clean_report(report):
+    """Giữ định dạng reader, chỉ xuất metadata kết quả đã lọc URL."""
+    if not isinstance(report, dict) or not isinstance(report.get("tables"), list):
+        return None
+    page = report.get("page") or {}
+    diag = report.get("diag") or {}
+    if not isinstance(page, dict) or not isinstance(diag, dict):
+        return None
+    table_id = page.get("table_id", "")
+    if (not isinstance(table_id, str) or len(table_id) > 128
+            or any(not (ch.isalnum() or ch in "_.:-") for ch in table_id)):
+        table_id = ""
+    frame_url = _safe_url(page.get("url", ""))
+    return {
+        "page": {"url": frame_url, "table_id": table_id,
+                 "title": str(page.get("title") or "")[:80],
+                 "wallet_balance": str(page.get("wallet_balance") or "")[:80]},
+        "tables": report["tables"],
+        "diag": {"kind": diag.get("kind", ""), "scanned": diag.get("scanned", 0),
+                 "roads": diag.get("roads", 0), "frame": frame_url,
+                 "auth_required": bool(diag.get("auth_required"))},
+    }
+
+
+def chrome_path():
+    """Chọn Chrome mới nhất trong các vị trí ứng viên."""
+    found = [(chrome_version(cand), cand) for cand in CHROME_CANDIDATES
+             if os.path.isfile(cand)]
+    return max(found, key=lambda v: tuple(int(x or 0) for x in v[0].split(".")))[1] if found else ""
+
+
+def chrome_version(path=None):
+    """Đọc thư mục version cạnh chrome.exe, không chạy Chrome hay đọc profile."""
+    path = path or chrome_path()
+    if not path:
+        return ""
+    app_dir = os.path.dirname(path)
+    try:
+        found = [n for n in os.listdir(app_dir)
+                 if all(part.isdigit() for part in n.split("."))
+                 and os.path.isdir(os.path.join(app_dir, n))]
+    except OSError:
+        return ""
+    return max(found, key=lambda n: tuple(int(x) for x in n.split("."))) if found else ""
+
+
+def driver_version(path=None):
+    path = path or DRIVER_PATH
+    if not os.path.isfile(path):
+        return ""
+    try:
+        out = subprocess.run([path, "--version"], capture_output=True, text=True,
+                             timeout=15).stdout.split()
+        return out[1] if len(out) > 1 else ""
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+def driver_for():
+    """Driver cục bộ khớp bản; nếu không, để Selenium Manager chọn driver."""
+    cv = chrome_version()
+    dv = driver_version()
+    if cv and dv and cv.split(".")[:3] == dv.split(".")[:3]:
+        return "local", "driver %s khớp Chrome %s" % (dv, cv)
+    return "auto", "Selenium Manager chọn driver tương thích Chrome %s" % (cv or "đã cài")
+
+
+def valid_table_id(table_id):
+    return (isinstance(table_id, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,80}", table_id) is not None)
+
+
+def validated_endpoint(page):
+    """Endpoint CDP phải là ws vòng lặp, cổng 9222, không userinfo/fragment/ký tự điều khiển."""
+    endpoint = page.get("webSocketDebuggerUrl", "") if isinstance(page, dict) else ""
+    if (not isinstance(endpoint, str) or "\\" in endpoint
+            or any(ch.isspace() or ord(ch) < 32 or ord(ch) == 127 for ch in endpoint)):
+        raise ValueError("invalid_cdp_endpoint")
+    parsed = urlsplit(endpoint)
+    if (parsed.scheme != "ws" or parsed.hostname not in ("127.0.0.1", "localhost", "::1")
+            or parsed.port != CDP_PORT or parsed.username is not None
+            or parsed.password is not None or parsed.fragment):
+        raise ValueError("invalid_cdp_endpoint")
+    return endpoint
+
+
+def cdp_port_closed(exc):
+    """Cổng 9222 đóng = Chrome mà người dùng nhìn thấy không phải Chrome do app mở
+    (không có --remote-debugging-port). Phải nói rõ để người dùng không đi tìm “lỗi
+    đăng nhập” trong khi app chưa cắm được vào cửa sổ nào."""
+    reason = getattr(exc, "reason", None)
+    return isinstance(exc, ConnectionRefusedError) or isinstance(reason, ConnectionRefusedError)
+
+
+CDP_CLOSED_NOTE = (
+    "Không có Chrome nào đang mở ở chế độ app dùng (CDP 9222). Cửa sổ Chrome bạn thấy "
+    "không do app mở nên app không thao tác được trong đó. Hãy tắt cửa sổ Chrome đó đi "
+    "(tránh hai phiên cùng tài khoản — nguyên nhân site báo “Bạn đã đăng xuất”), bấm "
+    "“Mở Chrome” trong app rồi đăng nhập lại một lần.")
+
+
+def chrome_launch_failure_note(exc):
+    """Lỗi hay gặp nhất khi mở Chrome là profile chrome_profile đang bị cửa sổ Chrome
+    khác giữ: Chrome vừa mở tự thoát, chromedriver chỉ báo SessionNotCreatedError chung
+    chung. Phải nói thẳng cách mở khoá vì cùng tình trạng hai cửa sổ cũng là nguồn gây
+    hộp “Bạn đã đăng xuất” của site."""
+    text = str(exc).lower()
+    if ("already in use" in text or "user data directory" in text
+            or "chrome instance exited" in text or "devtoolsactiveport" in text):
+        return ("Chrome của app không mở được vì profile “%s” đang bị một cửa sổ Chrome khác "
+                "giữ. Hãy tắt hết cửa sổ Chrome rồi bấm “Mở Chrome” lại — mở hai cửa sổ cùng "
+                "một tài khoản là nguyên nhân site đá phiên “Bạn đã đăng xuất”."
+                % os.path.basename(PROFILE_DIR))
+    return ("Không mở được Chrome (%s). Kiểm tra Chrome, driver, mạng hoặc profile đang được dùng; "
+            "không mở cửa sổ thay thế và không đóng Chrome có sẵn." % type(exc).__name__)
+
+
+def _window_number(value, default):
+    """Chấp nhận số người dùng gõ kiểu Việt ("1280,5") mà không cần chuẩn hoá trước."""
+    try:
+        return float(str(value).strip().replace(",", "."))
+    except (TypeError, ValueError):
+        return default
+
+
+def normalize_window(size=None, scale=None, fullscreen=None):
+    """Đổi ô nhập của người dùng thành cấu hình cửa sổ an toàn (chặn số 0/âm/cỡ điên rồ).
+
+    Kích thước được kẹp trong SIZE_MIN..SIZE_MAX, tỉ lệ trong SCALE_MIN..SCALE_MAX phần trăm.
+    """
+    try:
+        width, height = size[0], size[1]
+    except (TypeError, IndexError):
+        width = height = None
+    percent = int(round(_window_number(scale, WIN_SCALE * 100)))
+    return {
+        "width": min(SIZE_MAX[0], max(SIZE_MIN[0], int(_window_number(width, WIN_W)))),
+        "height": min(SIZE_MAX[1], max(SIZE_MIN[1], int(_window_number(height, WIN_H)))),
+        "percent": min(SCALE_MAX, max(SCALE_MIN, percent)),
+        "fullscreen": WIN_FULLSCREEN if fullscreen is None else bool(fullscreen),
+    }
+
+
+def build_flags(pos=None, cdp=False, window=None):
+    window = normalize_window() if window is None else window
+    flags = [
+        "--user-data-dir=%s" % PROFILE_DIR,
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--disable-background-networking",
+    ] + KEEPALIVE_FLAGS + [
+        "--window-size=%d,%d" % (window["width"], window["height"]),
+        "--force-device-scale-factor=%s" % (window["percent"] / 100.0),
+    ]
+    if window["fullscreen"]:
+        flags.append("--start-fullscreen")
+    if cdp:
+        flags.append("--remote-debugging-port=%d" % CDP_PORT)
+    if PROXY_SERVER:
+        flags.append("--proxy-server=%s" % PROXY_SERVER)
+    if pos and not window["fullscreen"]:
+        flags.append("--window-position=%d,%d" % pos)
+    return flags
+
+
+class BrowserSession:
+    """Quản lý WebDriver riêng hoặc gắn CDP chỉ đọc khi được yêu cầu."""
+
+    def __init__(self):
+        self.driver = None
+        self.cdp_attached = False
+        self.mode = ""
+        self.note = ""
+        self.url = START_URL
+        self.lock = threading.RLock()
+        self._reader = None
+        self._reader_mtime_ns = None
+        self._selected_handle = None
+        self._driver_info = "Chưa kết nối Chrome."
+        self.last_frames = 0
+        self.last_diag = {}
+        self.last_error = ""
+        self.connection_state = "closed"
+        self._last_cdp_targets = []
+        # Tab sảnh WM không có đường dẫn cố định nên không nhận ra bằng URL; lưu id
+        # tab sau lần dò DOM đầu tiên để các lệnh sau quay lại đúng tab đó.
+        self.wm_page_id = None
+        # WM chỉ gửi lịch sử mỗi ván một lần qua WebSocket, nên phải nghe liên tục;
+        # đọc theo từng lượt quét sẽ bỏ lỡ phần lớn khung.
+        self.wm_cache = {}
+        self.wm_state = {}
+        self.wm_cards = {}
+        self.wm_open_key = ""
+        self._wm_watch = None
+        self._wm_watch_stop = threading.Event()
+        # Kiểm tra "Chrome còn sống" có cache: tránh gọi HTTP mỗi lần UI hỏi state
+        # nhưng vẫn phát hiện được người dùng tự đóng cửa sổ Chrome.
+        self._alive_checked_at = 0.0
+        self._alive_ok = False
+
+    @property
+    def connected(self):
+        """True khi Chrome còn thật sự sống (không chỉ là cờ cũ còn sót).
+
+        Người dùng đóng cửa sổ Chrome bằng tay thì ``driver``/``cdp_attached`` vẫn còn
+        giá trị cũ, nên phải dò lại cổng CDP. Kết quả được cache ngắn để không gọi
+        HTTP liên tục khi UI lấy state mỗi 2 giây.
+        """
+        if self.driver is None and not self.cdp_attached:
+            return False
+        if self._alive_cached():
+            return True
+        self.mark_closed()
+        return False
+
+    def _alive_cached(self, ttl=3.0):
+        now = time.monotonic()
+        if now - self._alive_checked_at < ttl:
+            return self._alive_ok
+        self._alive_checked_at = now
+        self._alive_ok = self._probe_alive()
+        return self._alive_ok
+
+    def _probe_alive(self):
+        """Chrome còn sống không? WebDriver còn trả lời, hoặc cổng CDP còn mở.
+
+        Dùng TCP connect thay vì HTTP: khi người dùng đóng cửa sổ Chrome thì cổng
+        9222 đóng ngay và connect_ex trả lỗi tức thì, còn ``urlopen`` có thể treo tới
+        hết timeout (firewall nuốt gói) khiến app tưởng Chrome vẫn còn.
+        """
+        if self.driver is not None:
+            try:
+                if bool(self.driver.window_handles):
+                    return True
+            except Exception:
+                self.driver = None      # phiên WebDriver đã chết
+        return self._port_open()
+
+    @staticmethod
+    def _port_open(port=None, timeout=0.6):
+        # Đọc CDP_PORT tại thời điểm gọi: engine đổi cổng theo từng trò (9222/9223).
+        port = CDP_PORT if port is None else port
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+                sock.settimeout(timeout)
+                return sock.connect_ex(("127.0.0.1", port)) == 0
+        except OSError:
+            return False
+
+    def mark_closed(self, note=None):
+        """Xoá trạng thái kết nối sau khi Chrome bị đóng (bởi người dùng hoặc lỗi)."""
+        with self.lock:
+            self.stop_wm_watch()
+            self.wm_cache, self.wm_state, self.wm_cards = {}, {}, {}
+            self.wm_open_key = ""
+            self.driver = None
+            self.cdp_attached = False
+            self.mode = ""
+            self._selected_handle = None
+            self._reader = None
+            self.last_frames = 0
+            self.last_diag = {}
+            self.connection_state = "closed"
+            self.wm_page_id = None
+            self._driver_info = "Chrome đã đóng."
+            self._alive_checked_at = time.monotonic()
+            self._alive_ok = False
+            self.note = note or "Chrome đã đóng · bấm “Mở Chrome” để mở lại."
+            return self.note
+
+    @property
+    def driver_info(self):
+        """Thông tin đã cache; UI không cần RPC hoặc chạy subprocess."""
+        return self._driver_info
+
+    @staticmethod
+    def _cdp_json(resource):
+        with urlopen("http://127.0.0.1:%d/json/%s" % (CDP_PORT, resource),
+                     timeout=SCRIPT_TIMEOUT) as response:
+            return json.load(response)
+
+    def _cdp_pages(self):
+        self._last_cdp_targets = self._cdp_json("list")
+        return [page for page in self._last_cdp_targets
+                if isinstance(page, dict) and page.get("type") == "page"
+                and valid_site_url(page.get("url"))]
+
+    def _cdp_page(self):
+        pages = self._cdp_pages()
+        # Tab WM đã nhận diện được ưu tiên trước: URL của nó không có dấu hiệu nhận
+        # biết nên nếu để sau, app sẽ bám nhầm tab cổng đang mở cùng Chrome.
+        if self.wm_page_id:
+            for page in pages:
+                if page.get("id") == self.wm_page_id:
+                    return page
+        # Ưu tiên tab sảnh (EVO hoặc Petalive); nếu đã vào bàn Petalive thì giữ đúng tab
+        # đó, không rơi sang tab cổng khác trong cùng Chrome.
+        for page in pages:
+            url = page.get("url")
+            if is_lobby_url(url) or is_petalive_table_url(url):
+                return page
+        return pages[0] if pages else None
+
+    def attach(self):
+        """Gắn Chrome hiện có qua CDP; không mở, đóng hay điều hướng tab."""
+        with self.lock:
+            if self.driver is not None:
+                self.note = "Đang dùng phiên WebDriver; chưa chuyển sang CDP."
+                return False
+            self.last_frames = 0
+            self.last_diag = {}
+            self.last_error = ""
+            try:
+                if self._cdp_page() is None:
+                    if any(isinstance(item, dict) and item.get("type") == "page"
+                           and is_evo_entry_url(item.get("url"))
+                           for item in self._last_cdp_targets):
+                        self.note = ("Evolution đang dừng ở /entry: token mở game đã bị từ chối hoặc hết hạn "
+                                     "(EV.3/EV.7). App không tải lại hay sửa link này; đăng nhập lại ở trang gốc "
+                                     "rồi mở EVO từ nút của site.")
+                        self.last_diag = {"reason": "evo_entry_auth_error"}
+                        self.connection_state = "waiting"
+                        return False
+                    self.note = ("Không có tab nào trong Chrome CDP 9222 mở %s hoặc sảnh Baccarat "
+                                 "(https://<mirror>%s)." % (PORTAL_HOST, LOBBY_PATHS_TEXT))
+                    self.last_diag = {"reason": "no_approved_tab"}
+                    self.connection_state = "waiting"
+                    return False
+                info = "Chrome hiện có · CDP 9222"
+                try:
+                    version = self._cdp_json("version").get("Browser")
+                    if isinstance(version, str) and version:
+                        info = version[:80] + " · CDP 9222"
+                except Exception:
+                    pass  # Metadata không bắt buộc để gắn tab đã được xác nhận.
+                self.mode = "cdp"
+                self.cdp_attached = True
+                self._driver_info = info
+                self.note = ("Đã gắn Chrome hiện có · CDP 9222; chỉ đọc, giữ nguyên phiên đăng nhập. "
+                             "Bạn tự vào sảnh Baccarat rồi bấm “VÀO BÀN HỢP LỆ”.")
+                self.connection_state = "waiting"
+                return True
+            except Exception as exc:
+                self.note = CDP_CLOSED_NOTE if cdp_port_closed(exc) else \
+                    "Không gắn được Chrome CDP 9222 (%s)." % type(exc).__name__
+                self.last_error = self.note
+                self.connection_state = "error"
+                return False
+
+    def navigate(self, url):
+        """Navigate the managed/attached Chrome page to an explicitly selected public HTTPS URL."""
+        if not valid_site_url(url):
+            return False, "URL phải là HTTPS công khai hợp lệ."
+        with self.lock:
+            try:
+                import websocket
+                page = self._cdp_page()
+                if not page:
+                    return False, "Không tìm thấy tab Chrome để mở site."
+                ws = websocket.create_connection(validated_endpoint(page),
+                                                 suppress_origin=True,
+                                                 timeout=SCRIPT_TIMEOUT)
+                try:
+                    ws.send(json.dumps({"id": 1, "method": "Page.navigate",
+                                        "params": {"url": url}}))
+                    deadline = time.monotonic() + COMMAND_TIMEOUT
+                    reply = None
+                    while time.monotonic() < deadline:
+                        message = json.loads(ws.recv())
+                        if message.get("id") == 1:
+                            reply = message
+                            break
+                    if reply is None:
+                        return False, "Chrome chưa phản hồi lệnh mở site."
+                    if reply.get("error"):
+                        return False, "Chrome từ chối điều hướng trang."
+                finally:
+                    ws.close()
+                self.connection_state = "connected"
+                self._alive_checked_at = 0.0
+                return True, "Đã mở site trong Chrome."
+            except Exception as exc:
+                return False, "Không mở được site trong Chrome (%s)." % type(exc).__name__
+
+    def wait_for_cdp(self, seconds=15):
+        """Chrome do driver mở tự tạo cổng 9222, thường muộn hơn lệnh launch vài giây.
+        Biết sớm để báo đúng: cổng lên rồi thì quét được cả sảnh, chưa lên thì app chỉ
+        đọc được cầu đang hiển thị trên màn hình."""
+        deadline = time.monotonic() + max(0, seconds)
+        while True:
+            try:
+                self._cdp_json("version")
+                return True
+            except Exception:
+                if time.monotonic() >= deadline:
+                    return False
+            time.sleep(0.5)
+
+    @staticmethod
+    def _browser_command(ws, request_id, method, params):
+        ws.send(json.dumps({"id": request_id, "method": method, "params": params}))
+        deadline = time.monotonic() + COMMAND_TIMEOUT
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("cdp_timeout")
+            ws.settimeout(remaining)
+            message = json.loads(ws.recv())
+            if message.get("id") != request_id:
+                continue
+            if "error" in message:
+                raise RuntimeError("cdp_browser_command_failed")
+            return message.get("result", {})
+
+    def resize_window(self, window=None, pos=None):
+        """Đưa cửa sổ Chrome về cấu hình người dùng qua CDP: toàn màn hình hoặc kích thước tùy chọn.
+
+        Tỉ lệ render là cờ khởi động nên phần này chỉ đổi hình dạng cửa sổ; note luôn nêu
+        tỉ lệ đang lưu để người dùng biết cần mở lại Chrome khi vừa sửa tỉ lệ.
+        """
+        import websocket
+
+        window = normalize_window() if window is None else window
+        try:
+            page = self._cdp_page()
+        except Exception as exc:
+            return False, "Không tìm được tab Chrome CDP 9222 để đổi cửa sổ (%s)." % type(exc).__name__
+        target_id = page.get("id") if isinstance(page, dict) else None
+        if not (isinstance(target_id, str)
+                and re.fullmatch(r"[A-Za-z0-9_-]{1,120}", target_id)):
+            return False, "Không xác định được tab để tìm cửa sổ Chrome."
+        try:
+            ws = websocket.create_connection(validated_endpoint(self._cdp_json("version")),
+                                             suppress_origin=True, timeout=SCRIPT_TIMEOUT,
+                                             redirect_limit=0,
+                                             http_no_proxy=["127.0.0.1", "localhost", "::1"])
+        except Exception as exc:
+            return False, "Không mở được kênh CDP của Chrome (%s)." % type(exc).__name__
+        scale_note = "tỉ lệ %d%% (áp dụng khi mở lại Chrome)" % window["percent"]
+        try:
+            window_id = self._browser_command(ws, 1, "Browser.getWindowForTarget",
+                                              {"targetId": target_id}).get("windowId")
+            if window["fullscreen"]:
+                self._browser_command(ws, 2, "Browser.setWindowBounds",
+                                      {"windowId": window_id, "bounds": {"windowState": "normal"}})
+                self._browser_command(ws, 3, "Browser.setWindowBounds",
+                                      {"windowId": window_id,
+                                       "bounds": {"windowState": "fullscreen"}})
+                return True, "Đã đưa Chrome về toàn màn hình · %s." % scale_note
+            self._browser_command(ws, 2, "Browser.setWindowBounds",
+                                  {"windowId": window_id, "bounds": {"windowState": "normal"}})
+            bounds = {"width": window["width"], "height": window["height"],
+                      "windowState": "normal"}
+            if pos:
+                bounds.update(left=int(pos[0]), top=int(pos[1]))
+            self._browser_command(ws, 3, "Browser.setWindowBounds",
+                                  {"windowId": window_id, "bounds": bounds})
+            return True, "Đã đưa Chrome về %d × %d · %s." % (
+                window["width"], window["height"], scale_note)
+        except Exception as exc:
+            return False, "Không đổi được kích thước cửa sổ Chrome (%s)." % type(exc).__name__
+        finally:
+            try:
+                ws.close()
+            except Exception:
+                pass
+
+    def start(self, url=None, pos=(1290, 30), cdp=False, window=None):
+        with self.lock:
+            if self.cdp_attached:
+                if self.alive():
+                    self.note = "Đang gắn Chrome hiện có · CDP 9222; không mở cửa sổ mới."
+                    return True
+                self.note = "CDP đang tạm dừng; mở lại tab đúng site hoặc ngắt kết nối trước khi mở Chrome mới."
+                return False
+            url = START_URL if url is None else url
+            if not valid_site_url(url):
+                self.note = ("URL không được phép: chỉ https://%s%s hoặc sảnh Baccarat "
+                             "https://<mirror>%s; cổng 443, không userinfo, không hỗ trợ "
+                             "file hay trang khác." % (PORTAL_HOST, PORTAL_PATH, LOBBY_PATHS_TEXT))
+                self.last_error = self.note
+                if self.driver is None:
+                    self.connection_state = "error"
+                return False
+            if self.driver is not None:
+                if self.alive():
+                    self.note = "Chrome đã mở; hãy đăng nhập và chọn bàn thủ công."
+                    return True
+                self.stop()
+            self.url = url
+            self.last_frames = 0
+            self.last_diag = {}
+            self.last_error = ""
+            try:
+                chrome = chrome_path()
+                if not chrome:
+                    raise FileNotFoundError("chrome.exe")
+                kind, why = driver_for()
+                self._start_driver(chrome, url, pos, kind, cdp, window)
+                self.mode = "driver"
+                self.note = why + " · Đăng nhập thủ công; chỉ đọc kết quả, cược chỉ mô phỏng."
+                self.connection_state = "waiting"
+                return True
+            except Exception as exc:
+                # Không đưa lỗi WebDriver thô (có thể chứa URL/token) vào UI.
+                self.note = chrome_launch_failure_note(exc)
+                self.last_error = self.note
+                self.connection_state = "error"
+                self.mode = ""
+                return False
+
+    def _start_driver(self, chrome, url, pos, kind, cdp=False, window=None):
+        from selenium import webdriver
+        from selenium.webdriver.chrome.options import Options
+        from selenium.webdriver.chrome.service import Service
+
+        opts = Options()
+        opts.binary_location = chrome
+        opts.page_load_strategy = "eager"
+        for flag in build_flags(pos, cdp, window):
+            opts.add_argument(flag)
+        service = Service(DRIVER_PATH) if kind == "local" else Service()
+        driver = None
+        try:
+            driver = webdriver.Chrome(service=service, options=opts)
+            client_config = getattr(driver.command_executor, "_client_config", None)
+            if client_config is not None:
+                client_config.timeout = COMMAND_TIMEOUT
+            driver.set_page_load_timeout(PAGE_LOAD_TIMEOUT)
+            driver.set_script_timeout(SCRIPT_TIMEOUT)
+            driver.implicitly_wait(0)
+            driver.get(url)  # Điều hướng duy nhất; các bước tiếp theo đều do người dùng.
+            handle = driver.current_window_handle
+            caps = driver.capabilities
+            dv = (caps.get("chrome", {}) or {}).get("chromedriverVersion", "").split(" ")[0]
+            info = "Chrome %s · chromedriver %s" % (caps.get("browserVersion", "?"), dv or "?")
+        except Exception:
+            if driver is not None:
+                try:
+                    driver.quit()
+                except Exception:
+                    pass
+            try:
+                service.stop()  # Chỉ service vừa tạo, không tìm/kill tiến trình Chrome.
+            except Exception:
+                pass
+            raise
+        self.driver = driver
+        self._selected_handle = handle
+        self._driver_info = info
+
+    def alive(self):
+        with self.lock:
+            if self.cdp_attached:
+                try:
+                    running = self._cdp_page() is not None
+                    if not running:
+                        self.last_frames = 0
+                        self.last_diag = {"reason": "no_approved_tab"}
+                        self.last_error = ""
+                        self.connection_state = "waiting"
+                    elif self.connection_state in ("closed", "error"):
+                        self.last_diag = {}
+                        self.last_error = ""
+                        self.connection_state = "waiting"
+                    return running
+                except Exception as exc:
+                    self.last_frames = 0
+                    self.last_diag = {}
+                    self.last_error = "Không liên lạc được Chrome CDP 9222 (%s)." % type(exc).__name__
+                    self.connection_state = "error"
+                    return False
+            if self.driver is None:
+                return False
+            try:
+                running = bool(self.driver.window_handles)
+                if not running:
+                    self.connection_state = "closed"
+                return running
+            except Exception as exc:
+                self.last_error = "Không liên lạc được Chrome (%s)." % type(exc).__name__
+                self.connection_state = "error"
+                return False
+
+    def stop(self):
+        # Giữ cùng lock đến khi quit xong: scan/start không đua với shutdown.
+        with self.lock:
+            if self.cdp_attached:
+                self.cdp_attached = False
+                self.mode = ""
+                self._selected_handle = None
+                self._driver_info = "Chưa kết nối Chrome."
+                self.last_frames = 0
+                self.last_diag = {}
+                self.last_error = ""
+                self.connection_state = "closed"
+                self.note = "Đã ngắt CDP; Chrome và phiên đăng nhập vẫn được giữ nguyên."
+                return self.note
+            driver, self.driver = self.driver, None
+            self.mode = ""
+            self._selected_handle = None
+            self._driver_info = "Chưa kết nối Chrome."
+            self.last_frames = 0
+            self.last_diag = {}
+            self.last_error = ""
+            self.connection_state = "closed"
+            if driver is None:
+                self.note = "Không có phiên Chrome do ứng dụng điều khiển."
+            else:
+                try:
+                    driver.quit()
+                    self.note = "Đã đóng phiên Chrome do ứng dụng mở. " + self.session_note()
+                except Exception as exc:
+                    self.last_error = "Không xác nhận được Chrome đã đóng (%s)." % type(exc).__name__
+                    self.note = self.last_error + " Hãy tự đóng cửa sổ nếu còn mở; không force-kill."
+            return self.note
+
+    def reader_src(self):
+        with self.lock:
+            mtime_ns = os.stat(READER_JS).st_mtime_ns
+            if self._reader is None or self._reader_mtime_ns != mtime_ns:
+                with open(READER_JS, "r", encoding="utf-8") as fh:
+                    self._reader = fh.read()
+                self._reader_mtime_ns = mtime_ns
+            return self._reader
+
+    def _reader_script(self):
+        # Root tự xác nhận đúng sảnh EVO; iframe được đọc dưới tab gốc đã duyệt.
+        # Không truyền hostname vào JS: mirror đổi liên tục, chỉ cố định đường dẫn.
+        return """
+            if (window === window.top) {
+                const u = new URL(location.href);
+                const p = u.pathname;
+                if (u.protocol !== 'https:' ||
+                    (p !== '%s' && !p.startsWith('%s/')) ||
+                    (u.port && u.port !== '443') || u.username || u.password) return null;
+            }
+        """ % (LOBBY_PATH, LOBBY_PATH) + self.reader_src() + """
+            const report = window.__AIBCR_SCAN();
+            const u = new URL(location.href);
+            const safe = /^(https?:)$/.test(u.protocol) ? u.origin + u.pathname : '';
+            const fragment = new URLSearchParams(u.hash.slice(1).split('?').pop());
+            const tid = u.searchParams.get('table_id') || fragment.get('table_id') || '';
+            report.page.url = safe;
+            report.page.table_id = /^[A-Za-z0-9_.:-]{1,128}$/.test(tid) ? tid : '';
+            // Màn hình bàn đã mở chỉ có một cầu: mã bàn lấy từ URL, gắn vào từng dòng.
+            if (report.page.table_id)
+                for (const t of report.tables) if (!t.table_id) t.table_id = report.page.table_id;
+            report.diag.frame = safe;
+            report.diag.auth_required = /User authentication failed|your session may be expired|Error Code:\\s*EV\\.7|Bạn đã đăng xuất|You have been logged out/i.test(document.body ? document.body.innerText : '');
+            return report;
+        """
+
+    def _select_root(self, driver):
+        """Ưu tiên tab mới nhất đúng site, kể cả khi tab cũ đóng hoặc đổi URL."""
+        from selenium.common.exceptions import NoSuchWindowException
+
+        handles = driver.window_handles
+        if not handles:
+            self._selected_handle = None
+            self.connection_state = "closed"
+            return None
+        try:
+            original = driver.current_window_handle
+        except NoSuchWindowException:
+            original = None
+        for handle in reversed(handles):
+            try:
+                driver.switch_to.window(handle)
+                driver.switch_to.default_content()
+                if valid_site_url(driver.current_url):
+                    self._selected_handle = handle
+                    return handle
+            except NoSuchWindowException:
+                continue
+        self._selected_handle = None
+        if original in handles:
+            try:
+                driver.switch_to.window(original)
+            except NoSuchWindowException:
+                pass
+        self.connection_state = "waiting"
+        return None
+
+    def _goto(self, driver, path):
+        """Gọi dưới scan lock, sau khi đã xác nhận root; không điều hướng URL."""
+        from selenium.webdriver.common.by import By
+
+        for idx in path:
+            frames = driver.find_elements(By.CSS_SELECTOR, "iframe, frame")
+            driver.switch_to.frame(frames[idx])
+
+    def _scan_wm_page(self, command, detect, page_url, frames, contexts=None):
+        """Đọc bàn WM đang mở từ WebSocket nhị phân của tab.
+
+        ``protocol 21`` cho biết bàn đang mở (mã bàn, pha cược), ``protocol 26`` là
+        lịch sử đầy đủ kèm danh sách lá của từng ván — cùng nguồn với sảnh nên cầu
+        đọc được ở đây khớp tuyệt đối với những gì người chơi thấy trên màn hình.
+        Trả report cùng định dạng ``reader.js`` để vòng quét của controller không
+        phải biết đang đọc EVO hay WM.
+        """
+        safe_url = _safe_url(page_url)
+        report = {
+            "page": {"url": safe_url, "table_id": "", "title": "WM", "wallet_balance": ""},
+            "tables": [],
+            "diag": {"kind": "wm", "scanned": 1, "roads": 0, "frame": safe_url,
+                     "auth_required": False},
+        }
+        try:
+            command("Network.enable")
+        except Exception:
+            pass
+        # Bàn đang mở tự khai mã bàn trong class #container của iframe bàn; WebSocket
+        # còn mang dữ liệu của nhiều bàn khác nên phải lọc theo đúng mã này.
+        open_key, open_title, open_dealer = "", "", ""
+        value = command("Runtime.evaluate", {
+            "expression": WM.WM_OPEN_TABLE_JS, "returnByValue": True, "silent": True,
+        }).get("result", {}).get("value")
+        if isinstance(value, dict) and value.get("group") is not None and value.get("game") is not None:
+            open_key = WM.table_key(value["game"], value["group"])
+            open_title = value.get("title") or ""
+            open_dealer = value.get("dealer") or ""
+        if not open_key:
+            # Dự phòng khi iframe khác origin: dò href từng context như trước.
+            for context_id in list(contexts or []):
+                try:
+                    href = command("Runtime.evaluate", {
+                        "expression": "location.href", "contextId": context_id,
+                        "returnByValue": True, "silent": True,
+                    }).get("result", {}).get("value") or ""
+                except Exception:
+                    continue
+                if "iframe_101" not in href:
+                    continue
+                value = command("Runtime.evaluate", {
+                    "expression": WM.WM_TABLE_KEY_JS, "contextId": context_id,
+                    "returnByValue": True, "silent": True,
+                }).get("result", {}).get("value")
+                if not isinstance(value, dict) or value.get("group") is None:
+                    continue
+                if value.get("game") is None:
+                    continue
+                open_key = WM.table_key(value["game"], value["group"])
+                open_title = value.get("title") or ""
+                open_dealer = value.get("dealer") or ""
+                break
+        if not open_key:
+            open_key = self.wm_open_key
+        if open_key:
+            # Ghi lại bàn đang mở để controller biết khi người dùng bấm vào bàn
+            # trong lúc tab đã ở sẵn trong bàn (không đi qua sảnh).
+            self.wm_open_key = open_key
+        # Lần đầu vào bàn chưa có lịch sử: chờ lâu hơn một nhịp để kịp protocol 26 của
+        # ván đang chạy. Các lượt sau dùng cache nên chỉ cần cửa sổ ngắn.
+        cache = getattr(self, "wm_cache", None)
+        if cache is None:
+            cache = self.wm_cache = {}
+        wait = 0.5 if (open_key and open_key in cache) else 6.0
+        deadline = time.monotonic() + wait
+        histories, tables = {}, {}
+        while time.monotonic() < deadline:
+            try:
+                command("Runtime.evaluate", {"expression": "1", "returnByValue": True,
+                                             "silent": True})
+            except Exception:
+                break
+            for frame in frames:
+                message = WM.decode_frame(frame.get("payloadData"), frame.get("opcode", 2))
+                if not message:
+                    continue
+                data = message.get("data")
+                if not isinstance(data, dict):
+                    continue
+                protocol = message.get("protocol")
+                game, group = data.get("gameID"), data.get("groupID")
+                if protocol == WM.PROTOCOL_HISTORY and game is not None and group is not None:
+                    rounds = WM.decode_history(data)
+                    if rounds:
+                        histories[WM.table_key(game, group)] = rounds
+                elif protocol == WM.PROTOCOL_TABLE and game is not None and group is not None:
+                    tables[WM.table_key(game, group)] = WM.decode_table(data)
+            frames.clear()
+            # Đủ dữ liệu của bàn đang mở thì dừng sớm.
+            if open_key and open_key in tables and open_key in histories:
+                break
+            if not open_key and tables and histories:
+                break
+            time.sleep(0.15)
+        # Khi đo iframe hụt (0×0 lúc reflow), vẫn dùng được bàn mà watcher nền đã nhận ra
+        # và lịch sử watcher đã gom — nếu không, cầu trên UI sẽ đứng im dù bàn vẫn chạy.
+        if not open_key:
+            open_key = getattr(self, "wm_open_key", "") or ""
+        cached = getattr(self, "wm_cache", None) or {}
+
+        # KHÔNG chặn theo ``detect.kind``: iframe bàn có lúc đo ra 0×0 khi trang reflow và
+        # khi đó vẫn còn dữ liệu bàn chảy về. Chỉ cần biết bàn đang mở (hoặc nhận được
+        # protocol 26/21) là đủ để trả cầu.
+        if not open_key and not tables and not histories:
+            report["diag"]["reason"] = "wm_lobby"
+            return report
+        # Sảnh chỉ gửi protocol 26 theo nhịp (khoảng vài chục giây/bàn), trong khi vòng
+        # quét chạy mỗi 1,5 giây: giữ lịch sử đã nhận để lượt sau không phải chờ lại.
+        for key, rounds in histories.items():
+            self._wm_remember_history(key, rounds)
+        key = open_key or next(iter(tables), "") or next(iter(cached), "")
+        info = tables.get(key) or {}
+        rounds = cache.get(key) or []
+        letters = WM.letters(rounds)
+        label = open_title or info.get("table_name") or ""
+        if not label or label in ("百家樂", "Baccarat", "baccarat"):
+            label = "WM %s" % key
+        if open_dealer:
+            label = "%s · %s" % (label, open_dealer)
+        report["page"]["table_id"] = key
+        report["page"]["title"] = label
+        report["tables"].append({
+            "table_id": key,
+            "label": label,
+            "letters": letters,
+            "game_type": "baccarat",
+            "read_error": "" if letters else "Chưa nhận lịch sử bàn WM.",
+            "source": "wm-ws-26",
+            "ws_hands": len(rounds),
+            "road_match": bool(letters),
+            "observed_at": time.time(),
+            "messages": 1,
+        })
+        report["diag"].update({"roads": 1 if letters else 0, "round": info.get("round"),
+                               "game_no": info.get("game_no"),
+                               "bet_ms": info.get("bet_milliseconds")})
+        return report
+
+    def _scan_cdp(self):
+        """Chỉ đọc các default context của tab được phép; không chuyển frame."""
+        with self.lock:
+            self.last_frames = 0
+            self.last_diag = {}
+            self.last_error = ""
+            ws = None
+            try:
+                import websocket
+
+                page = self._cdp_page()
+                if page is None:
+                    self.connection_state = "waiting"
+                    self.last_diag = {"reason": "no_approved_tab"}
+                    return []
+                endpoint = validated_endpoint(page)
+                ws = websocket.create_connection(
+                    endpoint, suppress_origin=True, timeout=SCRIPT_TIMEOUT, redirect_limit=0,
+                    http_no_proxy=["127.0.0.1", "localhost", "::1"],
+                )
+                contexts = []
+                limited = False
+                sequence = 0
+                # Khung WebSocket nhị phân của WM: gom trong lúc chờ RPC để đọc bàn
+                # đang mở (protocol 21/25/26) mà không cần thêm kết nối.
+                wm_frames = []
+
+                def command(method, params=None):
+                    nonlocal sequence, limited
+                    sequence += 1
+                    ws.send(json.dumps({"id": sequence, "method": method, "params": params or {}}))
+                    deadline = time.monotonic() + SCRIPT_TIMEOUT
+                    while True:
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            raise TimeoutError("cdp_timeout")
+                        ws.settimeout(remaining)
+                        message = json.loads(ws.recv())
+                        event = message.get("method")
+                        if event == "Network.webSocketFrameReceived":
+                            wm_frames.append((message.get("params") or {}).get("response") or {})
+                        if event == "Runtime.executionContextCreated":
+                            context = message.get("params", {}).get("context", {})
+                            if (context.get("auxData") or {}).get("isDefault") is True:
+                                context_id = context["id"]
+                                if context_id not in contexts:
+                                    if len(contexts) < MAX_SCAN_FRAMES:
+                                        contexts.append(context_id)
+                                    else:
+                                        limited = True
+                        elif event in ("Runtime.executionContextDestroyed", "Runtime.executionContextsCleared"):
+                            # Không giữ report từ context cũ khi frame/tab đang đổi.
+                            raise InterruptedError("context_changed")
+                        if message.get("id") == sequence:
+                            if "error" in message:
+                                detail = str(message["error"].get("message", "")).lower()
+                                if "context" in detail or "navigat" in detail or "target closed" in detail:
+                                    raise InterruptedError("context_changed")
+                                raise RuntimeError("cdp_command_failed")
+                            return message.get("result", {})
+
+                command("Runtime.enable")
+                root = command("Target.getTargetInfo").get("targetInfo", {})
+                if (root.get("targetId") != page["id"] or root.get("type") != "page"
+                        or not valid_site_url(root.get("url"))):
+                    self.connection_state = "waiting"
+                    self.last_diag = {"reason": "root_left_site"}
+                    return []
+                root_url = root["url"]
+                # Tab WM (M88) không dùng DOM để vẽ cầu mà đẩy lịch sử/lá bài qua
+                # WebSocket nhị phân: nhận diện rồi đọc bằng đường riêng.
+                detect = command("Runtime.evaluate", {
+                    "expression": WM.WM_DETECT_JS, "returnByValue": True, "silent": True,
+                }).get("result", {}).get("value")
+                if isinstance(detect, dict) and detect.get("is_wm"):
+                    self.wm_page_id = page["id"]
+                    self.start_wm_watch()
+                    report = self._scan_wm_page(command, detect, root_url, wm_frames, contexts)
+                    self.last_frames = 1
+                    self.last_diag = dict(report["diag"])
+                    self.connection_state = "reading" if report["tables"] else "waiting"
+                    return [report] if report["tables"] else []
+                if not contexts:
+                    self.connection_state = "waiting"
+                    self.last_diag = {"reason": "no_default_context"}
+                    return []
+                expression = "(function(){\n%s\n})()" % self._reader_script()
+                reports = []
+                best_count = -1
+                while self.last_frames < len(contexts):
+                    context_id = contexts[self.last_frames]
+                    self.last_frames += 1
+                    result = command("Runtime.evaluate", {
+                        "expression": expression, "contextId": context_id,
+                        "returnByValue": True, "silent": True,
+                        "timeout": SCRIPT_TIMEOUT * 1000,
+                    })
+                    if "exceptionDetails" in result:
+                        self.last_error = "Không đọc được frame (JavaScript)."
+                        continue
+                    rep = _clean_report(result.get("result", {}).get("value"))
+                    if rep is not None:
+                        if rep["diag"]["auth_required"]:
+                            self.last_error = "Site báo phiên không hợp lệ/hết hạn (EV.7). Đăng nhập ở trang gốc rồi mở lại sảnh Baccarat trong Chrome này."
+                            self.last_diag = {"reason": "authentication_required"}
+                            self.connection_state = "waiting"
+                            return []
+                        count = len(rep["tables"])
+                        if count >= best_count:
+                            self.last_diag = dict(rep["diag"])
+                            best_count = count
+                        if count or rep["page"].get("wallet_balance"):
+                            reports.append(rep)
+                # RPC cuối cũng nhận các sự kiện hủy context đang chờ trên socket.
+                root = command("Target.getTargetInfo").get("targetInfo", {})
+                if (root.get("targetId") != page["id"] or root.get("type") != "page"
+                        or root.get("url") != root_url or not valid_site_url(root.get("url"))):
+                    self.connection_state = "waiting"
+                    self.last_diag = {"reason": "root_left_site"}
+                    return []
+                self.last_diag["frames_limited"] = limited or self.last_frames < len(contexts)
+                self.connection_state = "reading" if reports else ("error" if self.last_error else "waiting")
+                return reports
+            except InterruptedError:
+                self.last_error = "Frame đang thay đổi; tạm dừng đọc và thử lại ở lượt sau."
+                self.last_diag = {"reason": "frame_context_changed"}
+                self.connection_state = "waiting"
+                return []
+            except Exception as exc:
+                self.last_error = "Không quét được Chrome CDP 9222 (%s)." % type(exc).__name__
+                self.last_diag = {}
+                self.connection_state = "error"
+                return []
+            finally:
+                if ws is not None:
+                    try:
+                        ws.close()
+                    except Exception:
+                        pass
+
+    def start_wm_watch(self):
+        """Bật thread nghe WebSocket của tab WM (idempotent).
+
+        Sảnh chỉ gửi ``protocol 26`` (lịch sử) và ``protocol 25`` (kết quả) một lần mỗi
+        ván; đọc theo từng lượt quét sẽ bỏ lỡ. Thread này giữ một kết nối CDP riêng,
+        cập nhật ``wm_cache``/``wm_cards``/``wm_open_key`` để vòng quét chỉ việc đọc lại.
+        """
+        if self._wm_watch is not None and self._wm_watch.is_alive():
+            return
+        self._wm_watch_stop = threading.Event()
+        thread = threading.Thread(target=self._wm_watch_loop, daemon=True,
+                                  name="ba-wm-watch")
+        self._wm_watch = thread
+        thread.start()
+
+    def stop_wm_watch(self):
+        if self._wm_watch is not None:
+            self._wm_watch_stop.set()
+            self._wm_watch = None
+
+    def _wm_watch_loop(self):
+        import websocket
+
+        while not self._wm_watch_stop.is_set():
+            page = None
+            try:
+                pages = self._cdp_pages()
+                if self.wm_page_id:
+                    page = next((p for p in pages if p.get("id") == self.wm_page_id), None)
+                if page is None:
+                    self.wm_page_id = None
+                    self._wm_watch_stop.wait(3.0)
+                    continue
+            except Exception:
+                self._wm_watch_stop.wait(3.0)
+                continue
+            ws = None
+            try:
+                ws = websocket.create_connection(
+                    validated_endpoint(page), suppress_origin=True, timeout=10,
+                    redirect_limit=0, http_no_proxy=["127.0.0.1", "localhost", "::1"])
+                ws.send(json.dumps({"id": 1, "method": "Network.enable", "params": {}}))
+                sequence = 1
+                next_probe = 0.0
+                while not self._wm_watch_stop.is_set():
+                    now = time.monotonic()
+                    if now >= next_probe:
+                        sequence += 1
+                        self._wm_probe_id = sequence
+                        ws.send(json.dumps({"id": sequence, "method": "Runtime.evaluate",
+                                            "params": {"expression": WM.WM_OPEN_TABLE_JS,
+                                                       "returnByValue": True, "silent": True}}))
+                        next_probe = now + 3.0
+                    ws.settimeout(0.5)
+                    try:
+                        message = json.loads(ws.recv())
+                    except Exception as exc:
+                        if type(exc).__name__ in ("WebSocketTimeoutException", "TimeoutError"):
+                            continue
+                        break
+                    if message.get("id") == getattr(self, "_wm_probe_id", 0):
+                        value = (message.get("result") or {}).get("result", {}).get("value")
+                        if isinstance(value, dict) and value.get("group") is not None \
+                                and value.get("game") is not None:
+                            self.wm_open_key = WM.table_key(value["game"], value["group"])
+                        else:
+                            # Đang ở sảnh (iframe bàn ẩn) thì không còn bàn đang mở.
+                            self.wm_open_key = ""
+                        continue
+                    if message.get("method") != "Network.webSocketFrameReceived":
+                        continue
+                    response = (message.get("params") or {}).get("response") or {}
+                    frame = WM.decode_frame(response.get("payloadData"),
+                                            response.get("opcode", 2))
+                    if frame is not None:
+                        self._wm_absorb(frame)
+            except Exception:
+                pass
+            finally:
+                if ws is not None:
+                    try:
+                        ws.close()
+                    except Exception:
+                        pass
+            self._wm_watch_stop.wait(1.0)
+
+    def _wm_remember_history(self, key, rounds):
+        """Ghi lịch sử (protocol 26) vào cache, đổi shoe thì bỏ hẳn lịch sử cũ."""
+        if not rounds:
+            return
+        cache = getattr(self, "wm_cache", None)
+        if cache is None:
+            cache = self.wm_cache = {}
+        cached = cache.get(key) or []
+        new_game = rounds[-1].get("game_no")
+        old_game = cached[-1].get("game_no") if cached else None
+        if (not cached or len(rounds) >= len(cached)
+                or (new_game is not None and new_game != old_game)):
+            cache[key] = rounds
+
+    def _wm_absorb(self, message):
+        """Cập nhật cache WM từ một khung protocol (gọi trong thread nghe)."""
+        data = message.get("data")
+        if not isinstance(data, dict):
+            return
+        protocol = message.get("protocol")
+        game, group = data.get("gameID"), data.get("groupID")
+        if game is None or group is None:
+            return
+        key = WM.table_key(game, group)
+        if protocol == WM.PROTOCOL_HISTORY:
+            self._wm_remember_history(key, WM.decode_history(data))
+        elif protocol == WM.PROTOCOL_TABLE:
+            self.wm_state[key] = WM.decode_table(data)
+        elif protocol == WM.PROTOCOL_CARD:
+            area = data.get("cardArea")
+            card = data.get("cardID")
+            if area == 1:
+                # Lá đầu tiên của ván mới: xoá bàn tay đang ghi.
+                self.wm_cards[key] = {}
+            if isinstance(area, int) and WM.valid_card(card):
+                self.wm_cards.setdefault(key, {})[area] = card
+        elif protocol == WM.PROTOCOL_RESULT:
+            round_data = WM.decode_round(data)
+            self.wm_state.setdefault(key, {})["last_round"] = round_data
+            self.wm_cards.pop(key, None)
+            # Protocol 25 không mang gameNo/gameNoRound: lấy mốc từ ván cuối trong
+            # cache để khoá đúng (shoe, số tay) và không chèn trùng khi 26 phát lại.
+            cached = self.wm_cache.get(key) or []
+            last = cached[-1] if cached else {}
+            round_no = data.get("gameNoRound")
+            if round_no is None and isinstance(last.get("round"), int):
+                round_no = last["round"] + 1
+            # Kết quả ván tới ngay qua protocol 25, còn lịch sử (26) chỉ về theo nhịp.
+            # Ghép ngay vào cache để cầu trên UI không bị trễ cả tay.
+            merged = WM.merge_result(cached, {
+                "game_no": data.get("gameNo") or last.get("game_no"),
+                "round": round_no,
+                "code": round_data.get("code"), "winner": round_data.get("winner"),
+                "banker_cards": round_data.get("banker_cards"),
+                "player_cards": round_data.get("player_cards"),
+                "banker_score": round_data.get("banker_score"),
+                "player_score": round_data.get("player_score"),
+            })
+            if merged:
+                self.wm_cache[key] = merged
+
+    def read_wm_bets(self, timeout=6.0):
+        """Đọc tổng cược 3 cửa của bàn WM (đơn vị VNDK, tổng cả bàn)."""
+        import websocket
+
+        page = self._cdp_page()
+        if page is None:
+            return {"ok": False, "error": "no_tab"}
+        ws = None
+        try:
+            ws = websocket.create_connection(
+                validated_endpoint(page), suppress_origin=True, timeout=timeout,
+                redirect_limit=0, http_no_proxy=["127.0.0.1", "localhost", "::1"])
+            ws.send(json.dumps({"id": 1, "method": "Runtime.enable"}))
+            ws.send(json.dumps({"id": 2, "method": "Runtime.evaluate", "params": {
+                "expression": WM.WM_BETS_JS, "returnByValue": True, "silent": True}}))
+            deadline = time.monotonic() + timeout
+            value = None
+            while time.monotonic() < deadline:
+                message = json.loads(ws.recv())
+                if message.get("id") != 2:
+                    continue
+                value = (message.get("result") or {}).get("result", {}).get("value")
+                break
+        except Exception as exc:
+            return {"ok": False, "error": type(exc).__name__}
+        finally:
+            if ws is not None:
+                try:
+                    ws.close()
+                except Exception:
+                    pass
+        if not isinstance(value, dict):
+            return {"ok": False, "error": "no_value"}
+        if value.get("reason"):
+            return {"ok": False, "error": value["reason"]}
+        return {"ok": False, "source": "wm", "unit": 1000, "error": "wm_table_totals",
+                "totals": {"B": value.get("banker"), "P": value.get("player"),
+                           "T": value.get("tie")},
+                "note": "WM chỉ hiện tổng cược cả bàn (VNDK); không tách được chip của bạn."}
+
+    def read_wm_wallet(self, timeout=6.0):
+        """Đọc số dư ví thật trên bàn WM (``VNDK 80.84`` = 80,84 đơn vị).
+
+        Trả ``{"ok", "text", "value"}``; ``value`` là số đơn vị đúng như trên web (1 đv =
+        1.000đ), dùng để đồng bộ vốn phiên với số dư người dùng thấy.
+        """
+        # Dùng kết nối CDP dùng chung khi có: hàm này được gọi mỗi lượt quét, mở kết nối
+        # mới liên tục sẽ làm tab chậm.
+        socket = getattr(self, "wm_socket", None)
+        value = None
+        if socket is not None and getattr(socket, "_command", None) is not None:
+            try:
+                value = socket.evaluate(WM.WM_WALLET_JS)
+            except Exception:
+                value = None
+        if value is None:
+            value = self._read_wm_wallet_once(timeout)
+            if value is None:
+                return {"ok": False, "error": "no_tab"}
+        if not isinstance(value, dict) or value.get("reason"):
+            return {"ok": False, "error": (value or {}).get("reason", "no_value")}
+        try:
+            amount = float(str(value.get("value") or "").replace(",", ""))
+        except ValueError:
+            return {"ok": False, "error": "bad_value", "text": value.get("text")}
+        return {"ok": True, "text": value.get("text") or "", "value": amount,
+                "unit": "VNDK"}
+
+    def _read_wm_wallet_once(self, timeout=6.0):
+        import websocket
+
+        page = self._cdp_page()
+        if page is None:
+            return None
+        ws = None
+        try:
+            ws = websocket.create_connection(
+                validated_endpoint(page), suppress_origin=True, timeout=timeout,
+                redirect_limit=0, http_no_proxy=["127.0.0.1", "localhost", "::1"])
+            ws.send(json.dumps({"id": 1, "method": "Runtime.enable"}))
+            ws.send(json.dumps({"id": 2, "method": "Runtime.evaluate", "params": {
+                "expression": WM.WM_WALLET_JS, "returnByValue": True, "silent": True}}))
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                message = json.loads(ws.recv())
+                if message.get("id") != 2:
+                    continue
+                return (message.get("result") or {}).get("result", {}).get("value")
+        except Exception:
+            return None
+        finally:
+            if ws is not None:
+                try:
+                    ws.close()
+                except Exception:
+                    pass
+        return None
+
+    def _probe_wm_pages(self):
+        """Tìm tab WM khi chưa biết: URL của nó không có dấu hiệu nhận biết.
+
+        Chỉ chạy khi ``wm_page_id`` còn trống và kết quả âm được nhớ ngắn, để nhịp
+        quét không phải mở CDP dò lại tab cổng mỗi 1,5 giây.
+        """
+        if self.wm_page_id:
+            return True
+        if time.time() - getattr(self, "_wm_scan_probe_at", 0.0) < 20.0:
+            return False
+        self._wm_scan_probe_at = time.time()
+        import websocket
+
+        try:
+            pages = self._cdp_pages()
+        except Exception:
+            return False
+        for page in reversed(pages):
+            if is_lobby_url(page.get("url")):
+                continue
+            try:
+                ws = websocket.create_connection(
+                    validated_endpoint(page), suppress_origin=True, timeout=4,
+                    redirect_limit=0, http_no_proxy=["127.0.0.1", "localhost", "::1"])
+            except Exception:
+                continue
+            try:
+                ws.send(json.dumps({"id": 1, "method": "Runtime.enable"}))
+                ws.send(json.dumps({"id": 2, "method": "Runtime.evaluate", "params": {
+                    "expression": WM.WM_DETECT_JS, "returnByValue": True, "silent": True}}))
+                deadline = time.monotonic() + 4
+                while time.monotonic() < deadline:
+                    message = json.loads(ws.recv())
+                    if message.get("id") != 2:
+                        continue
+                    value = (message.get("result") or {}).get("result", {}).get("value")
+                    if isinstance(value, dict) and value.get("is_wm"):
+                        self.wm_page_id = page.get("id")
+                        self.start_wm_watch()
+                        return True
+                    break
+            except Exception:
+                continue
+            finally:
+                try:
+                    ws.close()
+                except Exception:
+                    pass
+        return False
+
+    def scan(self):
+        """Chỉ đọc tab được phép, tối đa 64 context; WebDriver sâu 4 iframe."""
+        self._probe_wm_pages()
+        with self.lock:
+            if self.cdp_attached:
+                return self._scan_cdp()
+            self.last_frames = 0
+            self.last_diag = {}
+            self.last_error = ""
+            driver = self.driver
+            if driver is None:
+                self.connection_state = "closed"
+                return []
+            reports = []
+            root = None
+            limited = False
+            best_count = -1
+            try:
+                from selenium.common.exceptions import (
+                    InvalidSessionIdException, NoSuchFrameException,
+                    NoSuchWindowException, StaleElementReferenceException,
+                )
+                from selenium.webdriver.common.by import By
+
+                root = self._select_root(driver)
+                if root is None:
+                    self.last_diag = {"status": self.connection_state, "reason": "no_approved_tab"}
+                    return []
+                # Không bao giờ sửa URL/hash của sảnh EVO: phiên launch của site gắn với
+                # đúng ngữ cảnh đã mở. Đổi hash có thể làm EVO tải lại /entry và trả 403/EV.7.
+                # Root được kiểm tra lại ngay trong JS; frame khác origin chỉ được
+                # tiếp cận qua cây iframe của root đã duyệt. Lọc URL trước cả RPC.
+                script = self._reader_script()
+                stack = [()]
+                visited = 0
+                while stack and visited < MAX_SCAN_FRAMES:
+                    path = stack.pop()
+                    visited += 1
+                    driver.switch_to.window(root)
+                    driver.switch_to.default_content()
+                    if not valid_site_url(driver.current_url):
+                        self.connection_state = "waiting"
+                        self.last_diag = {"reason": "root_left_site"}
+                        return []
+                    try:
+                        self._goto(driver, path)
+                        # WebDriver current_url luôn là URL của top-level context,
+                        # kể cả khi context hiện tại là iframe khác origin.
+                        if not valid_site_url(driver.current_url):
+                            self.connection_state = "waiting"
+                            self.last_diag = {"reason": "root_left_site"}
+                            return []
+                        self.last_frames += 1
+                        n = len(driver.find_elements(By.CSS_SELECTOR, "iframe, frame"))
+                        # Queue cũng bị giới hạn; lỗi reader ở cha không bỏ mất con.
+                        remaining = MAX_SCAN_FRAMES - len(stack)
+                        if len(path) < MAX_FRAME_DEPTH:
+                            count = min(n, remaining)
+                            limited = limited or n > count
+                            stack.extend(path + (i,) for i in reversed(range(count)))
+                        elif n:
+                            limited = True
+                        rep = _clean_report(driver.execute_script(script))
+                    except (InvalidSessionIdException, NoSuchWindowException):
+                        raise
+                    except (NoSuchFrameException, StaleElementReferenceException, IndexError):
+                        continue  # DOM đang thay đổi; thử lại ở lượt scan kế tiếp.
+                    except Exception as exc:
+                        self.last_error = "Không đọc được frame (%s)." % type(exc).__name__
+                        continue
+                    if rep is not None:
+                        if rep["diag"]["auth_required"]:
+                            self.last_error = "Site báo phiên không hợp lệ/hết hạn (EV.7). Đăng nhập ở trang gốc rồi mở lại sảnh Baccarat trong Chrome này."
+                            self.last_diag = {"reason": "authentication_required"}
+                            self.connection_state = "waiting"
+                            return []
+                        count = len(rep["tables"])
+                        if count >= best_count:
+                            self.last_diag = dict(rep["diag"])
+                            best_count = count
+                        if count or rep["page"].get("wallet_balance"):
+                            reports.append(rep)
+                # Loại toàn bộ kết quả nếu root đã rời site trong lúc đang đọc.
+                driver.switch_to.default_content()
+                if not valid_site_url(driver.current_url):
+                    self.connection_state = "waiting"
+                    self.last_diag = {"reason": "root_left_site"}
+                    return []
+                self.last_diag["frames_limited"] = limited or bool(stack)
+                self.connection_state = "reading" if reports else ("error" if self.last_error else "waiting")
+                return reports
+            except Exception as exc:
+                self.last_error = "Không quét được Chrome (%s)." % type(exc).__name__
+                self.last_diag = {}
+                self.connection_state = "error"
+                return []
+            finally:
+                if root is not None:
+                    try:
+                        driver.switch_to.default_content()
+                    except Exception:
+                        pass
+
+    def session_note(self):
+        """Không đọc cookie, thông tin tài khoản hay file trong profile."""
+        return ("Chrome tự quản lý việc lưu phiên trong profile riêng. Phiên có thể hết hạn; "
+                "việc lưu profile không chứng minh đã đăng nhập. Hãy đăng nhập thủ công "
+                "và xác nhận tài khoản trực tiếp trong Chrome.")

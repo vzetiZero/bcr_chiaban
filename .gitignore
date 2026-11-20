@@ -1,0 +1,39 @@
+# Profile Chrome dang nhap (chua cookie ca nhan) - khong bao gio push
+chrome_profile/
+chrome_profile*/
+chrome_profile_longlong/
+chrome_profile_cdp/
+
+# Driver Selenium tai file (tai lai bang install.bat)
+drivers/
+
+# Cache Python
+__pycache__/
+*.py[cod]
+
+# Trang thai may nguoi dung (von, loi, phien choi)
+aibcr_state.json
+aibcr_state_baccarat.json
+aibcr_state*.json
+aibcr-session-*.json
+live_reports.jsonl
+aibcr_trace.jsonl
+aibcr_ws_frames*.jsonl
+aibcr_ws_frames*.txt
+
+# Bang chung live / anh man hinh
+live-road-evidence.json
+live_canvas_check.json
+live-road-canvas.png
+site-live-check.png
+ui-*.png
+
+# File tam khi chuan doan
+tmp_*
+*.bak
+backtest_report.txt
+
+# Electron UI: thu vien cai bang npm, khong commit
+ui/node_modules/
+ui/dist/
+aibcr/adapters/chrome_profile/
