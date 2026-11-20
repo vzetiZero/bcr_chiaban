@@ -336,8 +336,8 @@ ipcMain.handle('profile:open', async (_event, { index, count, profile, url }) =>
   }
   const row = profile || {};
   const width = Math.max(520, Math.min(3840, Math.round(Number(row.width) || 900)));
-  const height = Math.max(200, Math.min(2160, Math.round(Number(row.height) || 500)));
-  const scale = Math.max(50, Math.min(200, Math.round(Number(row.scale) || 100)));
+  const height = Math.max(200, Math.min(2160, Math.round(Number(row.height) || 1200)));
+  const scale = Math.max(50, Math.min(200, Math.round(Number(row.scale) || 60)));
   let proxy;
   let newBridge = null;
   try {
@@ -541,8 +541,8 @@ ipcMain.handle('profiles:open', async (_event, { count, siteId, profiles }) => {
     for (let index = 0; index < total; index += 1) {
       const row = requested[index] || {};
       const width = Math.max(520, Math.min(3840, Math.round(Number(row.width) || 900)));
-      const height = Math.max(200, Math.min(2160, Math.round(Number(row.height) || 500)));
-      const scale = Math.max(50, Math.min(200, Math.round(Number(row.scale) || 100)));
+      const height = Math.max(200, Math.min(2160, Math.round(Number(row.height) || 1200)));
+      const scale = Math.max(50, Math.min(200, Math.round(Number(row.scale) || 60)));
       const proxy = proxyForProfile({ ...row, proxyId: row.proxyId || proxyStore.assignments[String(index + 1)] }, proxyStore);
       let proxyServer = proxyServerUrl(proxy);
       if (proxy && proxy.username) {

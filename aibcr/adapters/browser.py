@@ -31,11 +31,11 @@ LOBBY_PATHS_TEXT = "%s hoặc %s" % (LOBBY_PATH, PETALIVE_LOBBY_PATH)
 START_URL = "https://www.neo179.com/gamelobby/live"
 PORTAL_HOST = urlsplit(START_URL).hostname
 PORTAL_PATH = urlsplit(START_URL).path
-WIN_W, WIN_H = 1200, 900
+WIN_W, WIN_H = 900, 1200
 # Giá trị mở đầu cho cửa sổ thường; người dùng sửa trong Cài đặt → Cửa sổ Chrome và
 # app lưu vào aibcr_state.json nên các con số dưới đây chỉ là mức dự phòng.
 # Tỉ lệ render là cờ khởi động nên chỉ đổi có hiệu lực ở lần mở Chrome kế tiếp.
-WIN_SCALE = 0.8
+WIN_SCALE = 0.6
 WIN_FULLSCREEN = False
 SCALE_MIN, SCALE_MAX = 50, 200
 SIZE_MIN, SIZE_MAX = (800, 600), (7680, 4320)

@@ -3,11 +3,9 @@ const $ = (selector) => document.querySelector(selector);
 const profileSelect = $('#site-select');
 const profileCount = $('#profile-count');
 const profileList = $('#profile-list');
-const settingsList = $('#profile-settings');
 const runButton = $('#run-profiles');
 const notice = $('#notice');
 const statusByIndex = new Map();
-const settingsByIndex = new Map();
 const profileStateByIndex = new Map();
 let proxyItems = [];
 let proxyAssignments = {};
@@ -97,44 +95,59 @@ function populateProxySelect(select, selectedId = '') {
   select.value = proxyItems.some((proxy) => proxy.id === selectedId) ? selectedId : '';
 }
 
-function renderSettings(count) {
-  const previous = new Map();
-  for (const [index, card] of settingsByIndex) {
-    previous.set(index, {
-      width: card.querySelector('[data-setting="width"]').value,
-      height: card.querySelector('[data-setting="height"]').value,
-      scale: card.querySelector('[data-setting="scale"]').value,
-    });
-  }
-  settingsByIndex.clear();
-  settingsList.replaceChildren();
-  for (let index = 1; index <= count; index += 1) {
-    const saved = previous.get(index) || {};
-    const card = document.createElement('article');
-    card.className = 'settings-card';
-    card.innerHTML = `<div class="settings-title"><strong>Profile ${index}</strong><span>Thiết lập riêng</span></div>
-      <label class="setting-field"><span>Rộng (px)</span><input data-setting="width" type="number" min="520" max="3840" step="1" /></label>
-      <label class="setting-field"><span>Cao (px)</span><input data-setting="height" type="number" min="200" max="2160" step="1" /></label>
-      <label class="setting-field"><span>Scale (%)</span><input data-setting="scale" type="number" min="50" max="200" step="1" /></label>`;
-    card.querySelector('[data-setting="width"]').value = saved.width || '900';
-    card.querySelector('[data-setting="height"]').value = saved.height || '500';
-    card.querySelector('[data-setting="scale"]').value = saved.scale || '100';
-    settingsList.append(card);
-    settingsByIndex.set(index, card);
+const SHARED_WINDOW_KEY = 'aibcr.sharedWindowSettings';
+const sharedWindowInputs = {
+  width: $('#shared-window-width'),
+  height: $('#shared-window-height'),
+  scale: $('#shared-window-scale'),
+};
+const SHARED_WINDOW_DEFAULTS = { width: 900, height: 1200, scale: 60 };
+
+function readSharedWindowSettings() {
+  const limits = { width: [520, 3840], height: [200, 2160], scale: [50, 200] };
+  return Object.fromEntries(Object.entries(sharedWindowInputs).map(([key, input]) => {
+    const value = Number(input.value);
+    const [min, max] = limits[key];
+    return [key, Number.isFinite(value) && value >= min && value <= max
+      ? Math.round(value) : SHARED_WINDOW_DEFAULTS[key]];
+  }));
+}
+
+function saveSharedWindowSettings() {
+  const settings = readSharedWindowSettings();
+  for (const [key, input] of Object.entries(sharedWindowInputs)) input.value = settings[key];
+  localStorage.setItem(SHARED_WINDOW_KEY, JSON.stringify(settings));
+}
+
+function restoreSharedWindowSettings() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(SHARED_WINDOW_KEY) || '{}');
+    for (const [key, input] of Object.entries(sharedWindowInputs)) {
+      const value = Number(saved[key]);
+      const [min, max] = key === 'width' ? [520, 3840]
+        : key === 'height' ? [200, 2160] : [50, 200];
+      input.value = Number.isFinite(value) && value >= min && value <= max
+        ? Math.round(value) : SHARED_WINDOW_DEFAULTS[key];
+    }
+  } catch {
+    for (const [key, input] of Object.entries(sharedWindowInputs)) {
+      input.value = SHARED_WINDOW_DEFAULTS[key];
+    }
   }
 }
 
 function collectSettings(count) {
-  return Array.from({ length: count }, (_, offset) => {
-    const card = settingsByIndex.get(offset + 1);
-    return {
-      proxyId: proxyAssignments[String(offset + 1)] || '',
-      width: Number(card.querySelector('[data-setting="width"]').value) || 900,
-      height: Number(card.querySelector('[data-setting="height"]').value) || 500,
-      scale: Number(card.querySelector('[data-setting="scale"]').value) || 100,
-    };
-  });
+  const shared = readSharedWindowSettings();
+  return Array.from({ length: count }, (_, offset) => ({
+    ...shared,
+    proxyId: proxyAssignments[String(offset + 1)] || '',
+  }));
 }
+
+for (const input of Object.values(sharedWindowInputs)) {
+  input.addEventListener('change', saveSharedWindowSettings);
+}
+restoreSharedWindowSettings();
 
 function renderProxyList() {
   const list = $('#proxy-list');
@@ -195,7 +208,6 @@ document.querySelectorAll('[data-tab-target]').forEach((button) => {
 $('#profile-count').addEventListener('change', () => {
   const value = Math.max(1, Math.min(8, Number(profileCount.value) || 1));
   profileCount.value = String(value);
-  renderSettings(value);
   renderProxyAssignments(value);
   renderProfiles(value, lastSiteLabel);
 });
@@ -544,7 +556,6 @@ api.onEngineEvent(({ game, event, data }) => {
     }
     profileSelect.disabled = false;
     setProxyState(await api.listProxies());
-    renderSettings(Math.max(1, Math.min(8, Number(profileCount.value) || 1)));
     renderProfiles(Math.max(1, Math.min(8, Number(profileCount.value) || 1)), lastSiteLabel);
     updateSitePreview();
     showNotice('');

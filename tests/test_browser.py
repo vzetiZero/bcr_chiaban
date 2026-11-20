@@ -11,6 +11,13 @@ from unittest.mock import patch
 from aibcr.adapters import browser as BR
 
 
+class WindowDefaultsTests(unittest.TestCase):
+    def test_default_chrome_window_is_portrait_at_sixty_percent(self):
+        self.assertEqual(BR.normalize_window(), {
+            "width": 900, "height": 1200, "percent": 60, "fullscreen": False,
+        })
+
+
 class ChromeLivenessTests(unittest.TestCase):
     def session(self):
         session = BR.BrowserSession()

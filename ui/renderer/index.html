@@ -76,9 +76,14 @@
     <div class="tab-panel" role="tabpanel" data-tab-panel="profiles">
     <section class="profiles-section settings-section">
       <div class="section-heading">
-        <div><div class="eyebrow">CẤU HÌNH</div><h2>Proxy và cửa sổ</h2></div>
+        <div><div class="eyebrow">CẤU HÌNH CHUNG</div><h2>Kích thước cửa sổ</h2></div>
       </div>
-      <div id="profile-settings" class="profile-settings"></div>
+      <p class="shared-setting-note">Một cấu hình dùng cho tất cả profile khi mở Chrome.</p>
+      <div id="profile-settings" class="profile-settings">
+        <label class="setting-field"><span>Rộng (px)</span><input id="shared-window-width" type="number" min="520" max="3840" step="1" value="900" /></label>
+        <label class="setting-field"><span>Cao (px)</span><input id="shared-window-height" type="number" min="200" max="2160" step="1" value="1200" /></label>
+        <label class="setting-field"><span>Scale (%)</span><input id="shared-window-scale" type="number" min="50" max="200" step="1" value="60" /></label>
+      </div>
     </section>
     <section class="profiles-section">
       <div class="section-heading">

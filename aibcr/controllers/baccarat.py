@@ -55,7 +55,7 @@ DEFAULT_CONFIG = {
     # 10 đơn vị = 10.000đ (WM in khay chip theo nghìn đồng, 1 đv = 1.000đ).
     "bet_stake": 10.0,          # số đơn vị cố định cho mỗi tay
     "start_url": BR.START_URL,
-    "chrome_window": {"width": 1280, "height": 800, "percent": 100, "fullscreen": False},
+    "chrome_window": {"width": 900, "height": 1200, "percent": 60, "fullscreen": False},
     # AI live (site Petalive): off | local | api. Key AI CHỈ đọc từ env BCR_AI_KEY.
     "ai_mode": "api",
     "ai_url": "https://api.vilao.ai/v1/chat/completions",
@@ -638,8 +638,8 @@ class BaccaratController:
             return {"ok": False, "error": "Không đóng được Chrome profile (%s)." % type(exc).__name__}
 
         width = min(3840, max(520, _as_int(params.get("width"), 900)))
-        height = min(2160, max(200, _as_int(params.get("height"), 500)))
-        percent = min(200, max(50, _as_int(params.get("scale"), 100)))
+        height = min(2160, max(200, _as_int(params.get("height"), 1200)))
+        percent = min(200, max(50, _as_int(params.get("scale"), 60)))
         left = max(0, _as_int(params.get("left"), 0))
         top = max(0, _as_int(params.get("top"), 0))
         BR.WINDOW_POSITION = (left, top)
