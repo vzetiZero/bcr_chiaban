@@ -22,72 +22,68 @@
   <main class="page">
     <section class="intro">
       <div class="eyebrow">QUẢN LÝ TÀI KHOẢN</div>
-      <h1>Mở nhiều profile cùng lúc</h1>
-      <p>Chọn số lượng profile và site. Mỗi profile mở một cửa sổ Chrome riêng tại cùng đường dẫn.</p>
+      <h1>Profile Manager</h1>
     </section>
 
+    <nav class="tab-nav" role="tablist" aria-label="Menu chính">
+      <button class="tab-button active" type="button" role="tab" aria-selected="true" data-tab-target="run">Chạy Tool</button>
+      <button class="tab-button" type="button" role="tab" aria-selected="false" data-tab-target="profiles">Profiles</button>
+    </nav>
+
+    <div class="tab-panel active" role="tabpanel" data-tab-panel="run">
     <section class="manager card">
       <div class="form-grid">
         <label class="field">
           <span>Số lượng tài khoản</span>
           <input id="profile-count" type="number" min="1" max="8" step="1" value="4" />
-          <small>Tối đa 8 profile, mỗi profile có phiên đăng nhập riêng.</small>
         </label>
         <label class="field">
           <span>Website</span>
           <select id="site-select" disabled>
             <option>Đang tải danh sách…</option>
           </select>
-          <small id="site-url" class="url-preview"></small>
         </label>
       </div>
       <div class="action-row">
         <button id="run-profiles" class="run-button" disabled>
-          <span class="run-icon">▶</span> Chạy đồng thời
+          <span class="run-icon">▶</span> Chạy Tool
         </button>
         <button id="close-profiles" class="close-button" disabled>Đóng tất cả</button>
       </div>
       <div id="notice" class="notice" role="status" aria-live="polite">Chọn website để bắt đầu.</div>
     </section>
 
-    <section class="profiles-section settings-section">
-      <div class="section-heading">
-        <div><div class="eyebrow">CẤU HÌNH RIÊNG</div><h2>Proxy và cửa sổ</h2></div>
-        <span class="total">Thông tin proxy chỉ giữ trong phiên chạy</span>
-      </div>
-      <div id="profile-settings" class="profile-settings"></div>
-      <p class="footnote">Proxy để trống sẽ dùng kết nối trực tiếp. Hỗ trợ http://host:port, http://user:pass@host:port, socks5://host:port hoặc host:port:user:pass. Kích thước tính bằng pixel; scale từ 50% đến 200%.</p>
-    </section>
-
     <section class="profiles-section febet-section card">
       <div class="section-heading">
         <div><div class="eyebrow">FEBET · DREAM GAMING</div><h2>Chọn và đồng bộ bàn</h2></div>
-        <span class="total">Chọn bàn ở Profile 1</span>
       </div>
-      <p class="febet-help">Mở các profile tại FEBET Baccarat trước. Ứng dụng cuộn tới ảnh Dream Gaming, bấm ảnh rồi bấm XEM GAME nếu nút này hiện trong thông báo số dư để mở sảnh trong iframe. Quét lựa chọn trong iframe Profile 1 rồi đồng bộ cùng nhãn bàn.</p>
       <div class="febet-actions">
-        <button id="open-dg-all" class="close-button">Cuộn tới ảnh DG + vào sảnh cho profiles</button>
-        <button id="scan-dg" class="close-button">Quét bàn trong iframe</button>
+        <button id="scan-dg" class="close-button">Quét lại bàn</button>
       </div>
       <div class="febet-select-row">
-        <label class="setting-field" for="dg-table-select"><span>Bàn trong iframe Profile 1</span>
+        <label class="setting-field" for="dg-table-select"><span>Bàn</span>
           <select id="dg-table-select" disabled><option value="">Chưa quét bàn</option></select>
         </label>
         <button id="sync-dg-table" class="run-button" disabled>Đưa profiles vào bàn</button>
       </div>
-      <div id="febet-note" class="febet-note" role="status" aria-live="polite">Mỗi profile dùng phiên FEBET riêng; link phiên game không được sao chép giữa các tài khoản.</div>
     </section>
+    </div>
 
+    <div class="tab-panel" role="tabpanel" data-tab-panel="profiles">
+    <section class="profiles-section settings-section">
+      <div class="section-heading">
+        <div><div class="eyebrow">CẤU HÌNH</div><h2>Proxy và cửa sổ</h2></div>
+      </div>
+      <div id="profile-settings" class="profile-settings"></div>
+    </section>
     <section class="profiles-section">
       <div class="section-heading">
-        <div><div class="eyebrow">PHIÊN CHROME</div><h2>Profiles</h2></div>
+        <div><div class="eyebrow">QUẢN LÝ</div><h2>Profiles</h2></div>
         <span id="profile-total" class="total">0 profile</span>
       </div>
-      <div id="profile-list" class="profile-list">
-        <div class="empty">Các cửa sổ sẽ hiện ở đây sau khi bấm Chạy đồng thời.</div>
-      </div>
-      <p class="footnote">Lần đầu mở một profile, hãy đăng nhập trực tiếp trên cửa sổ Chrome đó. Thông tin đăng nhập được Chrome lưu riêng theo profile.</p>
+      <div id="profile-list" class="profile-list"></div>
     </section>
+    </div>
 
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
   </main>

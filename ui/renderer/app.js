@@ -75,7 +75,6 @@ function renderProfiles(count, siteLabel, replies = []) {
 
 function updateSitePreview() {
   const site = profileSelect.selectedOptions[0];
-  $('#site-url').textContent = site ? site.dataset.url || '' : '';
   runButton.disabled = !site || !site.value;
 }
 
@@ -122,6 +121,19 @@ function collectSettings(count) {
 }
 
 profileSelect.addEventListener('change', updateSitePreview);
+document.querySelectorAll('[data-tab-target]').forEach((button) => {
+  button.addEventListener('click', () => {
+    const target = button.dataset.tabTarget;
+    document.querySelectorAll('[data-tab-target]').forEach((item) => {
+      const active = item === button;
+      item.classList.toggle('active', active);
+      item.setAttribute('aria-selected', String(active));
+    });
+    document.querySelectorAll('[data-tab-panel]').forEach((panel) => {
+      panel.classList.toggle('active', panel.dataset.tabPanel === target);
+    });
+  });
+});
 $('#profile-count').addEventListener('change', () => {
   const value = Math.max(1, Math.min(8, Number(profileCount.value) || 1));
   profileCount.value = String(value);
@@ -144,9 +156,28 @@ runButton.addEventListener('click', async () => {
     renderProfiles(result.count, result.site, result.replies);
     $('#close-profiles').disabled = false;
     const failed = result.replies.filter((reply) => !reply.ok).length;
-    showNotice(failed
-      ? `Đã gửi lệnh mở ${result.count} profile; ${failed} profile báo lỗi.`
-      : `Đã gửi lệnh mở đồng thời ${result.count} profile tại ${result.site}.`);
+    if (profileSelect.value === 'febet') {
+      showNotice('Đang mở sảnh Dream Gaming trên các profile…');
+      const dgResult = await api.openDreamGaming();
+      if (!dgResult || !dgResult.ok) {
+        showNotice((dgResult && dgResult.error) || 'Không mở được sảnh Dream Gaming.', true);
+        return;
+      }
+      const dgFailed = dgResult.replies.filter((reply) => !reply.ok).length;
+      const scan = await api.inspectFebet();
+      if (!scan || !scan.ok) {
+        showNotice((scan && scan.error) || 'Đã vào sảnh DG nhưng chưa quét được danh sách bàn.', true);
+        return;
+      }
+      populateFebetTables(scan);
+      showNotice(dgFailed
+        ? `Đã chạy ${result.count} profile; ${dgFailed} profile chưa vào được sảnh DG.`
+        : 'Các profile đã vào sảnh DG. Chọn bàn để đưa tất cả profile vào cùng bàn.');
+    } else {
+      showNotice(failed
+        ? `Đã gửi lệnh mở ${result.count} profile; ${failed} profile báo lỗi.`
+        : `Đã gửi lệnh mở đồng thời ${result.count} profile tại ${result.site}.`);
+    }
   } catch (error) {
     showNotice(String(error.message || error), true);
   } finally {
@@ -203,61 +234,41 @@ profileList.addEventListener('click', async (event) => {
 });
 
 function setFebetNote(message, isError = false) {
-  const target = $('#febet-note');
-  target.textContent = message;
-  target.dataset.state = isError ? 'error' : 'ready';
+  showNotice(message, isError);
 }
 
-$('#open-dg-all').addEventListener('click', async (event) => {
-  const button = event.currentTarget;
-  button.disabled = true;
-  setFebetNote('Đang mở Dream Gaming Baccarat trong các profile…');
-  try {
-    const result = await api.openDreamGaming();
-    if (!result || !result.ok) {
-      setFebetNote((result && result.error) || 'Không mở được DG.', true);
-      return;
-    }
-    const opened = result.replies.filter((reply) => reply.ok).length;
-    const failed = result.replies.filter((reply) => !reply.ok);
-    const errors = failed.map((reply) => `Profile ${reply.index}: ${reply.error}`).join(' · ');
-    setFebetNote(`Đã xử lý ${result.count} profile; ${opened} profile mở hoặc đã có iframe DG.${errors ? ` ${errors}` : ''}`, failed.length > 0);
-  } catch (error) {
-    setFebetNote(String(error.message || error), true);
-  } finally {
-    button.disabled = false;
+function populateFebetTables(result) {
+  const select = $('#dg-table-select');
+  select.replaceChildren();
+  for (const optionData of result.options || []) {
+    const option = document.createElement('option');
+    option.value = optionData.label;
+    option.textContent = optionData.label;
+    select.append(option);
   }
-});
+  select.disabled = !select.options.length;
+  $('#sync-dg-table').disabled = !select.options.length;
+  if (!select.options.length) {
+    const empty = document.createElement('option');
+    empty.value = '';
+    empty.textContent = 'Chưa tìm thấy bàn';
+    select.append(empty);
+    select.disabled = true;
+  }
+}
 
 $('#scan-dg').addEventListener('click', async (event) => {
   const button = event.currentTarget;
-  const select = $('#dg-table-select');
   button.disabled = true;
-  setFebetNote('Đang quét iframe của Profile 1…');
+  setFebetNote('Đang quét bàn…');
   try {
     const result = await api.inspectFebet();
     if (!result || !result.ok) {
       setFebetNote((result && result.error) || 'Không quét được iframe.', true);
       return;
     }
-    select.replaceChildren();
-    for (const optionData of result.options || []) {
-      const option = document.createElement('option');
-      option.value = optionData.label;
-      option.textContent = optionData.origin ? `${optionData.label} · ${optionData.origin}` : optionData.label;
-      select.append(option);
-    }
-    select.disabled = !select.options.length;
-    $('#sync-dg-table').disabled = !select.options.length;
-    if (!select.options.length) {
-      const empty = document.createElement('option');
-      empty.value = '';
-      empty.textContent = 'Iframe chưa có nhãn bàn để chọn';
-      select.append(empty);
-      select.disabled = true;
-    }
-    const frameSummary = (result.frames || []).map((frame) => frame.title || frame.origin || 'iframe').join(', ');
-    setFebetNote(`${result.note || ''}${frameSummary ? ` Iframe: ${frameSummary}.` : ''} Tìm thấy ${(result.options || []).length} lựa chọn.`);
+    populateFebetTables(result);
+    setFebetNote(`Tìm thấy ${(result.options || []).length} bàn.`);
   } catch (error) {
     setFebetNote(String(error.message || error), true);
   } finally {
@@ -323,7 +334,7 @@ api.onEngineEvent(({ game, event, data }) => {
     renderSettings(Math.max(1, Math.min(8, Number(profileCount.value) || 1)));
     renderProfiles(Math.max(1, Math.min(8, Number(profileCount.value) || 1)), lastSiteLabel);
     updateSitePreview();
-    showNotice('Chọn số lượng profile và website, sau đó bấm Chạy đồng thời.');
+    showNotice('');
   } catch (error) {
     showNotice(`Không tải được danh sách website: ${error.message || error}`, true);
   }
