@@ -305,11 +305,25 @@ runButton.addEventListener('click', async () => {
         return;
       }
       populateFebetTables(scan);
-      showNotice(dgFailed
-        ? `Đã chạy ${result.count} profile; ${dgFailed} profile chưa vào được sảnh DG.`
-        : (scan.options && scan.options.length
-          ? 'Các profile đã vào sảnh DG. Chọn bàn để đưa tất cả profile vào cùng bàn.'
-          : (scan.note || 'Các profile đã vào sảnh DG nhưng chưa đọc được danh sách bàn.')));
+      if (dgFailed) {
+        showNotice(`Đã chạy ${result.count} profile; ${dgFailed} profile chưa vào được sảnh DG.`, true);
+        return;
+      }
+      showNotice('Đang đưa tất cả profile vào cùng một bàn DG…');
+      const sync = await api.syncFebetTableById($('#dg-table-id').value.trim());
+      if (!sync || !sync.ok) {
+        showNotice((sync && sync.error) || 'Các profile đã mở DG nhưng chưa đồng bộ được bàn.', true);
+        return;
+      }
+      $('#dg-table-id').value = sync.table_id;
+      const syncFailed = (sync.replies || []).filter((reply) => !reply.ok);
+      if (syncFailed.length) {
+        const detail = syncFailed.map((reply) => `Profile ${reply.index}: ${reply.error}`).join(' · ');
+        showNotice(`Bàn ${sync.table_id}: ${syncFailed.length}/${sync.count} profile lỗi. ${detail}`, true);
+        return;
+      }
+      showNotice(`Đã chạy ${result.count} profile và đưa tất cả vào cùng bàn DG ${sync.table_id}.`
+        + ' Sang tab Cược để đặt số chip và hai cửa đối lập.');
     } else {
       showNotice(failed
         ? `Đã gửi lệnh mở ${result.count} profile; ${failed} profile báo lỗi.`

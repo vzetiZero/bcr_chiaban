@@ -320,7 +320,7 @@ def current_table(driver, wait=15.0):
         return {"ok": False, "error": "Không đọc được bàn DG (%s)." % type(exc).__name__}
 
 
-def sync_table(driver, table_id, wait=15.0):
+def sync_table(driver, table_id, wait=15.0, settle=25.0):
     """Point this profile's DG iframe at the same tableId as the leader profile."""
     table_id = str(table_id or "").strip()
     if not _TABLE_ID.match(table_id):
@@ -333,10 +333,22 @@ def sync_table(driver, table_id, wait=15.0):
         index, location = _dg_frame(driver, wait)
         if index is None:
             return {"ok": False, "error": "Chưa mở game DG trong profile này; bấm chạy DG trước."}
-        parsed = urlsplit(location)
+        if _table_id_from_src(location) == table_id:
+            return {"ok": True, "table_id": table_id, "already": True,
+                    "note": "Profile đã ở sẵn bàn %s, giữ nguyên phiên game." % table_id}
+        src = driver.execute_script(
+            "return (() => { const f = document.querySelectorAll('iframe,frame')[%d];"
+            " return f ? (f.getAttribute('src') || '') : ''; })()" % index) or ""
+        # Phải nạp lại qua trang chờ direct1.html: gán thẳng index.html khiến game
+        # thoát khỏi iframe và chiếm cả trang (đã kiểm chứng thực tế).
+        base = src if "ddnewpc" in src else location
+        parsed = urlsplit(base)
         query = parse_qs(parsed.query, keep_blank_values=True)
         query["tableId"] = [table_id]
-        new_url = urlunsplit((parsed.scheme, parsed.netloc, parsed.path,
+        path = parsed.path
+        if "direct1.html" not in path:
+            path = path.rsplit("/", 1)[0] + "/direct1.html"
+        new_url = urlunsplit((parsed.scheme, parsed.netloc, path,
                               urlencode(query, doseq=True), ""))
         # URL chứa token phiên chỉ nhúng vào JS trong trang, không trả ra ngoài/log.
         script = ("return (() => { const f = document.querySelectorAll('iframe,frame')[%d];"
@@ -345,7 +357,15 @@ def sync_table(driver, table_id, wait=15.0):
         result = driver.execute_script(script) or {}
         if not result.get("ok"):
             return {"ok": False, "error": "Không đổi được iframe DG của profile này."}
-        return {"ok": True, "table_id": table_id, "note": "Đã chuyển DG sang bàn %s." % table_id}
+        deadline = time.monotonic() + max(0.0, settle)
+        while time.monotonic() < deadline:
+            time.sleep(1.0)
+            _, landed = _dg_frame(driver, wait=0)
+            if (landed and "direct1" not in landed
+                    and _table_id_from_src(landed) == table_id):
+                return {"ok": True, "table_id": table_id,
+                        "note": "Đã chuyển DG sang bàn %s." % table_id}
+        return {"ok": False, "error": "Đã gửi bàn %s nhưng game chưa tải xong bàn mới." % table_id}
     except Exception as exc:
         return {"ok": False, "error": "Không đồng bộ được bàn DG (%s)." % type(exc).__name__}
 

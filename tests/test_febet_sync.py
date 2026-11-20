@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 """Test đồng bộ bàn DG qua tableId và lọc iframe widget của FEBET."""
 
+import json
+import re
 import unittest
 
 from aibcr.adapters import febet as F
@@ -20,17 +22,27 @@ class FakeSwitch:
         self.driver.frame = element
 
 
-class FakeDriver:
-    """Frame 0 = widget, frame 1 = DG (location thật khác thuộc tính src)."""
+LOBBY = "https://febet.kiwi/live-casino/baccarat"
+DG_LOC = ("https://new-dd-cloudfront.example.com/ddnewpc/index.html"
+          "?token=SECRET&language=vi&tableId=10101&backUrl=https%3A%2F%2Ffebet.kiwi")
+DG_SRC = ("https://new-dd-cloudfront.example.com/ddnewpc/direct1.html"
+          "?token=SECRET&language=vi&tableId=10101")
 
-    def __init__(self, url, dg_location, src_attr="about:blank"):
+
+class FakeDriver:
+    """Frame 0 = widget, frame 1 = DG; src giữ URL loader, location là trang thật."""
+
+    redirect = True  # mô phỏng direct1.html redirect sang index.html
+
+    def __init__(self, url, dg_location, src_value=DG_SRC):
         self.window_handles = ["w1"]
         self.current_url = url
         self.switch_to = FakeSwitch(self)
         self.frame = None
         self.frames = ["widget", "dg"]
         self.dg_location = dg_location
-        self.src_attr = src_attr
+        self.src_value = src_value
+        self.src_attr = ""
         self.scripts = []
 
     def find_elements(self, by, selector):
@@ -40,15 +52,15 @@ class FakeDriver:
         self.scripts.append(js)
         if "return location.href" in js:
             return self.dg_location if self.frame == "dg" else "https://secure.livechatinc.com/x"
+        if "getAttribute('src')" in js:
+            return self.src_value
         if "f.src =" in js:
             self.src_attr = js
+            if self.redirect:
+                url = json.loads(re.search(r'f\.src = (".*?");', js).group(1))
+                self.dg_location = url.replace("direct1.html", "index.html")
             return {"ok": True}
         return None
-
-
-LOBBY = "https://febet.kiwi/live-casino/baccarat"
-DG_LOC = ("https://new-dd-cloudfront.example.com/ddnewpc/index.html"
-          "?token=SECRET&language=vi&tableId=10101&backUrl=https%3A%2F%2Ffebet.kiwi")
 
 
 class WidgetOriginTest(unittest.TestCase):
@@ -98,7 +110,7 @@ class SyncTableTest(unittest.TestCase):
 
     def test_sets_table_id_keeps_token_inside_page(self):
         driver = FakeDriver(LOBBY, DG_LOC)
-        result = F.sync_table(driver, "10102")
+        result = F.sync_table(driver, "10102", settle=5)
         self.assertTrue(result["ok"])
         self.assertEqual(result["table_id"], "10102")
         self.assertIn("tableId=10102", driver.src_attr)
@@ -107,10 +119,35 @@ class SyncTableTest(unittest.TestCase):
         self.assertIn("[1]", driver.src_attr)           # đúng iframe DG
         # Selenium execute_script cần "return", nếu không kết quả luôn là None.
         self.assertTrue(driver.src_attr.startswith("return "))
+        # Phải đi qua loader direct1.html; gán thẳng index.html làm game thoát iframe.
+        self.assertIn("direct1.html", driver.src_attr)
+        self.assertIn("index.html", driver.dg_location)
+        self.assertIn("tableId=10102", driver.dg_location)
+
+    def test_empty_src_falls_back_to_loader_from_location(self):
+        driver = FakeDriver(LOBBY, DG_LOC, src_value="")
+        result = F.sync_table(driver, "10102", settle=5)
+        self.assertTrue(result["ok"])
+        self.assertIn("direct1.html", driver.src_attr)
+
+    def test_reports_error_when_game_never_lands(self):
+        class NoRedirect(FakeDriver):
+            redirect = False
+
+        driver = NoRedirect(LOBBY, DG_LOC)
+        result = F.sync_table(driver, "10102", settle=0)
+        self.assertFalse(result["ok"])
 
     def test_no_dg_frame_reports_error(self):
         driver = FakeDriver(LOBBY, "https://febet.kiwi/other")
         self.assertFalse(F.sync_table(driver, "10101", wait=0)["ok"])
+
+    def test_same_table_skips_reload(self):
+        driver = FakeDriver(LOBBY, DG_LOC)
+        result = F.sync_table(driver, "10101")
+        self.assertTrue(result["ok"])
+        self.assertTrue(result.get("already"))
+        self.assertNotIn("f.src =", "".join(driver.scripts))
 
 
 if __name__ == "__main__":
