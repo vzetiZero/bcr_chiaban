@@ -388,25 +388,6 @@ ipcMain.handle('febet:open-dg', async (_event) => {
       : { index: indices[offset], ok: false, error: result.reason.message }) };
 });
 
-ipcMain.handle('febet:inspect', async (_event) => {
-  const engine = profileEngine(1);
-  if (!activeProfileIndices.has(1) || !engine) {
-    return { ok: false, error: 'Hãy mở FEBET trên Profile 1 trước.' };
-  }
-  try { return await engine.call('febet.inspect', {}, 60000); }
-  catch (error) { return { ok: false, error: error.message || 'Không quét được iframe.' }; }
-});
-
-ipcMain.handle('febet:select-table', async (_event, { label }) => {
-  const indices = Array.from(activeProfileIndices).sort((a, b) => a - b);
-  if (!indices.length) return { ok: false, error: 'Chưa có profile nào đang mở.' };
-  const results = await Promise.allSettled(indices.map((index) =>
-    profileEngine(index).call('febet.selectTable', { label }, 60000)));
-  return { ok: true, count: indices.length, replies: results.map((result, offset) =>
-    result.status === 'fulfilled' ? { index: indices[offset], ...result.value }
-      : { index: indices[offset], ok: false, error: result.reason.message }) };
-});
-
 // Đồng bộ bàn DG: mã bàn nhập tay, hoặc trống thì lấy bàn hiện tại của profile dẫn đầu.
 // Sảnh DG vẽ bằng canvas nên không chọn bàn theo nhãn DOM được; chuyển bàn bằng
 // tableId trong URL iframe (mỗi profile giữ token riêng, chỉ đổi mã bàn).
@@ -416,11 +397,17 @@ ipcMain.handle('febet:sync-table', async (_event, { tableId }) => {
   let target = String(tableId || '').trim();
   if (!target) {
     try {
-      const read = await profileEngine(indices[0]).call('febet.table', {}, 30000);
-      if (!read || !read.ok) {
-        return { ok: false, error: (read && read.error) || 'Không đọc được bàn của profile dẫn đầu.' };
+      const leader = profileEngine(indices[0]);
+      const read = await leader.call('febet.table', {}, 30000);
+      if (read && read.ok && read.in_table) {
+        target = String(read.table_id || '');
+      } else {
+        const scan = await leader.call('febet.tables', {}, 60000);
+        if (!scan || !scan.ok || !(scan.tables || []).length) {
+          return { ok: false, error: (scan && scan.error) || 'Không đọc được danh sách bàn của sảnh DG.' };
+        }
+        target = String(scan.tables[0].table_id || '');
       }
-      target = String(read.table_id || '');
     } catch (error) {
       return { ok: false, error: error.message || 'Không đọc được bàn của profile dẫn đầu.' };
     }

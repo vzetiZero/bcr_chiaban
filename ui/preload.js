@@ -14,8 +14,6 @@ contextBridge.exposeInMainWorld('aibcr', {
   assignProxy: (profile, proxyId) => ipcRenderer.invoke('proxy:assign', { profile, proxyId }),
   checkProxies: () => ipcRenderer.invoke('proxy:check'),
   openDreamGaming: () => ipcRenderer.invoke('febet:open-dg'),
-  inspectFebet: () => ipcRenderer.invoke('febet:inspect'),
-  selectFebetTable: (label) => ipcRenderer.invoke('febet:select-table', { label }),
   syncFebetTableById: (tableId) => ipcRenderer.invoke('febet:sync-table', { tableId }),
   applyBets: (amount, unit, split) => ipcRenderer.invoke('bets:apply', { amount, unit, split }),
   openExternal: (url) => ipcRenderer.invoke('app:openExternal', url),

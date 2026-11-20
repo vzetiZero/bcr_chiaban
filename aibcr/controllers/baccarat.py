@@ -660,17 +660,13 @@ class BaccaratController:
         with self.browser.lock:
             return FEBET.open_dream_gaming_baccarat(self.browser.driver)
 
-    def febet_inspect(self, _params=None):
-        with self.browser.lock:
-            return FEBET.inspect(self.browser.driver)
-
-    def febet_select_table(self, params):
-        with self.browser.lock:
-            return FEBET.select_table(self.browser.driver, (params or {}).get("label"))
-
     def febet_current_table(self, _params=None):
         with self.browser.lock:
             return FEBET.current_table(self.browser.driver)
+
+    def febet_lobby_tables(self, _params=None):
+        with self.browser.lock:
+            return FEBET.lobby_tables(self.browser.driver)
 
     def febet_sync_table(self, params):
         with self.browser.lock:
@@ -2546,9 +2542,8 @@ class BaccaratController:
             "site.open": self.site_open,
             "profile.configure": self.profile_configure,
             "febet.openDG": self.febet_open_dg,
-            "febet.inspect": self.febet_inspect,
-            "febet.selectTable": self.febet_select_table,
             "febet.table": self.febet_current_table,
+            "febet.tables": self.febet_lobby_tables,
             "febet.syncTable": self.febet_sync_table,
             "chrome.attach": lambda p: self.chrome_attach(),
             "chrome.close": lambda p: self.chrome_close(),

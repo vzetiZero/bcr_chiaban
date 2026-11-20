@@ -96,17 +96,22 @@ def inspect(driver):
     try:
         handles = driver.window_handles
         target = None
+        game_tab = False
         for handle in reversed(handles):
             try:
                 driver.switch_to.window(handle)
                 driver.switch_to.default_content()
-                if _is_lobby(driver.current_url):
+                url = driver.current_url or ""
+                if "ddnewpc" in url:
+                    game_tab = True
+                if target is None and _is_lobby(url):
                     target = handle
-                    break
             except Exception:
                 continue
         if target is None:
             return {"ok": False, "error": "Profile cần mở sảnh FEBET Baccarat trước."}
+        driver.switch_to.window(target)
+        driver.switch_to.default_content()
 
         frames = []
         labels_by_path = {}
@@ -140,14 +145,16 @@ def inspect(driver):
                 if len(option_map) >= MAX_OPTIONS:
                     break
         options = list(option_map.values())
-        if game_frames and not options:
+        if game_tab and not game_frames:
+            note = "Game DG đã mở ở tab riêng của profile."
+        elif game_frames and not options:
             note = "Game DG đã mở nhưng sảnh vẽ bằng canvas, không có nhãn bàn DOM."
         elif game_frames:
             note = "Đã quét iframe của game FEBET."
         else:
             note = "Chưa thấy iframe game; mở DG/XEM GAME rồi quét lại."
         return {"ok": True, "frames": frames, "options": options if game_frames else [],
-                "loaded": bool(game_frames), "note": note}
+                "loaded": bool(game_frames) or game_tab, "game_tab": game_tab, "note": note}
     except Exception as exc:
         try:
             driver.switch_to.default_content()
@@ -165,9 +172,9 @@ def open_dream_gaming_baccarat(driver):
     try:
         if not driver.window_handles:
             return {"ok": False, "error": "Không tìm thấy cửa sổ Chrome."}
-        driver.switch_to.window(driver.window_handles[-1])
-        driver.switch_to.default_content()
-        if not _is_lobby(driver.current_url):
+        if _lobby_handle(driver) is None:
+            driver.switch_to.window(driver.window_handles[-1])
+            driver.switch_to.default_content()
             driver.get(LOBBY_URL)
         deadline = time.monotonic() + 20
         while time.monotonic() < deadline:
@@ -180,9 +187,14 @@ def open_dream_gaming_baccarat(driver):
         if not _is_lobby(driver.current_url):
             return {"ok": False, "error": "FEBET chưa tải được sảnh Baccarat."}
 
+        if _dg_window(driver) is not None:
+            return {"ok": True, "already_open": True, "mode": "tab",
+                    "note": "Game DG đã mở ở tab riêng của profile này."}
         existing = inspect(driver)
         if existing.get("ok") and existing.get("loaded"):
             return {"ok": True, "already_open": True, "note": "Iframe game đã mở trong profile này."}
+        if _lobby_handle(driver) is None:
+            return {"ok": False, "error": "FEBET chưa tải được sảnh Baccarat."}
 
         from selenium.webdriver.support.ui import WebDriverWait
         from selenium.common.exceptions import ElementClickInterceptedException
@@ -213,6 +225,12 @@ def open_dream_gaming_baccarat(driver):
         last = {"ok": True, "frames": [], "options": []}
         while time.monotonic() < frame_deadline:
             time.sleep(0.5)
+            if _dg_window(driver) is not None:
+                return {"ok": True, "already_open": False, "clicked_image": True,
+                        "clicked_xem_game": clicked_xem_game, "mode": "tab",
+                        "frames": [], "options": [],
+                        "note": "Đã mở DG Baccarat ở tab riêng."}
+            _lobby_handle(driver)
             clicked_xem_game = _click_xem_game(driver) or clicked_xem_game
             last = inspect(driver)
             if last.get("ok") and last.get("loaded"):
@@ -305,106 +323,179 @@ def _dg_frame(driver, wait=15.0):
         time.sleep(0.5)
 
 
+# DG vẽ sảnh và bàn bằng LayaAir (canvas): phân biệt trạng thái qua tên node —
+# sảnh lưới bàn có thẻ enterMC, bàn thật có cửa cược Banker/Player hiện rõ.
+_DG_STATE_JS = """
+return (() => {
+  if (typeof Laya === 'undefined' || !Laya.stage) return {ready: false};
+  let lobby = false, inTable = false, label = '';
+  const walk = (n, d) => {
+    if (d > 10) return;
+    if (n.name === 'enterMC') lobby = true;
+    if (n.name === 'Banker' && n.visible) inTable = true;
+    const t = typeof n.text === 'string' ? n.text.trim() : '';
+    if (!label && t && t.length <= 30 && /(RB|S|SB)[0-9]+/.test(t)) label = t;
+    for (let i = 0; i < (n.numChildren || 0); i++) walk(n.getChildAt(i), d + 1);
+  };
+  walk(Laya.stage, 0);
+  return {ready: true, lobby: lobby, in_table: inTable, label: label,
+          url_table: (location.href.match(/tableId=([0-9]+)/) || [])[1] || ''};
+})()
+"""
+
+_DG_LOBBY_JS = """
+return (() => {
+  if (typeof Laya === 'undefined' || !Laya.stage) return {ready: false, tables: []};
+  const tables = [];
+  const walk = (n, d) => {
+    if (d > 12 || tables.length >= 60) return;
+    if (n.tableId && n.tableInfo) {
+      tables.push({table_id: String(n.tableId),
+                   name: String(n.tableInfo.tableName || ''),
+                   online: Number(n.onlineCount || 0)});
+    }
+    for (let i = 0; i < (n.numChildren || 0); i++) walk(n.getChildAt(i), d + 1);
+  };
+  walk(Laya.stage, 0);
+  return {ready: true, tables: tables};
+})()
+"""
+
+
+def _dg_window(driver):
+    """Handle của tab DG riêng — vài account mở game ở tab mới thay vì iframe."""
+    for handle in reversed(driver.window_handles):
+        try:
+            driver.switch_to.window(handle)
+            driver.switch_to.default_content()
+            if "ddnewpc" in (driver.current_url or ""):
+                return handle
+        except Exception:
+            continue
+    return None
+
+
+def _dg_context(driver, wait=15.0):
+    """Đặt driver vào đúng document DG (tab riêng hoặc iframe sảnh), chờ tới khi tải."""
+    deadline = time.monotonic() + max(0.0, wait)
+    while True:
+        if _dg_window(driver) is not None:
+            location = driver.current_url or ""
+            if _TABLE_ID.match(_table_id_from_src(location)):
+                return {"mode": "tab", "location": location}
+        elif _lobby_handle(driver) is not None:
+            index, location = _dg_frame(driver, wait=0)
+            if index is not None:
+                from selenium.webdriver.common.by import By
+
+                driver.switch_to.default_content()
+                frames = driver.find_elements(By.CSS_SELECTOR, "iframe, frame")
+                driver.switch_to.frame(frames[index])
+                return {"mode": "iframe", "index": index, "location": location}
+        if time.monotonic() >= deadline:
+            return None
+        time.sleep(0.5)
+
+
+def _loader_url(location, src, table_id):
+    base = src if "ddnewpc" in (src or "") else location
+    parsed = urlsplit(base)
+    query = parse_qs(parsed.query, keep_blank_values=True)
+    query["tableId"] = [table_id]
+    path = parsed.path
+    if "direct1.html" not in path:
+        path = path.rsplit("/", 1)[0] + "/direct1.html"
+    return urlunsplit((parsed.scheme, parsed.netloc, path, urlencode(query, doseq=True), ""))
+
+
 def current_table(driver, wait=15.0):
     """Read the DG tableId of the game iframe; never expose the iframe URL/token."""
     if driver is None:
         return {"ok": False, "error": "Mở profile Chrome trước khi đọc bàn DG."}
     try:
-        if _lobby_handle(driver) is None:
-            return {"ok": False, "error": "Profile cần mở sảnh FEBET Baccarat trước."}
-        index, location = _dg_frame(driver, wait)
-        if index is None:
+        ctx = _dg_context(driver, wait)
+        if ctx is None:
             return {"ok": False, "error": "Chưa mở game DG hoặc bàn chưa tải xong."}
-        return {"ok": True, "table_id": _table_id_from_src(location)}
+        state = driver.execute_script(_DG_STATE_JS) or {}
+        return {"ok": True, "mode": ctx["mode"],
+                "table_id": state.get("url_table") or _table_id_from_src(ctx["location"]),
+                "in_table": bool(state.get("in_table")),
+                "lobby": bool(state.get("lobby")),
+                "label": state.get("label") or ""}
     except Exception as exc:
         return {"ok": False, "error": "Không đọc được bàn DG (%s)." % type(exc).__name__}
 
 
-def sync_table(driver, table_id, wait=15.0, settle=25.0):
-    """Point this profile's DG iframe at the same tableId as the leader profile."""
+def lobby_tables(driver, wait=15.0):
+    """Danh sách bàn thật (tableId 60101…) đọc từ các thẻ sảnh Laya của DG."""
+    if driver is None:
+        return {"ok": False, "error": "Mở profile Chrome trước khi quét sảnh DG."}
+    try:
+        ctx = _dg_context(driver, wait)
+        if ctx is None:
+            return {"ok": False, "error": "Chưa mở game DG trong profile này; bấm chạy DG trước."}
+        state = driver.execute_script(_DG_STATE_JS) or {}
+        data = driver.execute_script(_DG_LOBBY_JS) or {}
+        return {"ok": True, "in_table": bool(state.get("in_table")),
+                "tables": data.get("tables") or []}
+    except Exception as exc:
+        return {"ok": False, "error": "Không quét được sảnh DG (%s)." % type(exc).__name__}
+
+
+def sync_table(driver, table_id, wait=15.0, settle=30.0):
+    """Đưa profile này vào bàn DG mang table_id (mã thật, vd 60101 = RB01).
+
+    Nạp qua trang chờ direct1.html với tableId thật: game tự vào thẳng bàn.
+    Gán thẳng index.html khiến game thoát iframe; mã sảnh (10101) chỉ ra lưới bàn.
+    """
     table_id = str(table_id or "").strip()
     if not _TABLE_ID.match(table_id):
         return {"ok": False, "error": "Mã bàn DG không hợp lệ (chỉ chữ số, tối đa 12)."}
     if driver is None:
         return {"ok": False, "error": "Mở profile Chrome trước khi đồng bộ bàn DG."}
     try:
-        if _lobby_handle(driver) is None:
-            return {"ok": False, "error": "Profile cần mở sảnh FEBET Baccarat trước."}
-        index, location = _dg_frame(driver, wait)
-        if index is None:
+        ctx = _dg_context(driver, wait)
+        if ctx is None:
             return {"ok": False, "error": "Chưa mở game DG trong profile này; bấm chạy DG trước."}
-        if _table_id_from_src(location) == table_id:
+        state = driver.execute_script(_DG_STATE_JS) or {}
+        current = state.get("url_table") or _table_id_from_src(ctx["location"])
+        if current == table_id and (state.get("in_table") or state.get("lobby")):
             return {"ok": True, "table_id": table_id, "already": True,
+                    "in_table": bool(state.get("in_table")),
                     "note": "Profile đã ở sẵn bàn %s, giữ nguyên phiên game." % table_id}
-        src = driver.execute_script(
-            "return (() => { const f = document.querySelectorAll('iframe,frame')[%d];"
-            " return f ? (f.getAttribute('src') || '') : ''; })()" % index) or ""
-        # Phải nạp lại qua trang chờ direct1.html: gán thẳng index.html khiến game
-        # thoát khỏi iframe và chiếm cả trang (đã kiểm chứng thực tế).
-        base = src if "ddnewpc" in src else location
-        parsed = urlsplit(base)
-        query = parse_qs(parsed.query, keep_blank_values=True)
-        query["tableId"] = [table_id]
-        path = parsed.path
-        if "direct1.html" not in path:
-            path = path.rsplit("/", 1)[0] + "/direct1.html"
-        new_url = urlunsplit((parsed.scheme, parsed.netloc, path,
-                              urlencode(query, doseq=True), ""))
-        # URL chứa token phiên chỉ nhúng vào JS trong trang, không trả ra ngoài/log.
-        script = ("return (() => { const f = document.querySelectorAll('iframe,frame')[%d];"
-                  " if (!f) return {ok: false}; f.src = %s; return {ok: true}; })()"
-                  % (index, json.dumps(new_url)))
-        result = driver.execute_script(script) or {}
-        if not result.get("ok"):
-            return {"ok": False, "error": "Không đổi được iframe DG của profile này."}
+        if ctx["mode"] == "tab":
+            new_url = _loader_url(ctx["location"], "", table_id)
+            driver.execute_script("location.href = %s;" % json.dumps(new_url))
+        else:
+            if _lobby_handle(driver) is None:
+                return {"ok": False, "error": "Profile cần mở sảnh FEBET Baccarat trước."}
+            index = ctx["index"]
+            src = driver.execute_script(
+                "return (() => { const f = document.querySelectorAll('iframe,frame')[%d];"
+                " return f ? (f.getAttribute('src') || '') : ''; })()" % index) or ""
+            new_url = _loader_url(ctx["location"], src, table_id)
+            # URL chứa token phiên chỉ nhúng vào JS trong trang, không trả ra ngoài/log.
+            script = ("return (() => { const f = document.querySelectorAll('iframe,frame')[%d];"
+                      " if (!f) return {ok: false}; f.src = %s; return {ok: true}; })()"
+                      % (index, json.dumps(new_url)))
+            result = driver.execute_script(script) or {}
+            if not result.get("ok"):
+                return {"ok": False, "error": "Không đổi được iframe DG của profile này."}
         deadline = time.monotonic() + max(0.0, settle)
         while time.monotonic() < deadline:
             time.sleep(1.0)
-            _, landed = _dg_frame(driver, wait=0)
-            if (landed and "direct1" not in landed
-                    and _table_id_from_src(landed) == table_id):
-                return {"ok": True, "table_id": table_id,
-                        "note": "Đã chuyển DG sang bàn %s." % table_id}
+            if _dg_context(driver, wait=0) is None:
+                continue
+            landed = driver.execute_script(_DG_STATE_JS) or {}
+            if landed.get("url_table") != table_id:
+                continue
+            if landed.get("in_table"):
+                return {"ok": True, "table_id": table_id, "in_table": True,
+                        "label": landed.get("label") or "",
+                        "note": "Đã vào bàn DG %s." % table_id}
+            if landed.get("lobby"):
+                return {"ok": True, "table_id": table_id, "in_table": False,
+                        "note": "Đã mở sảnh lưới bàn DG (mã %s là mã sảnh)." % table_id}
         return {"ok": False, "error": "Đã gửi bàn %s nhưng game chưa tải xong bàn mới." % table_id}
     except Exception as exc:
         return {"ok": False, "error": "Không đồng bộ được bàn DG (%s)." % type(exc).__name__}
-
-
-def select_table(driver, label):
-    """Click an exact visible table label inside the game iframe, never copy its URL."""
-    label = re.sub(r"\s+", " ", str(label or "")).strip()
-    if not driver or not label or len(label) > 80 or _SENSITIVE_LABEL.search(label):
-        return {"ok": False, "error": "Tên bàn không hợp lệ."}
-    from selenium.webdriver.common.by import By
-
-    try:
-        target = None
-        target_path = None
-        for path, info in _frame_contexts(driver):
-            if not path:
-                continue
-            _enter_path(driver, path)
-            candidates = driver.find_elements(By.CSS_SELECTOR,
-                'button,a,[role="button"],[tabindex="0"],[class*="cursor-pointer"]')
-            for element in candidates:
-                try:
-                    text = re.sub(r"\s+", " ", element.text or "").strip()
-                    if text == label and element.is_displayed() and element.is_enabled():
-                        target, target_path = element, path
-                        break
-                except Exception:
-                    continue
-            if target is not None:
-                break
-        if target is None:
-            driver.switch_to.default_content()
-            return {"ok": False, "error": "Profile này chưa thấy bàn '%s' trong iframe DG." % label}
-        target.click()
-        driver.switch_to.default_content()
-        return {"ok": True, "label": label, "note": "Đã chọn bàn trong iframe DG."}
-    except Exception as exc:
-        try:
-            driver.switch_to.default_content()
-        except Exception:
-            pass
-        return {"ok": False, "error": "Không chọn được bàn trong iframe (%s)." % type(exc).__name__}

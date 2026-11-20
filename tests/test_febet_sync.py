@@ -52,8 +52,22 @@ class FakeDriver:
         self.scripts.append(js)
         if "return location.href" in js:
             return self.dg_location if self.frame == "dg" else "https://secure.livechatinc.com/x"
+        if "typeof Laya" in js and "n.tableId && n.tableInfo" in js:
+            return {"ready": True, "tables": [
+                {"table_id": "60101", "name": "RB01", "online": 10}]}
+        if "typeof Laya" in js:
+            table = re.search(r"tableId=(\d+)", self.dg_location)
+            return {"ready": True, "lobby": "direct1" in self.dg_location,
+                    "in_table": "index.html" in self.dg_location,
+                    "label": "RB01", "url_table": table.group(1) if table else ""}
         if "getAttribute('src')" in js:
             return self.src_value
+        if js.startswith("location.href ="):
+            url = json.loads(js.split("=", 1)[1].strip().rstrip(";"))
+            self.current_url = url
+            if self.redirect:
+                self.dg_location = url.replace("direct1.html", "index.html")
+            return None
         if "f.src =" in js:
             self.src_attr = js
             if self.redirect:
@@ -147,7 +161,23 @@ class SyncTableTest(unittest.TestCase):
         result = F.sync_table(driver, "10101")
         self.assertTrue(result["ok"])
         self.assertTrue(result.get("already"))
+        self.assertTrue(result.get("in_table"))
         self.assertNotIn("f.src =", "".join(driver.scripts))
+
+    def test_tab_mode_navigates_loader(self):
+        driver = FakeDriver(DG_LOC, DG_LOC)
+        result = F.sync_table(driver, "10102", settle=5)
+        self.assertTrue(result["ok"])
+        self.assertTrue(result.get("in_table"))
+        self.assertTrue(any(js.startswith("location.href =") for js in driver.scripts))
+        self.assertIn("direct1.html", driver.current_url)
+
+    def test_lobby_tables_reads_laya_cards(self):
+        driver = FakeDriver(LOBBY, DG_LOC)
+        result = F.lobby_tables(driver)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["tables"][0]["table_id"], "60101")
+        self.assertEqual(result["tables"][0]["name"], "RB01")
 
 
 if __name__ == "__main__":
