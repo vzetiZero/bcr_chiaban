@@ -251,8 +251,8 @@ class Engine {
 }
 
 const engines = { baccarat: new Engine('baccarat', 1) };
-let activeProfileCount = 1;
 const activeProxyBridges = new Map();
+const activeProfileIndices = new Set();
 
 function profileEngine(index) {
   return engines[index === 1 ? 'baccarat' : `baccarat-profile-${index}`];
@@ -269,6 +269,83 @@ async function closeProfileBridge(index) {
   activeProxyBridges.delete(index);
   if (bridge) await bridge.close().catch(() => {});
 }
+
+function profileLayout(index, count, width, height, area) {
+  const columns = Math.ceil(Math.sqrt(count));
+  const column = (index - 1) % columns;
+  const row = Math.floor((index - 1) / columns);
+  return {
+    width, height,
+    left: Math.max(0, Math.min(area.width - width, column * (width + 12))),
+    top: Math.max(0, Math.min(area.height - height, row * (height + 12))),
+  };
+}
+
+ipcMain.handle('profile:open', async (_event, { index, count, profile }) => {
+  const profileIndex = Math.trunc(Number(index));
+  if (!Number.isInteger(profileIndex) || profileIndex < 1 || profileIndex > 8) {
+    return { ok: false, error: 'Profile không hợp lệ.' };
+  }
+  const row = profile || {};
+  const width = Math.max(520, Math.min(3840, Math.round(Number(row.width) || 900)));
+  const height = Math.max(200, Math.min(2160, Math.round(Number(row.height) || 500)));
+  const scale = Math.max(50, Math.min(200, Math.round(Number(row.scale) || 100)));
+  let proxy;
+  let newBridge = null;
+  try {
+    proxy = parseProxy(row.proxy || '');
+    let proxyServer = proxyServerUrl(proxy);
+    if (proxy && proxy.username) {
+      newBridge = await startProxyBridge(proxy);
+      proxyServer = newBridge.url;
+    }
+    const { screen } = require('electron');
+    const layout = profileLayout(profileIndex, Math.max(1, Math.min(8, Number(count) || profileIndex)),
+      width, height, screen.getPrimaryDisplay().workAreaSize);
+    const game = profileIndex === 1 ? 'baccarat' : `baccarat-profile-${profileIndex}`;
+    if (!engines[game]) engines[game] = new Engine(game, profileIndex, layout);
+    const engine = engines[game];
+    engine.layout = layout;
+    const configured = await engine.call('profile.configure', {
+      proxy_server: proxyServer, width, height, scale, left: layout.left, top: layout.top,
+    });
+    if (!configured || !configured.ok) {
+      if (newBridge) await newBridge.close().catch(() => {});
+      return { ok: false, error: (configured && configured.error) || 'Không áp dụng được cấu hình profile.' };
+    }
+    await closeProfileBridge(profileIndex);
+    const opened = await engine.call('chrome.open');
+    if (!opened || !opened.ok) {
+      if (newBridge) await newBridge.close().catch(() => {});
+      activeProfileIndices.delete(profileIndex);
+      return { ok: false, error: (opened && opened.error) || 'Không mở được Chrome.' };
+    }
+    if (newBridge) activeProxyBridges.set(profileIndex, newBridge);
+    activeProfileIndices.add(profileIndex);
+    return { ok: true, note: 'Đang mở Chrome profile.', proxy: proxyLabel(proxy), width, height, scale };
+  } catch (error) {
+    if (newBridge) await newBridge.close().catch(() => {});
+    return { ok: false, error: error.message || 'Không mở được Chrome profile.' };
+  }
+});
+
+ipcMain.handle('profile:close', async (_event, { index }) => {
+  const profileIndex = Math.trunc(Number(index));
+  if (!Number.isInteger(profileIndex) || profileIndex < 1 || profileIndex > 8) {
+    return { ok: false, error: 'Profile không hợp lệ.' };
+  }
+  const engine = profileEngine(profileIndex);
+  if (!engine) return { ok: true, note: 'Profile chưa được mở.' };
+  try {
+    const reply = await engine.call('profile.configure', { close: true });
+    if (!reply || !reply.ok) return reply || { ok: false, error: 'Không đóng được profile.' };
+    activeProfileIndices.delete(profileIndex);
+    await closeProfileBridge(profileIndex);
+    return reply;
+  } catch (error) {
+    return { ok: false, error: error.message || 'Không đóng được profile.' };
+  }
+});
 
 // Lưới an toàn cuối: Electron biến mọi exception chưa bắt ở main process thành hộp
 // thoại đỏ "A JavaScript error occurred in the main process" và app đứng. Ghi log rồi
@@ -371,12 +448,13 @@ ipcMain.handle('profiles:open', async (_event, { count, siteId, profiles }) => {
     return { ...item, left, top };
   });
 
-  if (total < activeProfileCount) {
-    const extras = Array.from({ length: activeProfileCount - total }, (_, offset) => total + offset + 1);
+  const extras = Array.from(activeProfileIndices).filter((index) => index > total);
+  if (extras.length) {
     const closeResults = await Promise.allSettled(extras.map(async (index) => {
       const engine = profileEngine(index);
       if (engine) await engine.call('profile.configure', { close: true });
       await closeProfileBridge(index);
+      activeProfileIndices.delete(index);
     }));
     if (closeResults.some((item) => item.status === 'rejected')) {
       await Promise.all(newBridges.map(({ bridge }) => bridge.close().catch(() => {})));
@@ -420,20 +498,23 @@ ipcMain.handle('profiles:open', async (_event, { count, siteId, profiles }) => {
     if (result.status === 'fulfilled' && result.value.ok) {
       await closeProfileBridge(index);
       if (setting.bridge) activeProxyBridges.set(index, setting.bridge);
+      activeProfileIndices.add(index);
     } else if (setting.bridge) {
       await setting.bridge.close().catch(() => {});
+      activeProfileIndices.delete(index);
     }
   }
-  activeProfileCount = total;
   const replies = openResults.map((result, index) => result.status === 'fulfilled'
     ? result.value : { ok: false, error: result.reason.message, proxy: settings[index].proxyLabel });
   return { ok: true, count: total, site: site.label, replies };
 });
 
 ipcMain.handle('profiles:close', async () => {
-  const targets = Array.from({ length: activeProfileCount }, (_, index) => profileEngine(index + 1)).filter(Boolean);
-  const replies = await Promise.allSettled(targets.map((engine) => engine.call('profile.configure', { close: true })));
+  const indices = Array.from(activeProfileIndices);
+  const targets = indices.map((index) => ({ index, engine: profileEngine(index) })).filter((item) => item.engine);
+  const replies = await Promise.allSettled(targets.map(({ engine }) => engine.call('profile.configure', { close: true })));
   await Promise.all(Array.from(activeProxyBridges.keys(), (index) => closeProfileBridge(index)));
+  activeProfileIndices.clear();
   return { ok: true, count: targets.length, replies: replies.map((result) => result.status === 'fulfilled'
     ? result.value : { ok: false, error: result.reason.message }) };
 });

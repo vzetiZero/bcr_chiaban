@@ -10,7 +10,7 @@ nội bộ; profile manager không gọi các lệnh phân tích hoặc cược.
 
 > **BẮT BUỘC — push GitHub sau MỖI lần cập nhật hoặc sửa đổi**
 >
-> Remote: `https://github.com/vzetiZero/AI_BCR.git` (nhánh `main`).
+> Remote: `https://github.com/vzetiZero/bcr_chiaban.git` (nhánh `main`).
 > Mọi thay đổi (code, cấu hình mặc định, tài liệu) phải được đẩy lên ngay trong cùng
 > lần làm việc, không để tồn đọng. Chạy test trước khi push.
 >

@@ -610,7 +610,7 @@ class BaccaratController:
             self._push_state()
             return {"ok": True, "note": "Đã đóng profile."}
 
-        url = str(params.get("url") or "").strip()
+        url = str(params.get("url") or self.config.get("start_url") or "").strip()
         if not BR.valid_site_url(url):
             return {"ok": False, "error": "URL website không hợp lệ."}
         proxy_server = str(params.get("proxy_server") or "").strip()

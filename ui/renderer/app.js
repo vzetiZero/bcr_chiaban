@@ -8,6 +8,8 @@ const runButton = $('#run-profiles');
 const notice = $('#notice');
 const statusByIndex = new Map();
 const settingsByIndex = new Map();
+const profileStateByIndex = new Map();
+let lastSiteLabel = 'Chưa chạy';
 
 window.addEventListener('error', (event) => showNotice(String(event.message || event.error), true));
 window.addEventListener('unhandledrejection', (event) => showNotice(String(event.reason), true));
@@ -25,31 +27,49 @@ function profileIndex(game) {
 
 function updateProfile(index, state, detail = '') {
   const row = statusByIndex.get(index);
-  if (!row) return;
+  profileStateByIndex.set(index, state);
+  if (!row) {
+    $('#close-profiles').disabled = !Array.from(profileStateByIndex.values())
+      .some((item) => item === 'running' || item === 'opening' || item === 'closing');
+    return;
+  }
   row.className = `profile-row ${state}`;
   row.querySelector('.profile-state').textContent = state === 'running' ? 'Đang chạy'
-    : state === 'error' ? 'Có lỗi' : 'Đang mở';
+    : state === 'opening' ? 'Đang mở' : state === 'closing' ? 'Đang đóng'
+      : state === 'error' ? 'Có lỗi' : 'Đã đóng';
   row.querySelector('.profile-detail').textContent = detail;
+  const button = row.querySelector('.profile-toggle');
+  if (button) {
+    button.textContent = state === 'running' || state === 'opening' ? 'Đóng' : 'Mở';
+    button.disabled = state === 'opening' || state === 'closing';
+  }
+  $('#close-profiles').disabled = !Array.from(profileStateByIndex.values())
+    .some((item) => item === 'running' || item === 'opening' || item === 'closing');
 }
 
 function renderProfiles(count, siteLabel, replies = []) {
   profileList.replaceChildren();
   statusByIndex.clear();
-  $('#profile-total').textContent = `${count} profile · ${siteLabel}`;
+  lastSiteLabel = siteLabel || lastSiteLabel;
+  $('#profile-total').textContent = `${count} profile · ${lastSiteLabel}`;
   for (let index = 1; index <= count; index += 1) {
     const reply = replies[index - 1] || {};
+    const state = reply.ok ? 'opening' : reply.error ? 'error' : (profileStateByIndex.get(index) || 'closed');
     const row = document.createElement('article');
-    row.className = `profile-row ${reply.ok ? 'opening' : 'error'}`;
+    row.className = `profile-row ${state}`;
     row.innerHTML = `<div class="profile-number">${String(index).padStart(2, '0')}</div>
       <div class="profile-info"><strong>Profile ${index}</strong><span class="profile-detail"></span></div>
-      <span class="profile-state"></span>`;
+      <span class="profile-state"></span><button class="profile-toggle" data-profile="${index}">Mở</button>`;
     const detail = reply.note || reply.error || '';
     const proxy = reply.proxy ? ` · ${reply.proxy}` : '';
     const size = reply.width && reply.height ? ` · ${reply.width}×${reply.height} · ${reply.scale}%` : '';
     row.querySelector('.profile-detail').textContent = `${detail}${proxy}${size}`;
-    row.querySelector('.profile-state').textContent = reply.ok ? 'Đang mở' : 'Có lỗi';
+    row.querySelector('.profile-state').textContent = state === 'running' ? 'Đang chạy'
+      : state === 'opening' ? 'Đang mở' : state === 'error' ? 'Có lỗi' : 'Đã đóng';
     profileList.append(row);
     statusByIndex.set(index, row);
+    profileStateByIndex.set(index, state);
+    updateProfile(index, state, row.querySelector('.profile-detail').textContent);
   }
 }
 
@@ -106,6 +126,7 @@ $('#profile-count').addEventListener('change', () => {
   const value = Math.max(1, Math.min(8, Number(profileCount.value) || 1));
   profileCount.value = String(value);
   renderSettings(value);
+  renderProfiles(value, lastSiteLabel);
 });
 
 runButton.addEventListener('click', async () => {
@@ -143,10 +164,40 @@ $('#close-profiles').addEventListener('click', async () => {
       showNotice((result && result.error) || 'Không đóng được các profile.', true);
       return;
     }
-    for (const index of statusByIndex.keys()) updateProfile(index, 'closed', 'Đã gửi lệnh đóng cửa sổ.');
+    for (const index of profileStateByIndex.keys()) updateProfile(index, 'closed', 'Đã đóng Chrome profile.');
     showNotice(`Đã gửi lệnh đóng ${result.count} cửa sổ Chrome.`);
   } catch (error) {
     showNotice(String(error.message || error), true);
+  }
+});
+
+profileList.addEventListener('click', async (event) => {
+  const button = event.target.closest('.profile-toggle');
+  if (!button) return;
+  const index = Number(button.dataset.profile);
+  const state = profileStateByIndex.get(index);
+  const closing = state === 'running' || state === 'opening';
+  button.disabled = true;
+  updateProfile(index, closing ? 'closing' : 'opening', closing ? 'Đang đóng Chrome…' : 'Đang mở Chrome…');
+  try {
+    const result = closing
+      ? await api.closeProfile(index)
+      : await api.openProfile(index, Math.max(1, Math.min(8, Number(profileCount.value) || index)),
+        collectSettings(Math.max(1, Math.min(8, Number(profileCount.value) || index)))[index - 1]);
+    if (!result || !result.ok) {
+      updateProfile(index, 'error', (result && result.error) || 'Không thực hiện được thao tác.');
+      return;
+    }
+    if (closing) {
+      updateProfile(index, 'closed', result.note || 'Đã đóng Chrome profile.');
+      showNotice(`Đã đóng Profile ${index}.`);
+    } else {
+      const dims = result.width && result.height ? ` · ${result.width}×${result.height} · ${result.scale}%` : '';
+      updateProfile(index, 'opening', `${result.note || 'Đang mở Chrome.'} · ${result.proxy || 'IP trực tiếp'}${dims}`);
+      showNotice(`Đang mở riêng Profile ${index} trong Chrome.`);
+    }
+  } catch (error) {
+    updateProfile(index, 'error', String(error.message || error));
   }
 });
 
@@ -178,6 +229,7 @@ api.onEngineEvent(({ game, event, data }) => {
     }
     profileSelect.disabled = false;
     renderSettings(Math.max(1, Math.min(8, Number(profileCount.value) || 1)));
+    renderProfiles(Math.max(1, Math.min(8, Number(profileCount.value) || 1)), lastSiteLabel);
     updateSitePreview();
     showNotice('Chọn số lượng profile và website, sau đó bấm Chạy đồng thời.');
   } catch (error) {
