@@ -46,6 +46,8 @@ function renderActivityLog() {
 
 function addActivityLog(item) {
   if (!item || !item.text) return;
+  // Same behaviour as the reference tool: critical failures ring a siren.
+  window.aibcrAlarm?.notify?.(item.text, { level: item.level });
   activityLogRows.push(item);
   if (activityLogRows.length > 5000) activityLogRows = activityLogRows.slice(-5000);
   renderActivityLog();
@@ -834,6 +836,7 @@ api.onGroupHop((status) => {
   target.textContent = status.note;
   if (status.table_id) $('#run-table-stat').textContent = status.table_id;
   target.dataset.state = status.error ? 'error' : 'ready';
+  if (status.error) window.aibcrAlarm?.notify?.(status.note, { level: 'error' });
   showNotice(status.note, Boolean(status.error));
 });
 
@@ -875,6 +878,7 @@ api.onEngineEvent(({ game, event, data }) => {
 });
 
 initTheme();
+window.aibcrAlarm?.init?.();
 
 (async function boot() {
   try {

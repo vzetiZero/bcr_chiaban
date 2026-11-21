@@ -32,6 +32,19 @@
         <p>Qu&#7843;n l&#253; phi&#234;n Chrome, proxy v&#224; ho&#7841;t &#273;&#7897;ng nh&#243;m t&#7841;i m&#7897;t n&#417;i.</p>
       </div>
       <div class="app-heading-status">
+        <div class="alarm-box" id="alarm-sound-box">
+          <button id="alarm-toggle" class="alarm-toggle" type="button" title="Bật/Tắt còi báo động sự cố" aria-pressed="true">
+            <span id="alarm-sound-icon" class="alarm-icon" aria-hidden="true">&#128266;</span>
+            <span class="alarm-label">Còi sự cố</span>
+            <span id="alarm-state-text" class="alarm-state">BẬT</span>
+          </button>
+          <label class="alarm-volume">
+            <span>Âm lượng</span>
+            <input id="alarm-volume" type="range" min="0" max="100" step="5" value="80" aria-label="Âm lượng còi sự cố" />
+            <strong id="alarm-volume-text">80%</strong>
+          </label>
+          <button id="alarm-test" class="alarm-test" type="button" title="Nghe thử còi báo động">Thử còi</button>
+        </div>
         <span class="system-state"><i></i> S&#7860;N S&#192;NG</span>
         <span class="header-profile-count"><strong id="header-profile-count">4</strong><span>profiles</span></span>
       </div>
@@ -234,6 +247,7 @@
 
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
   </main>
+  <script src="alarm.js"></script>
   <script src="app.js"></script>
 </body>
 </html>
