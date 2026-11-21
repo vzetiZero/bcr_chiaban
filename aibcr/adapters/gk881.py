@@ -5,10 +5,34 @@ import time
 from aibcr.adapters import febet as DG
 
 
+def _activate_lobby_tab(driver, target_handle):
+    """Keep the game popup as the selected tab and close only its GK881 opener."""
+    source_handle = None
+    for handle in reversed(driver.window_handles):
+        try:
+            driver.switch_to.window(handle)
+            if "gk881.vip" in (driver.current_url or "").lower():
+                source_handle = handle
+                break
+        except Exception:
+            continue
+    if source_handle and source_handle != target_handle:
+        try:
+            driver.switch_to.window(source_handle)
+            driver.close()
+        except Exception:
+            pass
+    driver.switch_to.window(target_handle)
+    driver.switch_to.default_content()
+
+
 def open_dg(driver, wait=120.0):
     """Open GK881's DG lobby popup and make that lobby the profile's active tab."""
     initial = DG.lobby_tables(driver, wait=1.0) if driver is not None else {"ok": False}
     if initial.get("ok"):
+        target_handle = DG._dg_window(driver) or DG._lobby_handle(driver)
+        if target_handle:
+            _activate_lobby_tab(driver, target_handle)
         return {"ok": True, "already_open": True, "site_id": "gk881",
                 "lobby_ready": True, "tables": initial.get("tables", []),
                 "note": "Đã mở sảnh DG trên profile này."}
@@ -18,6 +42,19 @@ def open_dg(driver, wait=120.0):
     deadline = time.monotonic() + max(1.0, float(wait))
     source_handle = None
     try:
+        # Reuse an in-progress DG popup on retries instead of opening duplicates.
+        existing_handle = DG._dg_window(driver) or DG._lobby_handle(driver)
+        if existing_handle:
+            driver.switch_to.window(existing_handle)
+            ready = DG.lobby_tables(driver, wait=max(1.0, min(12.0, deadline - time.monotonic())))
+            if ready.get("ok"):
+                _activate_lobby_tab(driver, existing_handle)
+                return {"ok": True, "already_open": True, "site_id": "gk881",
+                        "lobby_ready": True, "tables": ready.get("tables", []),
+                        "note": "Đã nhận diện popup DG GK881 đang mở."}
+            return {"ok": False, "site_id": "gk881",
+                    "error": "Popup DG GK881 đã mở nhưng sảnh đang tải; sẽ quét lại mà không mở popup trùng."}
+
         # Prefer the GK881 page even if Chrome already has unrelated tabs open.
         for handle in reversed(driver.window_handles):
             try:
@@ -125,14 +162,7 @@ def open_dg(driver, wait=120.0):
 
         # Keep the actual lobby tab selected so refresh/reload acts on DG directly.
         # Close only the original GK881 landing tab, and only after the lobby is ready.
-        if target_handle != source_handle and source_handle in driver.window_handles:
-            try:
-                driver.switch_to.window(source_handle)
-                driver.close()
-            except Exception:
-                pass
-        driver.switch_to.window(target_handle)
-        driver.switch_to.default_content()
+        _activate_lobby_tab(driver, target_handle)
         return {"ok": True, "site_id": "gk881", "already_open": False,
                 "lobby_ready": True, "tables": ready.get("tables", []),
                 "note": "Đã mở sảnh DG từ GK881 và chuyển tab DG thành tab đang dùng."}

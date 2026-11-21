@@ -1009,29 +1009,32 @@ async function runDGGroup(count, siteIds) {
   }
   const autoEntryIndices = indices.filter((_, offset) => ['febet', 'gk881'].includes(selectedSites[offset]));
   const autoEntryStates = new Map();
-  if (autoEntryIndices.length) {
-    const labels = autoEntryIndices.map((index) => `Profile ${index} (${PROFILE_SITES.find((site) => site.id === selectedSites[index - 1])?.label || selectedSites[index - 1]})`).join(', ');
-    sendHopStatus({ active: true, waiting_indices: [...indices],
-      note: `\u0110ang t\u1ef1 v\u00e0o s\u1ea3nh DG cho ${labels}; c\u00e1c profile site kh\u00e1c v\u00e0o s\u1ea3nh th\u1ee7 c\u00f4ng.` });
-    const autoResults = await Promise.allSettled(autoEntryIndices.map((index) => {
-      const siteId = selectedSites[index - 1];
-      return siteId === 'febet'
-        ? profileEngine(index).call('febet.openDG', {}, 360000)
-        : profileEngine(index).call('gk881.openDG', { wait: 120 }, 360000);
-    }));
-    autoResults.forEach((result, offset) => {
-      const index = autoEntryIndices[offset];
+  const runSiteEntry = (index) => selectedSites[index - 1] === 'febet'
+    ? profileEngine(index).call('febet.openDG', {}, 360000)
+    : profileEngine(index).call('gk881.openDG', { wait: 120 }, 360000);
+  const rememberSiteEntryResults = (entryIndices, results) => {
+    results.forEach((result, offset) => {
+      const index = entryIndices[offset];
       const siteId = selectedSites[index - 1];
       const siteLabel = PROFILE_SITES.find((site) => site.id === siteId)?.label || siteId;
       const reply = result.status === 'fulfilled' ? result.value : { ok: false, error: result.reason.message };
       autoEntryStates.set(index, reply?.ok
         ? { ready: true, note: reply.note || `\u0110\u00e3 chuy\u1ec3n Profile ${index} (${siteLabel}) v\u00e0o s\u1ea3nh DG.` }
-        : { ready: false, note: `${siteLabel} ch\u01b0a t\u1ef1 m\u1edf \u0111\u01b0\u1ee3c DG (${reply?.error || 'ch\u01b0a x\u00e1c nh\u1eadn'}); c\u00f3 th\u1ec3 v\u00e0o s\u1ea3nh th\u1ee7 c\u00f4ng.` });
+        : { ready: false, note: `${siteLabel} ch\u01b0a t\u1ef1 m\u1edf \u0111\u01b0\u1ee3c DG (${reply?.error || 'ch\u01b0a x\u00e1c nh\u1eadn'}).` });
     });
+  };
+  if (autoEntryIndices.length) {
+    const labels = autoEntryIndices.map((index) => `Profile ${index} (${PROFILE_SITES.find((site) => site.id === selectedSites[index - 1])?.label || selectedSites[index - 1]})`).join(', ');
+    sendHopStatus({ active: true, waiting_indices: [...indices],
+      note: `\u0110ang t\u1ef1 v\u00e0o s\u1ea3nh DG cho ${labels}; c\u00e1c profile site kh\u00e1c v\u00e0o s\u1ea3nh th\u1ee7 c\u00f4ng.` });
+    const autoResults = await Promise.allSettled(autoEntryIndices.map(runSiteEntry));
+    rememberSiteEntryResults(autoEntryIndices, autoResults);
+    const outcome = autoEntryIndices.map((index) => `P${index}: ${autoEntryStates.get(index)?.note}`)
+      .join(' \u00b7 ');
     sendHopStatus({ active: true, waiting_indices: [...indices],
       profile_states: indices.map((index) => ({ index, ready: autoEntryStates.get(index)?.ready || false,
         note: autoEntryStates.get(index)?.note || 'Profile site n\u00e0y c\u1ea7n v\u00e0o s\u1ea3nh DG th\u1ee7 c\u00f4ng.' })),
-      note: '\u0110\u00e3 ch\u1ea1y thao t\u00e1c t\u1ef1 v\u00e0o DG cho c\u00e1c site h\u1ed7 tr\u1ee3. \u0110ang qu\u00e9t c\u00e1c profile m\u1ed7i 5 gi\u00e2y \u0111\u1ec3 x\u00e1c nh\u1eadn v\u00e0 \u0111\u1ed3ng b\u1ed9 nh\u00f3m.' });
+      note: `K\u1ebft qu\u1ea3 t\u1ef1 v\u00e0o s\u1ea3nh DG: ${outcome}` });
   }
   sendHopStatus({ active: true,
     note: autoEntryIndices.length
@@ -1049,17 +1052,36 @@ async function runDGGroup(count, siteIds) {
       // not expose Laya's `enterMC` node or a table id yet, so `ok` is the
       // reliable signal that the profile reached the DG document.
       const ready = Boolean(result?.ok);
+      const entryState = autoEntryStates.get(index);
       return { index, ready, in_table: result?.in_table === true,
-        note: ready ? (result.in_table ? `Đã thấy đang ở bàn ${result.table_id || ''}.` : 'Đã nhận diện sảnh DG.')
-          : (autoEntryStates.get(index)?.note || `Đang chờ sảnh DG${result?.error ? ` · ${result.error}` : ''}.`) };
+        note: ready ? (result.in_table ? `\u0110ang \u1edf b\u00e0n ${result.table_id || ''}.` : `\u0110\u00e3 nh\u1eadn di\u1ec7n s\u1ea3nh DG.`)
+          : (entryState?.ready
+            ? `Lu\u1ed3ng ${selectedSites[index - 1]} \u0111\u00e3 k\u1ebft th\u00fac nh\u01b0ng ch\u01b0a x\u00e1c nh\u1eadn DG${result?.error ? ` \u00b7 ${result.error}` : ''}.`
+            : (entryState?.note || `\u0110ang ch\u1edd s\u1ea3nh DG${result?.error ? ` \u00b7 ${result.error}` : ''}.`)) };
     });
     const waiting = profileStates.filter((item) => !item.ready).map((item) => item.index);
     if (!waiting.length) break;
+    const waitingDetails = profileStates.filter((profile) => !profile.ready)
+      .map((profile) => `P${profile.index}: ${profile.note}`).join(' \u00b7 ');
     for (let countdown = 5; countdown >= 0; countdown -= 1) {
       sendHopStatus({ active: true, countdown, waiting_indices: waiting, profile_states: profileStates,
         note: countdown === 0 ? `Đang quét lại sảnh DG cho profile ${waiting.join(', ')}...`
-          : `Đang chờ profile ${waiting.join(', ')} vào sảnh DG · quét lại sau ${countdown} giây.` });
+          : `Profile ${waiting.join(', ')} chưa vào sảnh DG; quét lại sau ${countdown} giây. ${waitingDetails}` });
       if (countdown > 0) await new Promise((resolve) => setTimeout(resolve, 1000));
+    }
+    const retryIndices = waiting.filter((index) => autoEntryIndices.includes(index));
+    if (retryIndices.length) {
+      sendHopStatus({ active: true, waiting_indices: retryIndices,
+        profile_states: profileStates,
+        note: `T\u1ef1 th\u1eed l\u1ea1i lu\u1ed3ng v\u00e0o s\u1ea3nh cho ${retryIndices.map((index) => `Profile ${index}`).join(', ')}.` });
+      const retryResults = await Promise.allSettled(retryIndices.map(runSiteEntry));
+      rememberSiteEntryResults(retryIndices, retryResults);
+      const retryOutcome = retryIndices.map((index) => `P${index}: ${autoEntryStates.get(index)?.note}`)
+        .join(' \u00b7 ');
+      sendHopStatus({ active: true, waiting_indices: retryIndices,
+        profile_states: profileStates.map((profile) => ({ ...profile,
+          note: autoEntryStates.get(profile.index)?.note || profile.note })),
+        note: `K\u1ebft qu\u1ea3 th\u1eed l\u1ea1i: ${retryOutcome}` });
     }
   }
   if (!indices.every((index) => activeProfileIndices.has(index))) {

@@ -172,6 +172,10 @@ def open_dream_gaming_baccarat(driver):
     try:
         if not driver.window_handles:
             return {"ok": False, "error": "Không tìm thấy cửa sổ Chrome."}
+        # Detect a popup left by an earlier attempt before navigating back to FEBET.
+        if _dg_window(driver) is not None:
+            return {"ok": True, "already_open": True, "mode": "tab",
+                    "note": "Game DG đã mở ở tab riêng của profile này."}
         if _lobby_handle(driver) is None:
             driver.switch_to.window(driver.window_handles[-1])
             driver.switch_to.default_content()
