@@ -7,6 +7,7 @@ const path = require('node:path');
 const fs = require('node:fs');
 const { randomUUID } = require('node:crypto');
 const { parseProxy, proxyLabel, startProxyBridge, checkProxy } = require('./proxy_bridge');
+const { commonReachableStake } = require('./chip_amounts');
 
 const PROJECT_ROOT = path.resolve(__dirname, '..');
 const PYTHON_CANDIDATES = [
@@ -724,12 +725,21 @@ async function groupBettingTick() {
     });
     const engineStates = await Promise.all(groupBetting.indices.map((index) =>
       profileEngine(index).call('state', {}, 10000)));
-    const stakes = engineStates.map((state) => Math.trunc(Number(state?.bet_ladder?.stake) || 0));
-    if (stakes.some((stake) => !Number.isInteger(stake) || stake <= 0)) {
+    const ladderStakes = engineStates.map((state) => Math.trunc(Number(state?.bet_ladder?.stake) || 0));
+    if (ladderStakes.some((stake) => !Number.isInteger(stake) || stake <= 0)) {
       stopGroupBetting('Không đọc được mức dãy cược hiện tại của mọi profile.', true);
       return;
     }
-    groupStatus(`Đang xếp chip ${stakes.join('/')}k vào các cửa ${sides.join('/')}…`);
+    const targetStake = Math.min(...ladderStakes);
+    const commonStake = commonReachableStake(targetStake, states);
+    if (!commonStake) {
+      stopGroupBetting(`Kh\u00f4ng c\u00f3 m\u1ee9c chip chung h\u1ee3p l\u1ec7 kh\u00f4ng v\u01b0\u1ee3t ${targetStake}k; \u0111\u00e3 d\u1eebng tr\u01b0\u1edbc khi x\u1ebfp chip.`, true);
+      return;
+    }
+    const stakes = engineStates.map(() => commonStake);
+    const stakeNote = commonStake < targetStake
+      ? ` (d\u00e3y ${targetStake}k \u2192 ${commonStake}k theo chip chung)` : '';
+    groupStatus(`Đang xếp chip ${stakes.join('/')}k vào các cửa ${sides.join('/')}…${stakeNote}`);
     const placements = await Promise.allSettled(groupBetting.indices.map((index, offset) =>
       profileEngine(index).call('dg.stageBet', {
         side: sides[offset], amount_k: stakes[offset], round_id: roundId,

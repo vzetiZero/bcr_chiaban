@@ -497,8 +497,12 @@ return (() => {
   const rawMax = Number(view.baccaratLimit?.bpMax || view.baccaratLimit?.max
     || player.bpMax || player.limitMax || 0);
   const currency = String(player.currency || player.currencyName || player.currencyCode || '').toUpperCase();
-  const scale = rawMin >= 1000 ? 1000 : rawMin > 0 ? 1
-    : currency === 'VND' ? 1000 : Number(player.balance || 0) >= 100000 ? 1000 : 0;
+  const chipValues = (view.chipMan?.chipArray || []).map(chip =>
+    Number(chip?.chipNum || chip?.value || chip?.amount || 0)).filter(value => value > 0);
+  const maxRawChip = Math.max(0, ...chipValues);
+  const scale = rawMin >= 1000 || maxRawChip >= 1000 ? 1000
+    : currency === 'VND' || Number(player.balance || 0) >= 100000 ? 1000
+    : rawMin > 0 || maxRawChip > 0 ? 1 : 0;
   const values = (obj, names) => {
     for (const name of names) if (obj && Number(obj[name]) > 0) return Number(obj[name]);
     return 0;
@@ -576,9 +580,9 @@ const autoConfirm = Boolean(arguments[3]);
     || player.bpMax || player.limitMax || 0);
   const currency = String(player.currency || player.currencyName || player.currencyCode || '').toUpperCase();
   let maxRawChip = Math.max(0,...(view.chipMan?.chipArray || []).map(c=>Number(c?.chipNum||c?.value||c?.amount||0)));
-  const scale = rawMin >= 1000 ? 1000 : rawMin > 0 ? 1
-    : currency === 'VND' ? 1000 : Number(player.balance || 0) >= 100000 ? 1000
-    : maxRawChip > 0 && maxRawChip < 1000 ? 1 : 0;
+  const scale = rawMin >= 1000 || maxRawChip >= 1000 ? 1000
+    : currency === 'VND' || Number(player.balance || 0) >= 100000 ? 1000
+    : rawMin > 0 || maxRawChip > 0 ? 1 : 0;
   if (!scale) return {ok:false,error:'Không xác định được đơn vị tiền của bàn DG; đã dừng để tránh đặt sai số tiền.'};
   if (Number(info.stateId ?? info.state ?? view.stateId ?? 0) !== 1
       || Number(info.countDown ?? view.countDown ?? 0) < 5)
