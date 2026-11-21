@@ -494,20 +494,28 @@ class BrowserSession:
                      timeout=SCRIPT_TIMEOUT) as response:
             return json.load(response)
 
+    # Browser-internal surfaces that cannot host a navigable page.
+    _BLOCKED_PAGE_PREFIXES = ("chrome-extension://", "devtools://", "chrome://omnibox",
+                              "chrome://settings", "chrome://flags", "chrome://version")
+
+    def _is_navigable_page(self, page):
+        """True when a CDP target is a tab we can navigate.
+
+        A managed profile frequently starts on a blank surface: OmniLogin opens
+        ``chrome://newtab/`` and a raw profile may sit on ``about:blank``. Those
+        must be kept, otherwise the engine reports "no Chrome tab to open the
+        site" even though the window is right there.
+        """
+        if not isinstance(page, dict) or page.get("type") != "page":
+            return False
+        url = (page.get("url") or "").strip().lower()
+        if not isinstance(page.get("webSocketDebuggerUrl"), str):
+            return False
+        return not url.startswith(self._BLOCKED_PAGE_PREFIXES)
+
     def _cdp_pages(self):
         self._last_cdp_targets = self._cdp_json("list")
-        pages = []
-        for page in self._last_cdp_targets:
-            if not isinstance(page, dict) or page.get("type") != "page":
-                continue
-            url = page.get("url") or ""
-            # A freshly attached OmniLogin profile sits on about:blank until the
-            # app navigates it. Those tabs are still real windows we must resize,
-            # so keep them; only browser-internal surfaces are skipped.
-            if url.startswith(("chrome://", "chrome-extension://", "devtools://")):
-                continue
-            pages.append(page)
-        return pages
+        return [page for page in self._last_cdp_targets if self._is_navigable_page(page)]
 
     def _cdp_page(self):
         pages = self._cdp_pages()

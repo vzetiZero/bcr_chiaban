@@ -265,6 +265,46 @@ async function openHidemiumProfile(apiUrl, profileId) {
   return { provider: 'hidemium', profileId: String(profileId), port, apiUrl: base };
 }
 
+// Remember which OmniLogin/Hidemium profile belongs to each app profile so the
+// next launch reconnects without asking the user to configure it again.
+function omniConnectionPath() {
+  return path.join(app.getPath('userData'), 'profile-connections.json');
+}
+
+async function loadOmniConnections() {
+  try {
+    const value = JSON.parse(await fs.promises.readFile(omniConnectionPath(), 'utf8'));
+    return value && typeof value === 'object' && value.profiles && typeof value.profiles === 'object'
+      ? value : { profiles: {} };
+  } catch {
+    return { profiles: {} };
+  }
+}
+
+async function saveOmniConnections(store) {
+  const target = omniConnectionPath();
+  await fs.promises.mkdir(path.dirname(target), { recursive: true });
+  await fs.promises.writeFile(target, JSON.stringify(store, null, 2),
+    { encoding: 'utf8', mode: 0o600 });
+}
+
+async function rememberOmniConnection(index, omni, source, apiUrl) {
+  if (!omni) return;
+  const store = await loadOmniConnections();
+  store.profiles[String(index)] = {
+    provider: omni.provider, profileId: String(omni.profileId),
+    apiUrl: apiUrl || omni.apiUrl, source, savedAt: new Date().toISOString(),
+  };
+  await saveOmniConnections(store);
+}
+
+async function forgetOmniConnection(index) {
+  const store = await loadOmniConnections();
+  if (!store.profiles[String(index)]) return;
+  delete store.profiles[String(index)];
+  await saveOmniConnections(store);
+}
+
 async function loadProxyStore() {
   try {
     const value = JSON.parse(await fs.promises.readFile(proxyStorePath(), 'utf8'));
@@ -1001,8 +1041,14 @@ ipcMain.handle('profile:open', async (_event, { index, count, profile, url, sour
           proxy: `Proxy theo cài đặt của ${omni.provider === 'omni' ? 'OmniLogin' : 'Hidemium'}` };
       }
     }
-    if (omni) activeOmniProfiles.set(profileIndex, omni);
-    else activeOmniProfiles.delete(profileIndex);
+    if (omni) {
+      activeOmniProfiles.set(profileIndex, omni);
+      await rememberOmniConnection(profileIndex, omni, omni.provider, omni.apiUrl)
+        .catch(() => {});
+    } else {
+      activeOmniProfiles.delete(profileIndex);
+      await forgetOmniConnection(profileIndex).catch(() => {});
+    }
     if (newBridge) activeProxyBridges.set(profileIndex, newBridge);
     activeProfileIndices.add(profileIndex);
     return { ok: true, note: omni ? `Đã mở profile ${omni.provider === 'omni' ? 'OmniLogin' : 'Hidemium'} ${omni.profileId}.` : 'Đang mở Chrome profile.',
@@ -1410,6 +1456,7 @@ ipcMain.handle('profile:close', async (_event, { index }) => {
     const omni = activeOmniProfiles.get(profileIndex);
     activeOmniProfiles.delete(profileIndex);
     if (omni) await stopOmniProfile(omni);
+    await forgetOmniConnection(profileIndex).catch(() => {});
     return reply;
   } catch (error) {
     return { ok: false, error: error.message || 'Không đóng được profile.' };
@@ -1461,6 +1508,17 @@ ipcMain.handle('engine:call', async (_event, { game, method, params }) => {
   } catch (error) {
     return { ok: false, error: String(error.message || error), ms: Date.now() - started };
   }
+});
+
+ipcMain.handle('profiles:connections', async () => loadOmniConnections());
+
+ipcMain.handle('profiles:forgetConnection', async (_event, { index } = {}) => {
+  const profileIndex = Math.trunc(Number(index));
+  if (!Number.isInteger(profileIndex) || profileIndex < 1 || profileIndex > 8) {
+    return { ok: false, error: 'Profile không hợp lệ.' };
+  }
+  await forgetOmniConnection(profileIndex);
+  return { ok: true };
 });
 
 ipcMain.handle('profiles:open', async (_event, { count, siteId, siteIds, indices, profiles, source = 'local', omniApiUrl, hidemiumApiUrl }) => {
@@ -1618,6 +1676,7 @@ ipcMain.handle('profiles:open', async (_event, { count, siteId, siteIds, indices
       const omni = source === 'omni' ? await openOmniProfile(apiUrl, providerRows[index])
         : await openHidemiumProfile(apiUrl, providerRows[index]);
       activeOmniProfiles.set(profileIndex, omni);
+      await rememberOmniConnection(profileIndex, omni, source, apiUrl).catch(() => {});
       const attached = await engine.call('chrome.attachExternal', {
         port: omni.port, width: settings[index].width, height: settings[index].height, provider: source,
       }, 45000);

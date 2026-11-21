@@ -4,6 +4,8 @@ const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('aibcr', {
   info: () => ipcRenderer.invoke('app:info'),
   call: (game, method, params) => ipcRenderer.invoke('engine:call', { game, method, params }),
+  loadProfileConnections: () => ipcRenderer.invoke('profiles:connections'),
+  forgetProfileConnection: (index) => ipcRenderer.invoke('profiles:forgetConnection', { index }),
   openProfiles: (count, siteId, profiles, source, omniApiUrl, siteIds, hidemiumApiUrl, indices) => ipcRenderer.invoke('profiles:open',
     { count, siteId, profiles, source, omniApiUrl, siteIds, hidemiumApiUrl, indices }),
   openProfile: (index, count, profile, url, source, omniApiUrl, hidemiumApiUrl) => ipcRenderer.invoke('profile:open',

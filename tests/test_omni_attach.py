@@ -25,8 +25,9 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 class CdpPageFilterTest(unittest.TestCase):
-    def test_about_blank_tabs_are_kept(self):
-        """A fresh OmniLogin profile sits on about:blank and must stay drivable."""
+    def test_blank_tabs_are_kept(self):
+        """A fresh managed profile sits on about:blank or chrome://newtab/ and
+        must stay drivable, otherwise no tab can be navigated."""
         session = BR.BrowserSession()
         session._cdp_json = lambda resource: [
             {"type": "page", "id": "A", "url": "about:blank",
@@ -35,14 +36,17 @@ class CdpPageFilterTest(unittest.TestCase):
              "webSocketDebuggerUrl": "ws://127.0.0.1:%d/devtools/page/B" % BR.CDP_PORT},
         ]
         pages = session._cdp_pages()
-        self.assertEqual([page["id"] for page in pages], ["A"])
+        self.assertEqual([page["id"] for page in pages], ["A", "B"])
 
     def test_browser_internal_surfaces_are_skipped(self):
         session = BR.BrowserSession()
         session._cdp_json = lambda resource: [
-            {"type": "page", "id": "X", "url": "chrome-extension://abc/page.html"},
-            {"type": "page", "id": "Y", "url": "devtools://devtools/bundled/x.html"},
-            {"type": "page", "id": "Z", "url": "https://site.example/lobby"},
+            {"type": "page", "id": "X", "url": "chrome-extension://abc/page.html",
+             "webSocketDebuggerUrl": "ws://127.0.0.1:9222/devtools/page/X"},
+            {"type": "page", "id": "Y", "url": "devtools://devtools/bundled/x.html",
+             "webSocketDebuggerUrl": "ws://127.0.0.1:9222/devtools/page/Y"},
+            {"type": "page", "id": "Z", "url": "https://site.example/lobby",
+             "webSocketDebuggerUrl": "ws://127.0.0.1:9222/devtools/page/Z"},
         ]
         pages = session._cdp_pages()
         self.assertEqual([page["id"] for page in pages], ["Z"])
@@ -51,7 +55,8 @@ class CdpPageFilterTest(unittest.TestCase):
         session = BR.BrowserSession()
         session._cdp_json = lambda resource: [
             {"type": "service_worker", "id": "SW", "url": "https://site.example/sw.js"},
-            {"type": "page", "id": "P", "url": "about:blank"},
+            {"type": "page", "id": "P", "url": "about:blank",
+             "webSocketDebuggerUrl": "ws://127.0.0.1:9222/devtools/page/P"},
         ]
         self.assertEqual([page["id"] for page in session._cdp_pages()], ["P"])
 
@@ -82,9 +87,10 @@ class ProfileStopIsolationTest(unittest.TestCase):
             cls.main_js = handle.read()
 
     def test_single_open_keeps_the_profile_on_navigation_failure(self):
-        block = self.main_js[
-            self.main_js.index("const navigated = await engine.call('site.open'"):]
-        block = block[:block.index("if (omni) activeOmniProfiles.set(profileIndex, omni)")]
+        start = self.main_js.index("const navigated = await engine.call('site.open'")
+        block = self.main_js[start:]
+        # The failure branch ends where the success branch registers the profile.
+        block = block[:block.index("if (omni) {")]
         self.assertIn("keepProfile: true", block)
         self.assertNotIn("stopOmniProfile", block)
 

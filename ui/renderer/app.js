@@ -332,6 +332,102 @@ $('#profile-picker').addEventListener('change', (event) => {
 
 const OMNI_API_KEY = 'aibcr.omniApiUrl';
 const OMNI_ASSIGNMENTS_KEY = 'aibcr.omniAssignments';
+// Reconnect without re-configuring: restore the manager, API URL and profile
+// choice remembered from the last successful connection.
+async function restoreRememberedConnections() {
+  let store = { profiles: {} };
+  try { store = await api.loadProfileConnections(); } catch { return; }
+  const entries = Object.entries(store?.profiles || {});
+  if (!entries.length) return;
+
+  const savedSource = localStorage.getItem(PROFILE_SOURCE_KEY);
+  const providers = new Set(entries.map(([, item]) => item.provider).filter(Boolean));
+  const source = savedSource || (providers.has('omni') ? 'omni'
+    : providers.has('hidemium') ? 'hidemium' : '');
+  if (source) {
+    const select = $('#profile-source');
+    if (select && [...select.options].some((option) => option.value === source)) {
+      select.value = source;
+    }
+  }
+
+  const omniEntry = entries.find(([, item]) => item.provider === 'omni');
+  if (omniEntry?.[1]?.apiUrl && $('#omni-api-url')) {
+    $('#omni-api-url').value = omniEntry[1].apiUrl
+      || localStorage.getItem(OMNI_API_KEY) || $('#omni-api-url').value;
+  }
+  const hidemiumEntry = entries.find(([, item]) => item.provider === 'hidemium');
+  if (hidemiumEntry?.[1]?.apiUrl && $('#hidemium-api-url')) {
+    $('#hidemium-api-url').value = hidemiumEntry[1].apiUrl
+      || localStorage.getItem(HIDEMIUM_API_KEY) || $('#hidemium-api-url').value;
+  }
+
+  // Assignments can only be shown when the manager's profile list is loaded.
+  // Refresh it for the remembered provider so the selects have real options.
+  try {
+    if (source === 'omni' && $('#omni-api-url').value.trim()) {
+      const result = await api.listOmniProfiles($('#omni-api-url').value.trim());
+      if (result?.ok) {
+        omniProfiles = result.profiles || [];
+        const select = $('#omni-profile-select');
+        if (select) {
+          select.replaceChildren();
+          for (const profile of omniProfiles) {
+            const option = document.createElement('option');
+            option.value = profile.id;
+            option.textContent = `${profile.name} \u00b7 ${profile.id}`;
+            select.append(option);
+          }
+        }
+        const status = $('#omni-status');
+        if (status) status.textContent = `Đã tải ${omniProfiles.length} profile OmniLogin.`;
+      }
+    } else if (source === 'hidemium' && $('#hidemium-api-url').value.trim()) {
+      const result = await api.listHidemiumProfiles($('#hidemium-api-url').value.trim());
+      if (result?.ok) {
+        hidemiumProfiles = result.profiles || [];
+        const select = $('#hidemium-profile-select');
+        if (select) {
+          select.replaceChildren();
+          for (const profile of hidemiumProfiles) {
+            const option = document.createElement('option');
+            option.value = profile.id;
+            option.textContent = `${profile.name} \u00b7 ${profile.id}`;
+            select.append(option);
+          }
+        }
+        const status = $('#hidemium-status');
+        if (status) status.textContent = `Đã tải ${hidemiumProfiles.length} profile Hidemium.`;
+      }
+    }
+  } catch (error) {
+    // Manager may be closed; keep the saved ids and let the user reconnect.
+  }
+
+  const restored = [];
+  for (const [profileIndex, item] of entries) {
+    if (!item?.profileId) continue;
+    const key = String(profileIndex);
+    if (item.provider === 'omni') omniAssignments[key] = String(item.profileId);
+    if (item.provider === 'hidemium') hidemiumAssignments[key] = String(item.profileId);
+    restored.push(Number(profileIndex));
+  }
+  localStorage.setItem(OMNI_ASSIGNMENTS_KEY, JSON.stringify(omniAssignments));
+  localStorage.setItem(HIDEMIUM_ASSIGNMENTS_KEY, JSON.stringify(hidemiumAssignments));
+
+  // Adopt the remembered profiles as the selection. A stale selection from a
+  // previous run (for example P4) must not win over what actually reconnects.
+  const chosen = activeProfileSelection();
+  const alreadyChosen = restored.every((index) => chosen.includes(index));
+  if (restored.length && (!alreadyChosen || chosen.length !== restored.length)) {
+    selectedProfileIndices = [...new Set(restored)].sort((a, b) => a - b);
+    localStorage.setItem(PROFILE_SELECTION_KEY, JSON.stringify(selectedProfileIndices));
+    profileSelectionTouched = true;
+  }
+  renderOmniAssignments(MAX_PROFILES);
+  renderHidemiumAssignments(MAX_PROFILES);
+  showNotice(`Đã khôi phục kết nối cũ cho profile ${restored.join(', ')}.`);
+}
 const HIDEMIUM_API_KEY = 'aibcr.hidemiumApiUrl';
 const HIDEMIUM_ASSIGNMENTS_KEY = 'aibcr.hidemiumAssignments';
 const PROFILE_SOURCE_KEY = 'aibcr.profileSource';
@@ -902,6 +998,7 @@ window.aibcrAlarm?.init?.();
     try { hidemiumAssignments = JSON.parse(localStorage.getItem(HIDEMIUM_ASSIGNMENTS_KEY) || '{}') || {}; } catch { hidemiumAssignments = {}; }
     renderOmniAssignments(MAX_PROFILES);
     renderHidemiumAssignments(MAX_PROFILES);
+    await restoreRememberedConnections();
     syncProfilePicker();
     renderProfiles(MAX_PROFILES, lastSiteLabel, [], selectedIndicesOrDefault());
     updateSitePreview();
