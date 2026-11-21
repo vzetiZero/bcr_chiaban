@@ -46,12 +46,12 @@ const PYTHON_CANDIDATES = [
 ].filter(Boolean);
 
 const PROFILE_SITES = [
-  { id: 'febet', label: 'FEBET Baccarat', url: 'https://febet.kiwi/live-casino/baccarat?a=c76811abcadb64fed7d82b32d7e79f3c&utm_campaign=social&utm_source=aphonso&utm_medium=sale&utm_term=bee&utm_content=KANGIN&event=' },
-  { id: 'e3951', label: 'E3951', url: 'https://e39d5d05qc.e3951.com/m/gameRecord' },
+  { id: 'e3951', label: 'E3951', url: 'https://www.e3951.com/seamless?gameType=LIVE' },
   { id: 'gk881', label: 'GK881', url: 'https://m.gk881.vip/' },
   { id: 'vnwtop', label: 'VNWTop', url: 'https://vnwtop.com/' },
   { id: '888ae66', label: '888AE66', url: 'https://www.888ae66.com/' },
   { id: 'bum123', label: 'BUM123', url: 'https://www.bum123.com/aff/10459' },
+  { id: 'febet', label: 'FEBET Baccarat', url: 'https://febet.kiwi/live-casino/baccarat?a=c76811abcadb64fed7d82b32d7e79f3c&utm_campaign=social&utm_source=aphonso&utm_medium=sale&utm_term=bee&utm_content=KANGIN&event=' },
 ];
 
 const DEFAULT_BET_CONFIG = Object.freeze({
@@ -1007,11 +1007,14 @@ async function runDGGroup(count, siteIds) {
       || selectedSites.some((id) => !PROFILE_SITES.some((site) => site.id === id))) {
     return { ok: false, error: 'Mỗi profile cần có một site hợp lệ trước khi vào sảnh DG.' };
   }
-  const autoEntryIndices = indices.filter((_, offset) => ['febet', 'gk881'].includes(selectedSites[offset]));
+  const autoEntryIndices = indices.filter((_, offset) => ['febet', 'gk881', 'e3951'].includes(selectedSites[offset]));
   const autoEntryStates = new Map();
-  const runSiteEntry = (index) => selectedSites[index - 1] === 'febet'
-    ? profileEngine(index).call('febet.openDG', {}, 360000)
-    : profileEngine(index).call('gk881.openDG', { wait: 120 }, 360000);
+  const runSiteEntry = (index) => {
+    const siteId = selectedSites[index - 1];
+    if (siteId === 'febet') return profileEngine(index).call('febet.openDG', {}, 360000);
+    if (siteId === 'e3951') return profileEngine(index).call('e3951.openDG', { wait: 150 }, 360000);
+    return profileEngine(index).call('gk881.openDG', { wait: 120 }, 360000);
+  };
   const rememberSiteEntryResults = (entryIndices, results) => {
     results.forEach((result, offset) => {
       const index = entryIndices[offset];

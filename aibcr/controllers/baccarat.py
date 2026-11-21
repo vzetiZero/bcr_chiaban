@@ -30,6 +30,7 @@ from aibcr.adapters import febet as FEBET
 from aibcr.adapters import lobby_stream as LS
 from aibcr.adapters import table_bets as TB
 from aibcr.adapters.wm_bet import WMBet
+from aibcr.controllers.sites.e3951 import E3951EntryController
 from aibcr.controllers.sites.febet import FEBETEntryController
 from aibcr.controllers.sites.gk881 import GK881EntryController
 from aibcr.config import *  # noqa: F401,F403
@@ -122,6 +123,7 @@ class BaccaratController:
         self.browser = BR.BrowserSession()
         self.febet_entry = FEBETEntryController(self)
         self.gk881_entry = GK881EntryController(self)
+        self.e3951_entry = E3951EntryController(self)
         self.stream = LS.LobbyStream(self.browser, human_mouse=self.config["human_mouse"],
                                      game="baccarat")
         self.sim = self._build_sim()
