@@ -961,16 +961,22 @@ async function runDGGroup(count, siteIds) {
     profileStates = checks.map((check, offset) => {
       const index = indices[offset];
       const result = check.status === 'fulfilled' ? check.value : null;
-      const ready = Boolean(result?.ok && (result.lobby === true || result.in_table === true));
+      // `dg.table` succeeds only after it found the DG tab/frame. A lobby may
+      // not expose Laya's `enterMC` node or a table id yet, so `ok` is the
+      // reliable signal that the profile reached the DG document.
+      const ready = Boolean(result?.ok);
       return { index, ready, in_table: result?.in_table === true,
-        note: ready ? (result.in_table ? `Đã thấy đang ở bàn ${result.table_id || ''}.` : 'Đã thấy sảnh DG.')
-          : 'Chưa thấy sảnh DG; đang chờ thao tác thủ công.' };
+        note: ready ? (result.in_table ? `Đã thấy đang ở bàn ${result.table_id || ''}.` : 'Đã nhận diện sảnh DG.')
+          : `Đang chờ sảnh DG${result?.error ? ` · ${result.error}` : ''}.` };
     });
     const waiting = profileStates.filter((item) => !item.ready).map((item) => item.index);
     if (!waiting.length) break;
-    sendHopStatus({ active: true, waiting_indices: waiting, profile_states: profileStates,
-      note: `Đang chờ vào sảnh DG trên profile ${waiting.join(', ')}. Tự quét lại sau 5 giây.` });
-    await new Promise((resolve) => setTimeout(resolve, 5000));
+    for (let countdown = 5; countdown >= 0; countdown -= 1) {
+      sendHopStatus({ active: true, countdown, waiting_indices: waiting, profile_states: profileStates,
+        note: countdown === 0 ? `Đang quét lại sảnh DG cho profile ${waiting.join(', ')}...`
+          : `Đang chờ profile ${waiting.join(', ')} vào sảnh DG · quét lại sau ${countdown} giây.` });
+      if (countdown > 0) await new Promise((resolve) => setTimeout(resolve, 1000));
+    }
   }
   if (!indices.every((index) => activeProfileIndices.has(index))) {
     const error = 'Đã dừng chờ sảnh vì một hoặc nhiều profile đã được đóng.';
@@ -981,19 +987,27 @@ async function runDGGroup(count, siteIds) {
     note: 'Đã thấy sảnh DG trên tất cả profile; đang đọc danh sách bàn để đồng bộ nhóm...' });
   const leader = profileEngine(indices[0]);
   let scan = null;
-  const deadline = Date.now() + 180000;
-  while (Date.now() < deadline) {
+  let tables = [];
+  while (indices.every((index) => activeProfileIndices.has(index))) {
     try {
       scan = await leader.call('dg.tables', { wait: 0 }, 10000);
-      if (scan?.ok && (scan.tables || []).some((row) => /^60[0-9]{3,}$/.test(String(row.table_id || '')))) break;
+      tables = (scan?.tables || []).filter((row) => /^60[0-9]{3,}$/.test(String(row.table_id || '')));
+      if (scan?.ok && tables.length) break;
     } catch (error) {
       scan = { ok: false, error: error.message };
     }
-    sendHopStatus({ active: true, profile_states: profileStates,
-      note: 'Đã thấy sảnh DG; đang đợi danh sách bàn tải xong, sẽ quét lại sau 5 giây.' });
-    await new Promise((resolve) => setTimeout(resolve, 5000));
+    for (let countdown = 5; countdown >= 0; countdown -= 1) {
+      sendHopStatus({ active: true, countdown, profile_states: profileStates,
+        note: countdown === 0 ? 'Đang quét danh sách bàn DG...'
+          : `Đã nhận diện DG; chờ danh sách bàn · quét lại sau ${countdown} giây.` });
+      if (countdown > 0) await new Promise((resolve) => setTimeout(resolve, 1000));
+    }
   }
-  const tables = (scan?.tables || []).filter((row) => /^60[0-9]{3,}$/.test(String(row.table_id || '')));
+  if (!indices.every((index) => activeProfileIndices.has(index))) {
+    const error = 'Đã dừng quét bàn vì một hoặc nhiều profile đã được đóng.';
+    sendHopStatus({ active: false, error: true, note: error });
+    return { ok: false, cancelled: true, error, profile_states: profileStates };
+  }
   if (!tables.length) {
     const reason = scan?.error || 'H\u1ebft th\u1eddi gian ch\u1edd, ch\u01b0a \u0111\u1ecdc \u0111\u01b0\u1ee3c danh s\u00e1ch b\u00e0n th\u1eadt t\u1eeb s\u1ea3nh DG.';
     sendHopStatus({ active: false, error: true, note: reason });

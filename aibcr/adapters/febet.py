@@ -418,7 +418,10 @@ def _dg_frame(driver, wait=15.0):
                     driver.switch_to.default_content()
                 except Exception:
                     pass
-            if "ddnewpc" in location and _TABLE_ID.match(_table_id_from_src(location)):
+            # A DG lobby may not have a tableId yet, or may expose only a
+            # lobby identifier. Detect the DG document first; validate 60xxx
+            # only when selecting a real baccarat table.
+            if "ddnewpc" in location.lower():
                 return index, location
         if time.monotonic() >= deadline:
             return None, None
@@ -690,7 +693,7 @@ def _dg_window(driver):
         try:
             driver.switch_to.window(handle)
             driver.switch_to.default_content()
-            if "ddnewpc" in (driver.current_url or ""):
+            if "ddnewpc" in (driver.current_url or "").lower():
                 return handle
         except Exception:
             continue
@@ -703,8 +706,7 @@ def _dg_context(driver, wait=15.0):
     while True:
         if _dg_window(driver) is not None:
             location = driver.current_url or ""
-            if _TABLE_ID.match(_table_id_from_src(location)):
-                return {"mode": "tab", "location": location}
+            return {"mode": "tab", "location": location}
         elif _lobby_handle(driver) is not None:
             index, location = _dg_frame(driver, wait=0)
             if index is not None:

@@ -134,10 +134,13 @@ class CurrentTableTest(unittest.TestCase):
         driver = FakeDriver(LOBBY, "https://febet.kiwi/other")
         self.assertFalse(F.current_table(driver, wait=0)["ok"])
 
-    def test_loader_without_table_id_waits_then_fails(self):
+    def test_dg_lobby_without_table_id_is_detected(self):
         driver = FakeDriver(LOBBY, "https://x.example.com/ddnewpc/direct1.html?token=SECRET")
         result = F.current_table(driver, wait=0)
-        self.assertFalse(result["ok"])
+        self.assertTrue(result["ok"])
+        self.assertFalse(result["in_table"])
+        self.assertTrue(result["lobby"])
+        self.assertNotIn("SECRET", str(result))
 
     def test_same_dg_frame_works_from_another_site_host(self):
         driver = FakeDriver("https://m.gk881.vip/", DG_LOC)
