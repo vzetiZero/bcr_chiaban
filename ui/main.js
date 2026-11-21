@@ -1007,32 +1007,36 @@ async function runDGGroup(count, siteIds) {
       || selectedSites.some((id) => !PROFILE_SITES.some((site) => site.id === id))) {
     return { ok: false, error: 'Mỗi profile cần có một site hợp lệ trước khi vào sảnh DG.' };
   }
-  const febetIndices = indices.filter((_, offset) => selectedSites[offset] === 'febet');
-  const febetAutoStates = new Map();
-  if (febetIndices.length) {
-    const labels = febetIndices.map((index) => `Profile ${index}`).join(', ');
+  const autoEntryIndices = indices.filter((_, offset) => ['febet', 'gk881'].includes(selectedSites[offset]));
+  const autoEntryStates = new Map();
+  if (autoEntryIndices.length) {
+    const labels = autoEntryIndices.map((index) => `Profile ${index} (${PROFILE_SITES.find((site) => site.id === selectedSites[index - 1])?.label || selectedSites[index - 1]})`).join(', ');
     sendHopStatus({ active: true, waiting_indices: [...indices],
-      note: `Đang tự vào sảnh DG cho ${labels} qua FEBET; các profile site khác vào sảnh thủ công.` });
-    const autoResults = await Promise.allSettled(febetIndices.map((index) =>
-      profileEngine(index).call('febet.openDG', {}, 360000)));
+      note: `\u0110ang t\u1ef1 v\u00e0o s\u1ea3nh DG cho ${labels}; c\u00e1c profile site kh\u00e1c v\u00e0o s\u1ea3nh th\u1ee7 c\u00f4ng.` });
+    const autoResults = await Promise.allSettled(autoEntryIndices.map((index) => {
+      const siteId = selectedSites[index - 1];
+      return siteId === 'febet'
+        ? profileEngine(index).call('febet.openDG', {}, 360000)
+        : profileEngine(index).call('dg.openLobby', { site_id: siteId }, 360000);
+    }));
     autoResults.forEach((result, offset) => {
-      const index = febetIndices[offset];
+      const index = autoEntryIndices[offset];
+      const siteId = selectedSites[index - 1];
+      const siteLabel = PROFILE_SITES.find((site) => site.id === siteId)?.label || siteId;
       const reply = result.status === 'fulfilled' ? result.value : { ok: false, error: result.reason.message };
-      febetAutoStates.set(index, reply?.ok
-        ? { ready: true, note: reply.clicked_image
-          ? `Đã bấm thẻ Dream Gaming${reply.clicked_xem_game ? ' và XEM GAME' : '; đang chờ nút XEM GAME/game tải'}.`
-          : 'Game DG đã mở sẵn trên FEBET; đang xác nhận trạng thái.' }
-        : { ready: false, note: `FEBET chưa tự mở được DG (${reply?.error || 'chưa xác nhận'}); có thể vào sảnh thủ công.` });
+      autoEntryStates.set(index, reply?.ok
+        ? { ready: true, note: reply.note || `\u0110\u00e3 chuy\u1ec3n Profile ${index} (${siteLabel}) v\u00e0o s\u1ea3nh DG.` }
+        : { ready: false, note: `${siteLabel} ch\u01b0a t\u1ef1 m\u1edf \u0111\u01b0\u1ee3c DG (${reply?.error || 'ch\u01b0a x\u00e1c nh\u1eadn'}); c\u00f3 th\u1ec3 v\u00e0o s\u1ea3nh th\u1ee7 c\u00f4ng.` });
     });
     sendHopStatus({ active: true, waiting_indices: [...indices],
-      profile_states: indices.map((index) => ({ index, ready: febetAutoStates.get(index)?.ready || false,
-        note: febetAutoStates.get(index)?.note || 'Profile site này cần vào sảnh DG thủ công.' })),
-      note: 'Đã chạy thao tác vào DG cho profile FEBET. Đang quét các profile mỗi 5 giây để xác nhận và đồng bộ nhóm.' });
+      profile_states: indices.map((index) => ({ index, ready: autoEntryStates.get(index)?.ready || false,
+        note: autoEntryStates.get(index)?.note || 'Profile site n\u00e0y c\u1ea7n v\u00e0o s\u1ea3nh DG th\u1ee7 c\u00f4ng.' })),
+      note: '\u0110\u00e3 ch\u1ea1y thao t\u00e1c t\u1ef1 v\u00e0o DG cho c\u00e1c site h\u1ed7 tr\u1ee3. \u0110ang qu\u00e9t c\u00e1c profile m\u1ed7i 5 gi\u00e2y \u0111\u1ec3 x\u00e1c nh\u1eadn v\u00e0 \u0111\u1ed3ng b\u1ed9 nh\u00f3m.' });
   }
   sendHopStatus({ active: true,
-    note: febetIndices.length
-      ? 'FEBET đang/đã tự vào DG; hãy tự vào sảnh trên các profile site khác. Ứng dụng quét mỗi 5 giây.'
-      : 'Các site đã mở. Hãy tự vào sảnh DG trên từng profile; ứng dụng sẽ quét trạng thái mỗi 5 giây.',
+    note: autoEntryIndices.length
+      ? 'C\u00e1c profile FEBET/GK881 \u0111ang/\u0111\u00e3 t\u1ef1 v\u00e0o DG; h\u00e3y t\u1ef1 v\u00e0o s\u1ea3nh tr\u00ean c\u00e1c profile site kh\u00e1c. \u1ee8ng d\u1ee5ng qu\u00e9t m\u1ed7i 5 gi\u00e2y.'
+      : 'C\u00e1c site \u0111\u00e3 m\u1edf. H\u00e3y t\u1ef1 v\u00e0o s\u1ea3nh DG tr\u00ean t\u1eebng profile; \u1ee9ng d\u1ee5ng s\u1ebd qu\u00e9t tr\u1ea1ng th\u00e1i m\u1ed7i 5 gi\u00e2y.',
     waiting_indices: [...indices] });
   let profileStates = [];
   while (indices.every((index) => activeProfileIndices.has(index))) {
@@ -1047,7 +1051,7 @@ async function runDGGroup(count, siteIds) {
       const ready = Boolean(result?.ok);
       return { index, ready, in_table: result?.in_table === true,
         note: ready ? (result.in_table ? `Đã thấy đang ở bàn ${result.table_id || ''}.` : 'Đã nhận diện sảnh DG.')
-          : (febetAutoStates.get(index)?.note || `Đang chờ sảnh DG${result?.error ? ` · ${result.error}` : ''}.`) };
+          : (autoEntryStates.get(index)?.note || `Đang chờ sảnh DG${result?.error ? ` · ${result.error}` : ''}.`) };
     });
     const waiting = profileStates.filter((item) => !item.ready).map((item) => item.index);
     if (!waiting.length) break;
