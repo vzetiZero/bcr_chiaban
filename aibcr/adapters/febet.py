@@ -422,14 +422,22 @@ return (() => {
   const chipValues = (view.chipMan?.chipArray || []).map(chip =>
     Number(chip?.chipNum || chip?.value || chip?.amount || 0)).filter(value => value > 0);
   const maxRawChip = Math.max(0, ...chipValues);
+  // Chỉ nhận nhãn giới hạn bàn thật ("10K-50M", "10,000-50,000,000").
+  // Chuỗi dạng "954145/12" hay "1.7M/23" là tổng tiền cược / số người của từng
+  // cửa, không phải sàn bàn, nên phải bỏ qua để min_k không bị sai.
   const parseFloor = (text) => {
-    const match = String(text || '').match(/(?:ID\s*[A-Za-z0-9_-]+\s*)?([\d,.]+)\s*([kmKM]?)\s*(?:-|~|\/)\s*([\d,.]+)\s*([kmKM]?)/i);
+    const raw = String(text || '');
+    const bothUnits = raw.match(/([\d][\d,.]*)\s*([kKmM])\s*(?:-|~|đến|to)\s*([\d][\d,.]*)\s*([kKmM])/i);
+    const oneUnit = raw.match(/([\d][\d,.]*)\s*(?:-|~)\s*([\d][\d,.]*)\s*([kKmM])(?![\d])/i);
+    const plainDash = raw.match(/([\d][\d,.]*)\s*(?:-|~)\s*([\d][\d,.]*)(?:\s|$)/);
+    const match = bothUnits || oneUnit || plainDash;
     if (!match) return 0;
-    let value = Number(match[1].replace(/,/g, ''));
+    let value = Number(String(match[1]).replace(/,/g, ''));
     const unit = String(match[2] || '').toUpperCase();
+    if (!Number.isFinite(value) || value <= 0) return 0;
     if (unit === 'M') value *= 1000;
-    else if (!unit && value >= 1000) value = Math.round(value / 1000);
-    return Number.isFinite(value) ? value : 0;
+    else if (unit === 'K' && value < 1000) value *= 1000;
+    return value;
   };
   const findFloor = (node, depth = 0) => {
     if (!node || depth > 80) return 0;
@@ -528,14 +536,22 @@ const autoConfirm = Boolean(arguments[3]);
     || player.bpMax || player.limitMax || 0);
   const currency = String(player.currency || player.currencyName || player.currencyCode || '').toUpperCase();
   let maxRawChip = Math.max(0,...(view.chipMan?.chipArray || []).map(c=>Number(c?.chipNum||c?.value||c?.amount||0)));
+  // Chỉ nhận nhãn giới hạn bàn thật ("10K-50M", "10,000-50,000,000").
+  // Chuỗi dạng "954145/12" hay "1.7M/23" là tổng tiền cược / số người của từng
+  // cửa, không phải sàn bàn, nên phải bỏ qua để min_k không bị sai.
   const parseFloor = (text) => {
-    const match = String(text || '').match(/(?:ID\s*[A-Za-z0-9_-]+\s*)?([\d,.]+)\s*([kmKM]?)\s*(?:-|~|\/)\s*([\d,.]+)\s*([kmKM]?)/i);
+    const raw = String(text || '');
+    const bothUnits = raw.match(/([\d][\d,.]*)\s*([kKmM])\s*(?:-|~|đến|to)\s*([\d][\d,.]*)\s*([kKmM])/i);
+    const oneUnit = raw.match(/([\d][\d,.]*)\s*(?:-|~)\s*([\d][\d,.]*)\s*([kKmM])(?![\d])/i);
+    const plainDash = raw.match(/([\d][\d,.]*)\s*(?:-|~)\s*([\d][\d,.]*)(?:\s|$)/);
+    const match = bothUnits || oneUnit || plainDash;
     if (!match) return 0;
-    let value = Number(match[1].replace(/,/g, ''));
+    let value = Number(String(match[1]).replace(/,/g, ''));
     const unit = String(match[2] || '').toUpperCase();
+    if (!Number.isFinite(value) || value <= 0) return 0;
     if (unit === 'M') value *= 1000;
-    else if (!unit && value >= 1000) value = Math.round(value / 1000);
-    return Number.isFinite(value) ? value : 0;
+    else if (unit === 'K' && value < 1000) value *= 1000;
+    return value;
   };
   const findFloor = (node, depth = 0) => {
     if (!node || depth > 80) return 0;

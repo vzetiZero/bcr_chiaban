@@ -417,6 +417,27 @@ def open_dg(driver, wait=150.0, log=None):
         time.sleep(1.0)
 
     if not lobby.get("ok"):
+        # The first click sometimes lands before the SPA finished wiring the
+        # vendor card. Retry the launch once before reporting a hard failure.
+        report("Sảnh DG chưa lên sau lần bấm đầu; thử bấm CHƠI NGAY lại.", "warning")
+        retry = min(deadline, time.monotonic() + remain(60.0))
+        for _ in range(2):
+            if time.monotonic() >= retry:
+                break
+            driver.execute_script(_SELECT_DG_JS)
+            time.sleep(1.0)
+            driver.execute_script(_CLICK_LAUNCH_JS)
+            sub = min(retry, time.monotonic() + 25.0)
+            while time.monotonic() < sub:
+                lobby = DG.lobby_tables(driver, wait=2.0)
+                if lobby.get("ok"):
+                    break
+                time.sleep(1.0)
+            if lobby.get("ok"):
+                report("Lần bấm lại đã mở được sảnh DG.")
+                break
+
+    if not lobby.get("ok"):
         error = lobby.get("error") or "Sảnh DG chưa tải xong."
         report("Sảnh DG chưa sẵn sàng: %s" % error, "error")
         return {"ok": False, "site_id": "e3951", "error": error}
