@@ -847,7 +847,7 @@ ipcMain.handle('febet:open-dg', async (_event) => {
       : { index: indices[offset], ok: false, error: result.reason.message }) };
 });
 
-async function runDGGroup(count) {
+async function runDGGroup(count, siteIds) {
   const indices = Array.from(activeProfileIndices).sort((a, b) => a - b);
   if (!indices.length) return { ok: false, error: 'Hãy mở profile trước, tự vào site và mở sảnh DG rồi mới chạy đồng bộ nhóm.' };
   const requested = Math.max(1, Math.min(8, Math.trunc(Number(count) || indices.length)));
@@ -857,6 +857,27 @@ async function runDGGroup(count) {
   const config = await loadBetConfig();
   if (indices.length < config.min_tk) {
     return { ok: false, error: `C\u1ea5u h\u00ecnh y\u00eau c\u1ea7u t\u1ed1i thi\u1ec3u ${config.min_tk} profile; hi\u1ec7n c\u00f3 ${indices.length}.` };
+  }
+  const selectedSites = Array.isArray(siteIds) ? siteIds.map((id) => String(id || ''))
+    : indices.map(() => 'febet');
+  if (selectedSites.length !== indices.length
+      || selectedSites.some((id) => !PROFILE_SITES.some((site) => site.id === id))) {
+    return { ok: false, error: 'Mỗi profile cần có một site hợp lệ trước khi vào sảnh DG.' };
+  }
+  sendHopStatus({ active: true, note: 'Đang mở sảnh Dream Gaming riêng theo site của từng profile...' });
+  const entryResults = await Promise.allSettled(indices.map((index, offset) =>
+    profileEngine(index).call('dg.openLobby', { site_id: selectedSites[offset] }, 480000)));
+  const entryReplies = entryResults.map((entry, offset) => {
+    const site = PROFILE_SITES.find((item) => item.id === selectedSites[offset]);
+    return entry.status === 'fulfilled'
+      ? { index: indices[offset], site: site.label, ...entry.value }
+      : { index: indices[offset], site: site.label, ok: false, error: entry.reason.message };
+  });
+  const entryFailures = entryReplies.filter((reply) => !reply.ok || reply.lobby_ready !== true);
+  if (entryFailures.length) {
+    const error = `${entryFailures.length}/${indices.length} profile chưa vào được sảnh DG. Kiểm tra đăng nhập và đường vào DG trên từng site.`;
+    sendHopStatus({ active: false, error: true, note: error });
+    return { ok: false, error, entry_replies: entryReplies };
   }
   const leader = profileEngine(indices[0]);
   let scan = null;
@@ -912,7 +933,7 @@ async function runDGGroup(count) {
   return result;
 }
 
-ipcMain.handle('dg:auto-run', async (_event, { count } = {}) => runDGGroup(count));
+ipcMain.handle('dg:auto-run', async (_event, { count, siteIds } = {}) => runDGGroup(count, siteIds));
 ipcMain.handle('febet:auto-run', async () => runDGGroup());
 
 ipcMain.handle('febet:tables', async () => {
@@ -1088,10 +1109,13 @@ ipcMain.handle('engine:call', async (_event, { game, method, params }) => {
   }
 });
 
-ipcMain.handle('profiles:open', async (_event, { count, siteId, profiles, source = 'local', omniApiUrl }) => {
+ipcMain.handle('profiles:open', async (_event, { count, siteId, siteIds, profiles, source = 'local', omniApiUrl }) => {
   const total = Math.max(1, Math.min(8, Math.trunc(Number(count) || 1)));
-  const site = PROFILE_SITES.find((item) => item.id === siteId);
-  if (!site) return { ok: false, error: 'Hãy chọn một site trong danh sách.' };
+  const selectedSiteIds = Array.isArray(siteIds) ? siteIds : Array(total).fill(siteId);
+  const sites = selectedSiteIds.slice(0, total).map((id) => PROFILE_SITES.find((item) => item.id === id));
+  if (sites.length !== total || sites.some((item) => !item)) {
+    return { ok: false, error: 'Hãy chọn một site hợp lệ riêng cho từng profile.' };
+  }
   if (!['local', 'omni'].includes(source)) return { ok: false, error: 'Nguồn profile không hợp lệ.' };
   const requested = Array.isArray(profiles) ? profiles : [];
   const proxyStore = await loadProxyStore();
@@ -1206,7 +1230,7 @@ ipcMain.handle('profiles:open', async (_event, { count, siteId, profiles, source
   }
 
   const configured = await Promise.allSettled(started.map((engine, index) => engine.call('profile.configure', {
-    url: site.url,
+    url: sites[index].url,
     proxy_server: layouts[index].proxyServer,
     width: layouts[index].width,
     height: layouts[index].height,
@@ -1243,13 +1267,14 @@ ipcMain.handle('profiles:open', async (_event, { count, siteId, profiles, source
         activeOmniProfiles.delete(index + 1);
       }
     }
-    const reply = await engine.call('site.open', { url: site.url }, 45000);
+    const reply = await engine.call('site.open', { url: sites[index].url }, 45000);
     if ((!reply || !reply.ok) && source === 'omni') {
       const activeOmni = activeOmniProfiles.get(index + 1);
       activeOmniProfiles.delete(index + 1);
       if (activeOmni) await stopOmniProfile(activeOmni);
     }
-    return { ...reply, proxy: source === 'omni' ? 'Proxy theo cấu hình OmniLogin' : settings[index].proxyLabel,
+    return { ...reply, site: sites[index].label,
+      proxy: source === 'omni' ? 'Proxy theo cấu hình OmniLogin' : settings[index].proxyLabel,
       width: settings[index].width, height: settings[index].height, scale: settings[index].scale,
       ...(source === 'omni' ? { omni_profile_id: omniRows[index] } : {}) };
   }));
@@ -1272,7 +1297,8 @@ ipcMain.handle('profiles:open', async (_event, { count, siteId, profiles, source
   }
   const replies = openResults.map((result, index) => result.status === 'fulfilled'
     ? result.value : { ok: false, error: result.reason.message, proxy: settings[index].proxyLabel });
-  return { ok: true, count: total, site: site.label, source, replies };
+  return { ok: true, count: total, site: sites.map((item) => item.label).join(' / '),
+    sites: sites.map((item) => item.label), source, replies };
 });
 
 ipcMain.handle('profiles:close', async () => {

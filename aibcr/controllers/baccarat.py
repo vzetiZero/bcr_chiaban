@@ -756,6 +756,16 @@ class BaccaratController:
         with self.browser.lock:
             return FEBET.open_dream_gaming_baccarat(self.browser.driver)
 
+    def dg_open_lobby(self, params):
+        params = params or {}
+        deadline = time.monotonic() + 180
+        while self.browser.driver is None and self.chrome_busy and time.monotonic() < deadline:
+            time.sleep(0.2)
+        if self.browser.driver is None:
+            return {"ok": False, "error": "Chrome profile chưa sẵn sàng sau 180 giây."}
+        with self.browser.lock:
+            return FEBET.open_dg_for_site(self.browser.driver, params.get("site_id"), wait=120.0)
+
     def febet_current_table(self, _params=None):
         with self.browser.lock:
             return FEBET.current_table(self.browser.driver)
@@ -2702,6 +2712,7 @@ class BaccaratController:
             "site.open": self.site_open,
             "profile.configure": self.profile_configure,
             "febet.openDG": self.febet_open_dg,
+            "dg.openLobby": self.dg_open_lobby,
             "febet.table": self.febet_current_table,
             "febet.tables": self.febet_lobby_tables,
             "febet.syncTable": self.febet_sync_table,

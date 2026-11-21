@@ -88,7 +88,7 @@ h1 { margin: 6px 0 4px; color: #f8fafc; font-size: clamp(23px, 3vw, 30px); lette
 .setting-field { display: flex; min-width: 0; flex-direction: column; gap: 6px; color: #b7c3d3; font-size: 10px; font-weight: 700; }
 .setting-field input, .setting-field select { height: 36px; font-size: 11px; }
 .profile-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; }
-.profile-row { display: grid; grid-template-columns: 36px minmax(0, 1fr) auto auto; align-items: center; gap: 10px; min-height: 62px; padding: 9px 11px; border: 1px solid rgba(148, 163, 184, .16); border-radius: 8px; background: rgba(30, 41, 59, .6); transition: border .15s, background .15s; }
+.profile-row { display: grid; grid-template-columns: 36px minmax(0, 1fr) minmax(130px, 220px) auto auto; align-items: center; gap: 10px; min-height: 62px; padding: 9px 11px; border: 1px solid rgba(148, 163, 184, .16); border-radius: 8px; background: rgba(30, 41, 59, .6); transition: border .15s, background .15s; }
 .profile-row:hover { border-color: rgba(16, 185, 129, .4); background: rgba(30, 41, 59, .85); }
 .profile-number { width: 32px; height: 32px; display: grid; place-items: center; border: 1px solid rgba(245, 158, 11, .32); border-radius: 7px; background: rgba(217, 119, 6, .15); color: #fbbf24; font-size: 10px; font-weight: 900; }
 .profile-info { display: flex; min-width: 0; flex-direction: column; gap: 4px; }
@@ -149,7 +149,7 @@ h1 { margin: 6px 0 4px; color: #f8fafc; font-size: clamp(23px, 3vw, 30px); lette
   .app-heading { flex-direction: column; }
   .app-heading-status { width: 100%; flex-direction: row; align-items: center; justify-content: space-between; }
   .run-actions { flex-direction: column; }
-  .profile-row { grid-template-columns: 34px minmax(0, 1fr) auto; }
+  .profile-row { grid-template-columns: 34px minmax(0, 1fr) minmax(100px, 150px) auto; }
   .profile-row .profile-state { display: none; }
 }
 .omni-manager { margin-top: 0; }
@@ -162,3 +162,6 @@ h1 { margin: 6px 0 4px; color: #f8fafc; font-size: clamp(23px, 3vw, 30px); lette
 .omni-assignment-row select:focus { border-color: var(--amber); box-shadow: 0 0 0 3px rgba(245, 158, 11, .12); }
 .profile-source-field { grid-column: 1 / -1; }
 @media (max-width: 760px) { .omni-config-row, .omni-profile-assignments { grid-template-columns: 1fr; } }
+
+.profile-site-select { width: 100%; min-width: 0; height: 32px; padding: 0 8px; border: 1px solid rgba(148, 163, 184, .22); border-radius: 6px; background: rgba(9, 13, 22, .8); color: #e2e8f0; font-size: 10px; }
+.profile-site-select:focus { outline: none; border-color: var(--amber); box-shadow: 0 0 0 3px rgba(245, 158, 11, .12); }

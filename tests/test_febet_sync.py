@@ -146,6 +146,22 @@ class CurrentTableTest(unittest.TestCase):
         self.assertEqual(result["table_id"], "60101")
 
 
+class MultiSiteDGEntryTest(unittest.TestCase):
+    def test_non_febet_sites_reuse_an_already_open_dg_lobby(self):
+        for site_id in ("e3951", "gk881", "vnwtop", "888ae66", "bum123"):
+            with self.subTest(site_id=site_id):
+                result = F.open_dg_for_site(FakeDriver("https://m.gk881.vip/", DG_LOC),
+                                            site_id, wait=0)
+                self.assertTrue(result["ok"])
+                self.assertTrue(result["lobby_ready"])
+                self.assertEqual(result["site_id"], site_id)
+
+    def test_unknown_site_does_not_try_a_generic_click(self):
+        result = F.open_dg_for_site(FakeDriver("https://m.gk881.vip/", DG_LOC),
+                                    "unknown", wait=0)
+        self.assertFalse(result["ok"])
+
+
 class SyncTableTest(unittest.TestCase):
     def test_rejects_invalid_ids(self):
         driver = FakeDriver(LOBBY, DG_LOC)

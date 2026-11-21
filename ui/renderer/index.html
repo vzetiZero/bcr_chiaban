@@ -46,12 +46,6 @@
           <span>Số lượng tài khoản</span>
           <input id="profile-count" type="number" min="1" max="8" step="1" value="4" />
         </label>
-        <label class="field">
-          <span>Site mở profile ban đầu</span>
-          <select id="site-select" disabled>
-            <option>Đang tải danh sách…</option>
-          </select>
-        </label>
         <label class="field profile-source-field">
           <span>Nguồn profile</span>
           <select id="profile-source">
@@ -67,14 +61,14 @@
         </div>
         <div class="run-stats">
           <div class="run-stat"><span>Profile &#273;&#227; ch&#7885;n</span><strong id="run-count-stat">4</strong></div>
-          <div class="run-stat"><span>Site m&#7903; profile ban &#273;&#7847;u</span><strong id="run-site-stat">Ch&#432;a ch&#7885;n</strong></div>
+          <div class="run-stat"><span>Site theo profile</span><strong id="run-site-stat">Ch&#7885;n ri&#234;ng t&#7915;ng profile</strong></div>
           <div class="run-stat"><span>B&#224;n t&#7921; ch&#7885;n</span><strong id="run-table-stat">T&#7921; &#273;&#7897;ng</strong></div>
         </div>
         <div class="run-actions">
           <button id="run-profiles" class="run-button" disabled><span class="run-icon">&#9654;</span> Ch&#7841;y Tool</button>
           <button id="close-profiles" class="close-button" disabled>&#272;&#243;ng t&#7845;t c&#7843;</button>
         </div>
-        <div id="notice" class="notice" role="status" aria-live="polite">M&#7903; &#273;&#7911; profile, t&#7921; v&#224;o t&#7915;ng site v&#224; m&#7903; s&#7843;nh DG; sau &#273;&#243; b&#7845;m Ch&#7841;y Tool &#273;&#7875; &#273;&#7891;ng b&#7897; b&#224;n v&#224; v&#7853;n h&#224;nh d&#227;y c&#432;&#7907;c nh&#243;m.</div>
+        <div id="notice" class="notice" role="status" aria-live="polite">Ch&#7885;n s&#7889; profile v&#224; site ri&#234;ng trong tab Profiles; Ch&#7841;y Tool s&#7869; m&#7903; c&#225;c profile, v&#224;o s&#7843;nh DG, &#273;&#7891;ng b&#7897; b&#224;n v&#224; v&#7853;n h&#224;nh d&#227;y c&#432;&#7907;c nh&#243;m.</div>
       </div>
     </section>
     </div>
@@ -110,6 +104,7 @@
         <div><div class="eyebrow">QUẢN LÝ</div><h2>Profiles</h2></div>
         <span id="profile-total" class="total">0 profile</span>
       </div>
+      <p class="notice">Ch&#7885;n site ri&#234;ng cho t&#7915;ng profile; n&#250;t M&#7903; s&#7869; m&#7903; URL site &#273;&#227; ch&#7885;n.</p>
       <div id="profile-list" class="profile-list"></div>
     </section>
     </div>

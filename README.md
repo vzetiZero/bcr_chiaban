@@ -1,12 +1,15 @@
 # AI_BCR Desktop
 
-Ứng dụng Electron quản lý **1–8 profile Chrome** và mở đồng thời cùng một website đã chọn.
-Mỗi profile có thư mục phiên và cổng CDP riêng. Giao diện hiện tại tập trung vào số lượng
-tài khoản, danh sách website, trạng thái profile và thao tác mở/đóng; không hiển thị vốn,
-tỉ lệ, dự đoán hay điều khiển cược.
+Electron desktop app for managing 1-8 browser profiles. Each profile can use its own supported casino site and browser provider (app-managed Chrome or OmniLogin).
 
-Backend Baccarat cũ vẫn nằm trong `aibcr/` theo kiến trúc MVC để tương thích với các công cụ
-nội bộ; profile manager không gọi các lệnh phân tích hoặc cược.
+## Multi-site Dream Gaming workflow
+
+1. Set the profile count and choose a site separately on each row in the **Profiles** tab.
+2. Press **Run Tool**. The app opens each profile at its configured URL, then enters Dream Gaming using the FEBET-specific flow or the selected site's Live Casino and provider controls.
+3. The app waits for the DG lobby, selects a real table ID (`60xxx`), moves every profile to that table, applies the configured bet ladder and group settings, and starts the group coordinator.
+4. If a profile cannot be confirmed in DG or at the shared table, the group stops before chip placement. Non-FEBET site entry uses visible provider/menu labels; a portal with different controls will need its site rule updated.
+
+The DG table and bet readers are shared across portal hosts. Each profile keeps its own site session and iframe URL while joining the common DG table.
 
 > **BẮT BUỘC — push GitHub sau MỖI lần cập nhật hoặc sửa đổi**
 >

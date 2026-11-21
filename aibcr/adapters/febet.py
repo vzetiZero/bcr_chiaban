@@ -1,4 +1,4 @@
-"""User-driven FEBET Dream Gaming table selection across independent Chrome profiles."""
+"""Shared Dream Gaming entry, table selection and betting for casino profiles."""
 
 import json
 import re
@@ -7,6 +7,82 @@ from urllib.parse import urlsplit, urlunsplit, parse_qs, urlencode
 
 
 LOBBY_URL = "https://febet.kiwi/live-casino/baccarat"
+_DG_SITE_RULES = {
+    "febet": {"label": "FEBET", "keywords": ("dream gaming", "dreamgaming", "dg baccarat"), "menu": ()},
+    "e3951": {"label": "E3951", "keywords": ("dream gaming", "dreamgaming", "dg baccarat", "dg live"), "menu": ("live casino", "casino tr\u1ef1c tuy\u1ebfn")},
+    "gk881": {"label": "GK881", "keywords": ("dream gaming", "dreamgaming", "dg baccarat", "dg live"), "menu": ("live casino", "s\u1ea3nh casino", "casino tr\u1ef1c tuy\u1ebfn")},
+    "vnwtop": {"label": "VNWTop", "keywords": ("dream gaming", "dreamgaming", "dg baccarat", "dg live"), "menu": ("live casino", "casino tr\u1ef1c tuy\u1ebfn")},
+    "888ae66": {"label": "888AE66", "keywords": ("dream gaming", "dreamgaming", "dg baccarat", "dg live"), "menu": ("live casino", "casino tr\u1ef1c tuy\u1ebfn")},
+    "bum123": {"label": "BUM123", "keywords": ("dream gaming", "dreamgaming", "dg baccarat", "dg live"), "menu": ("live casino", "s\u1ea3nh casino", "casino tr\u1ef1c tuy\u1ebfn")},
+}
+
+_DG_PROVIDER_CLICK_JS = r"""
+return (() => {
+  const norm = value => String(value || '').replace(/[-_./]+/g, ' ').replace(/\s+/g, ' ').trim().toLowerCase();
+  const visible = e => { const r=e.getBoundingClientRect(),s=getComputedStyle(e);
+    return r.width>8&&r.height>8&&s.display!=='none'&&s.visibility!=='hidden'&&Number(s.opacity||1)>0; };
+  const hints = arguments[0] || [];
+  const candidates = [...document.querySelectorAll('img,button,a,[role="button"],[class*="cursor-pointer"]')];
+  const ranked = [];
+  for (const node of candidates) {
+    if (!visible(node)) continue;
+    const info = norm([node.innerText,node.getAttribute('aria-label'),node.title,node.alt,
+      node.getAttribute('src'),node.getAttribute('data-provider'),node.className].join(' '));
+    const score = hints.reduce((best,hint) => info.includes(hint) ? Math.max(best,hint.length+10) : best, 0);
+    if (!score) continue;
+    const target = node.closest('button,a,[role="button"],[class*="cursor-pointer"]') || node;
+    if (!visible(target)) continue;
+    ranked.push({target,score});
+  }
+  ranked.sort((a,b)=>b.score-a.score);
+  if (!ranked.length) return {found:false};
+  const best = ranked[0];
+  const tied = ranked.filter(item=>item.score===best.score && item.target!==best.target);
+  if (tied.length) return {found:true,ambiguous:true,candidates:ranked.length};
+  best.target.scrollIntoView({block:'center',inline:'center',behavior:'instant'});
+  best.target.click();
+  return {found:true,clicked:true,candidates:ranked.length};
+})()
+"""
+
+_DG_LAUNCH_BUTTON_JS = r"""
+return (() => {
+  const norm = value => String(value || '').replace(/\s+/g, ' ').trim().toUpperCase();
+  const allowed = new Set(['XEM GAME','PLAY','PLAY NOW','ENTER','ENTER GAME','VÀO GAME','CHƠI NGAY']);
+  const visible = e => { const r=e.getBoundingClientRect(),s=getComputedStyle(e);
+    return r.width>8&&r.height>8&&s.display!=='none'&&s.visibility!=='hidden'&&Number(s.opacity||1)>0; };
+  const hits = [...document.querySelectorAll('button,a,[role="button"],[class*="cursor-pointer"]')]
+    .filter(visible).map(e=>({e,text:norm(e.innerText||e.getAttribute('aria-label')||e.title)}))
+    .filter(x=>allowed.has(x.text));
+  if (!hits.length) return {clicked:false};
+  if (hits.length > 1) {
+    const xem = hits.filter(x=>x.text==='XEM GAME');
+    if (xem.length === 1) { xem[0].e.click(); return {clicked:true,label:xem[0].text}; }
+    return {clicked:false,ambiguous:true};
+  }
+  hits[0].e.click();
+  return {clicked:true,label:hits[0].text};
+})()
+"""
+
+_DG_CATEGORY_CLICK_JS = r"""
+return (() => {
+  const norm = value => String(value || '').replace(/\s+/g, ' ').trim().toLowerCase();
+  const visible = e => { const r=e.getBoundingClientRect(),s=getComputedStyle(e);
+    return r.width>12&&r.height>12&&s.display!=='none'&&s.visibility!=='hidden'&&Number(s.opacity||1)>0; };
+  const labels = arguments[0] || [];
+  const hits = [...document.querySelectorAll('button,a,[role="button"],[class*="cursor-pointer"]')]
+    .filter(visible).map(e=>({e,text:norm(e.innerText||e.getAttribute('aria-label')||e.title)}))
+    .map(x=>({...x,score:labels.indexOf(x.text)})).filter(x=>x.score>=0)
+    .sort((a,b)=>a.score-b.score);
+  if (!hits.length) return {clicked:false};
+  const best=hits[0], tied=hits.filter(x=>x.score===best.score&&x.e!==best.e);
+  if (tied.length) return {clicked:false,ambiguous:true};
+  best.e.scrollIntoView({block:'center',inline:'center',behavior:'instant'});
+  best.e.click();
+  return {clicked:true,label:best.text};
+})()
+"""
 MAX_FRAMES = 48
 MAX_DEPTH = 5
 MAX_OPTIONS = 120
@@ -641,6 +717,128 @@ def _dg_context(driver, wait=15.0):
         if time.monotonic() >= deadline:
             return None
         time.sleep(0.5)
+
+
+def _click_dg_category(driver, labels):
+    from selenium.common.exceptions import WebDriverException
+
+    for path, _info in _frame_contexts(driver):
+        try:
+            _enter_path(driver, path)
+            result = driver.execute_script(_DG_CATEGORY_CLICK_JS, list(labels)) or {}
+        except WebDriverException:
+            continue
+        finally:
+            try:
+                driver.switch_to.default_content()
+            except Exception:
+                pass
+        if result.get("clicked"):
+            return str(result.get("label") or "")
+    return ""
+
+
+def _click_dg_provider_tile(driver, keywords):
+    from selenium.common.exceptions import WebDriverException
+
+    for path, _info in _frame_contexts(driver):
+        try:
+            _enter_path(driver, path)
+            result = driver.execute_script(_DG_PROVIDER_CLICK_JS, list(keywords)) or {}
+        except WebDriverException:
+            continue
+        finally:
+            try:
+                driver.switch_to.default_content()
+            except Exception:
+                pass
+        if result.get("ambiguous"):
+            return {"ok": False, "ambiguous": True,
+                    "error": "Site có nhiều thẻ giống Dream Gaming; không tự chọn để tránh mở nhầm game."}
+        if result.get("clicked"):
+            return {"ok": True, "clicked": True}
+    return {"ok": True, "clicked": False}
+
+
+def _click_dg_launch_button(driver):
+    from selenium.common.exceptions import WebDriverException
+
+    for path, _info in _frame_contexts(driver):
+        try:
+            _enter_path(driver, path)
+            result = driver.execute_script(_DG_LAUNCH_BUTTON_JS) or {}
+        except WebDriverException:
+            continue
+        finally:
+            try:
+                driver.switch_to.default_content()
+            except Exception:
+                pass
+        if result.get("ambiguous"):
+            continue
+        if result.get("clicked"):
+            return str(result.get("label") or "")
+    return ""
+
+
+def open_dg_for_site(driver, site_id, wait=120.0):
+    """Open the DG Baccarat lobby from a selected casino site, or reuse it if open."""
+    site_id = str(site_id or "").strip().lower()
+    rule = _DG_SITE_RULES.get(site_id)
+    if rule is None:
+        return {"ok": False, "error": "Site chưa có cấu hình vào Dream Gaming."}
+    if driver is None:
+        return {"ok": False, "error": "Mở profile trước khi vào sảnh DG."}
+    if site_id == "febet":
+        result = open_dream_gaming_baccarat(driver)
+        if not result.get("ok"):
+            return result
+        ready = lobby_tables(driver, wait=min(30.0, wait))
+        if not ready.get("ok"):
+            return {"ok": False, "error": ready.get("error") or "Sảnh DG của FEBET chưa tải xong."}
+        return {**result, "site_id": site_id, "lobby_ready": True}
+
+    initial = lobby_tables(driver, wait=1.0)
+    if initial.get("ok"):
+        return {"ok": True, "already_open": True, "site_id": site_id,
+                "lobby_ready": True, "note": "Sảnh DG đã mở trên profile này."}
+
+    clicked_tile = False
+    clicked_launch = False
+    clicked_category = False
+    last_category_check = 0.0
+    deadline = time.monotonic() + max(1.0, float(wait))
+    last_error = ""
+    while time.monotonic() < deadline:
+        if not clicked_tile:
+            tile = _click_dg_provider_tile(driver, rule["keywords"])
+            if not tile.get("ok"):
+                return {**tile, "site_id": site_id}
+            clicked_tile = bool(tile.get("clicked"))
+            now = time.monotonic()
+            if not clicked_tile and rule["menu"] and not clicked_category and now - last_category_check >= 5.0:
+                last_category_check = now
+                clicked_category = bool(_click_dg_category(driver, rule["menu"]))
+                if clicked_category:
+                    time.sleep(0.5)
+                    continue
+        if clicked_tile and not clicked_launch:
+            clicked_launch = bool(_click_dg_launch_button(driver))
+
+        ready = lobby_tables(driver, wait=0.25)
+        if ready.get("ok"):
+            return {"ok": True, "already_open": False, "site_id": site_id,
+                    "clicked_provider": clicked_tile, "clicked_launch": clicked_launch,
+                    "lobby_ready": True, "tables": ready.get("tables", []),
+                    "note": "Đã mở sảnh Dream Gaming từ site profile."}
+        last_error = str(ready.get("error") or "")
+        time.sleep(0.5)
+
+    if not clicked_tile:
+        return {"ok": False, "site_id": site_id,
+                "error": "Không tìm thấy thẻ Dream Gaming trên site này. Hãy kiểm tra đăng nhập/trang game và thử lại."}
+    return {"ok": False, "site_id": site_id,
+            "error": last_error or "Đã chọn Dream Gaming nhưng sảnh chưa tải xong trong thời gian chờ."}
 
 
 def _loader_url(location, src, table_id):
