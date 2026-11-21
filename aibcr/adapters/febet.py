@@ -352,6 +352,200 @@ return (() => {
 })()
 """
 
+_DG_BET_STATE_JS = r"""
+return (() => {
+  if (typeof Laya === 'undefined' || !Laya.stage) return {ready:false};
+  let view = null;
+  const walk = (node, depth) => {
+    if (!node || depth > 60 || view) return;
+    if (node.betBtn && (typeof node.betHandler === 'function' || node.betBtnMan
+        || node.baccaratLimit || node.tableInfoMan)) { view = node; return; }
+    const children = node._children || [];
+    for (const child of children) walk(child, depth + 1);
+  };
+  walk(Laya.stage, 0);
+  if (!view) return {ready:true, in_table:false};
+  const info = view.gameInfo || view.tableInfoMan?.gameInfo || window.gameInfo || {};
+  const player = view.playerInfo || window.playerInfo || {};
+  const rawRoundId = String(info.gameNo || info.roundId || info.roundNo || info.issueNo
+    || view.gameNo || '').trim();
+  const roundId = /^[A-Za-z0-9_-]{1,64}$/.test(rawRoundId) ? rawRoundId : '';
+  const rawMin = Number(view.baccaratLimit?.bpMin || view.baccaratLimit?.min
+    || player.bpMin || player.limitMin || 0);
+  const rawMax = Number(view.baccaratLimit?.bpMax || view.baccaratLimit?.max
+    || player.bpMax || player.limitMax || 0);
+  const currency = String(player.currency || player.currencyName || player.currencyCode || '').toUpperCase();
+  const scale = rawMin >= 1000 ? 1000 : rawMin > 0 ? 1
+    : currency === 'VND' ? 1000 : Number(player.balance || 0) >= 100000 ? 1000 : 0;
+  const values = (obj, names) => {
+    for (const name of names) if (obj && Number(obj[name]) > 0) return Number(obj[name]);
+    return 0;
+  };
+  const tmp = view.betMoneyTmp || {};
+  const real = view.betMoneyTrue || {};
+  const denoms = [];
+  for (const chip of (view.chipMan?.chipArray || [])) {
+    const raw = Number(chip?.chipNum || chip?.value || chip?.amount || 0);
+    if (raw > 0 && scale > 0 && Number.isInteger(raw / scale)) denoms.push(raw / scale);
+  }
+  const stateId = Number(info.stateId ?? info.state ?? view.stateId ?? 0);
+  const countdown = Number(info.countDown ?? view.countDown ?? 0);
+  const result = info.result && typeof info.result === 'object' ? info.result : {};
+  const winnerRaw = String(info.winner || info.winSide || info.resultSide || info.winResult
+    || info.winnerSide || info.winType || result.winner || result.winSide
+    || result.result || view.winner || '').toUpperCase();
+  let winner = /^(P|PLAYER|XIAN|1)$/.test(winnerRaw) ? 'P'
+    : /^(B|BANKER|ZHUANG|2)$/.test(winnerRaw) ? 'B'
+    : /^(T|TIE|DRAW|和|3)$/.test(winnerRaw) ? 'T' : '';
+  const playerScore = Number(info.playerScore ?? info.playerPoint ?? result.playerScore);
+  const bankerScore = Number(info.bankerScore ?? info.bankerPoint ?? result.bankerScore);
+  if (!winner && stateId !== 1 && Number.isInteger(playerScore) && playerScore >= 0 && playerScore <= 9
+      && Number.isInteger(bankerScore) && bankerScore >= 0 && bankerScore <= 9)
+    winner = playerScore === bankerScore ? 'T' : playerScore > bankerScore ? 'P' : 'B';
+  return {
+    ready:true, in_table:true,
+    table_id:(location.href.match(/tableId=([0-9]+)/) || [])[1] || '',
+    round_id:roundId, state_id:stateId, countdown,
+    bet_open:stateId === 1 && countdown >= 5,
+    winner, scale,
+    min_k:scale ? Math.ceil(rawMin / scale) : 0,
+    max_k:scale && rawMax ? Math.floor(rawMax / scale) : 0,
+    balance_k:scale ? Number(player.balance || 0) / scale : null,
+    denominations_k:[...new Set(denoms)].sort((a,b)=>b-a),
+    pending:{P:values(tmp,['Player','player','PLAYER','xian','Xian','1']) / (scale || 1),
+             B:values(tmp,['Banker','banker','BANKER','zhuang','Zhuang','2']) / (scale || 1),
+             T:values(tmp,['Tie','tie','TIE','和','3']) / (scale || 1)},
+    confirmed:{P:values(real,['Player','player','PLAYER','xian','Xian','1']) / (scale || 1),
+               B:values(real,['Banker','banker','BANKER','zhuang','Zhuang','2']) / (scale || 1),
+               T:values(real,['Tie','tie','TIE','和','3']) / (scale || 1)}
+  };
+})()
+"""
+
+_DG_STAGE_BET_JS = r"""
+const done = arguments[arguments.length - 1];
+const side = String(arguments[0] || '').toUpperCase();
+const amountK = Math.trunc(Number(arguments[1]));
+const expectedRound = String(arguments[2] || '');
+const autoConfirm = Boolean(arguments[3]);
+(async () => {
+  const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+  if (!['P','B'].includes(side) || amountK <= 0 || !expectedRound)
+    return {ok:false, error:'Lệnh cược không hợp lệ.'};
+  if (typeof Laya === 'undefined' || !Laya.stage) return {ok:false,error:'Laya chưa sẵn sàng.'};
+  let view = null;
+  const walk = (node, depth) => {
+    if (!node || depth > 60 || view) return;
+    if (node.betBtn && (typeof node.betHandler === 'function' || node.betBtnMan
+        || node.baccaratLimit || node.tableInfoMan)) { view = node; return; }
+    for (const child of (node._children || [])) walk(child, depth + 1);
+  };
+  walk(Laya.stage, 0);
+  if (!view) return {ok:false,error:'Chưa thấy màn cược DG.'};
+  const info = view.gameInfo || view.tableInfoMan?.gameInfo || window.gameInfo || {};
+  const player = view.playerInfo || window.playerInfo || {};
+  const rawRoundId = String(info.gameNo || info.roundId || info.roundNo || info.issueNo
+    || view.gameNo || '').trim();
+  const roundId = /^[A-Za-z0-9_-]{1,64}$/.test(rawRoundId) ? rawRoundId : '';
+  if (roundId !== expectedRound) return {ok:false,error:'Ván đã đổi trước khi đặt chip.'};
+  const rawMin = Number(view.baccaratLimit?.bpMin || view.baccaratLimit?.min
+    || player.bpMin || player.limitMin || 0);
+  const rawMax = Number(view.baccaratLimit?.bpMax || view.baccaratLimit?.max
+    || player.bpMax || player.limitMax || 0);
+  const currency = String(player.currency || player.currencyName || player.currencyCode || '').toUpperCase();
+  let maxRawChip = Math.max(0,...(view.chipMan?.chipArray || []).map(c=>Number(c?.chipNum||c?.value||c?.amount||0)));
+  const scale = rawMin >= 1000 ? 1000 : rawMin > 0 ? 1
+    : currency === 'VND' ? 1000 : Number(player.balance || 0) >= 100000 ? 1000
+    : maxRawChip > 0 && maxRawChip < 1000 ? 1 : 0;
+  if (!scale) return {ok:false,error:'Không xác định được đơn vị tiền của bàn DG; đã dừng để tránh đặt sai số tiền.'};
+  if (Number(info.stateId ?? info.state ?? view.stateId ?? 0) !== 1
+      || Number(info.countDown ?? view.countDown ?? 0) < 5)
+    return {ok:false,error:'Bàn chưa mở cược đủ lâu.'};
+  const minK = Math.ceil(rawMin / scale);
+  const maxK = rawMax > 0 ? Math.floor(rawMax / scale) : 0;
+  if (minK && amountK < minK) return {ok:false,error:`Mức ${amountK}k thấp hơn sàn bàn ${minK}k.`};
+  if (maxK && amountK > maxK) return {ok:false,error:`Mức ${amountK}k vượt trần bàn ${maxK}k.`};
+  const balK = Number(player.balance || 0) / scale;
+  if (Number.isFinite(balK) && balK > 0 && amountK > balK)
+    return {ok:false,error:`Số dư bàn không đủ (${Math.floor(balK)}k).`};
+  const readTmp = (s) => {
+    const names = s === 'P' ? ['Player','player','PLAYER','xian','Xian','1']
+      : ['Banker','banker','BANKER','zhuang','Zhuang','2'];
+    const current = view.betMoneyTmp || {};
+    for (const name of names) if (Number(current[name]) > 0) return Number(current[name]);
+    return 0;
+  };
+  const beforeP = readTmp('P'), beforeB = readTmp('B');
+  const pendingCurrent = view.betMoneyTmp || {};
+  if (beforeP || beforeB || Number(pendingCurrent.Tie || pendingCurrent.tie || pendingCurrent['3'] || 0))
+    return {ok:false,error:'Đã có chip chờ xác nhận trên bàn; không tự xóa hoặc cộng chồng.'};
+  const chips = view.chipMan?.chipArray || [];
+  const denoms = [...new Set(chips.map(c=>Math.round(Number(c?.chipNum||c?.value||c?.amount||0)/scale))
+    .filter(n=>Number.isInteger(n)&&n>0))].sort((a,b)=>b-a);
+  if (!denoms.length) return {ok:false,error:'Không đọc được mệnh giá chip thật từ khay DG.'};
+  const best = Array(amountK + 1).fill(null); best[0] = [];
+  for (let total = 1; total <= amountK; total++) {
+    for (const denom of denoms) {
+      if (denom > total) continue;
+      const prev = best[total - denom];
+      if (prev && (!best[total] || prev.length + 1 < best[total].length))
+        best[total] = [...prev, denom];
+    }
+  }
+  if (!best[amountK]) return {ok:false,error:`Không thể ghép đúng ${amountK}k bằng chip đang có (${denoms.join(', ')}k).`};
+  const aliases = side === 'P'
+    ? ['Player','player','PLAYER','betPlayer','btnPlayer','btn_player','pBtn','xian','Xian','1']
+    : ['Banker','banker','BANKER','betBanker','btnBanker','btn_banker','bBtn','zhuang','Zhuang','2'];
+  const sources = [view.betBtn,view.betBtnMan?.betBtn,view.betButtons];
+  let spot = null;
+  for (const source of sources) if (source) for (const key of aliases) if (source[key]) { spot=source[key];break; }
+  if (!spot) return {ok:false,error:`Không tìm được ô ${side} của bàn DG.`};
+  const invokeOnce = (node, args) => {
+    if (node?.clickHandler && typeof node.clickHandler.run === 'function') { node.clickHandler.run(); return true; }
+    if (node?.clickHandler && typeof node.clickHandler.runWith === 'function') { node.clickHandler.runWith(args); return true; }
+    if (node && typeof node.event === 'function') { node.event('mousedown');node.event('mouseup');node.event('click');return true; }
+    return false;
+  };
+  const chipValue = (chip) => Number(chip?.chipNum||chip?.value||chip?.amount||0);
+  let stagedRaw = 0;
+  for (const denom of best[amountK].sort((a,b)=>b-a)) {
+    const chip = chips.find(c=>chipValue(c) === denom * scale);
+    if (!chip || !invokeOnce(chip,[chip]))
+      return {ok:false,staged_k:stagedRaw/scale,error:'Không kích hoạt được chip; dừng, không thử click lại.'};
+    await sleep(80);
+    const selected = view.chipMan?.selectChip || view.chipMan?.curChip;
+    const selectedRaw = Number(selected?.chipNum||selected?.value||selected?.amount||player.selectChip||0);
+    if (selected !== chip && selectedRaw !== denom * scale)
+      return {ok:false,staged_k:stagedRaw/scale,error:'Không xác nhận được mệnh giá chip đang chọn; dừng trước khi đặt.'};
+    const before = readTmp(side);
+    if (!invokeOnce(spot,[spot]))
+      return {ok:false,staged_k:stagedRaw/scale,error:'Không kích hoạt được ô cược; dừng, không click lại.'};
+    await sleep(120);
+    const after = readTmp(side);
+    if (after - before !== denom * scale)
+      return {ok:false,staged_k:stagedRaw/scale,error:'Số chip trên ô không tăng đúng mệnh giá; dừng để tránh cược lệch.'};
+    stagedRaw += denom * scale;
+  }
+  if (stagedRaw !== amountK * scale)
+    return {ok:false,staged_k:stagedRaw/scale,error:'Tổng chip đã xếp không khớp mức yêu cầu.'};
+  if (!autoConfirm) return {ok:true,staged:true,confirmed:false,round_id:roundId,side,amount_k:amountK};
+  const manager = view.betBtnMan || {};
+  const confirm = manager.sureBtn || manager.confirmBtn || manager.btnSure || manager.okBtn || manager.btnOk
+    || view.sureBtn || view.confirmBtn || view.btnSure || view.okBtn || view.btnOk;
+  if (!confirm || !invokeOnce(confirm,[{}]))
+    return {ok:false,staged:true,confirmed:false,round_id:roundId,side,amount_k:amountK,
+      error:'Chip đã xếp nhưng không tìm thấy nút xác nhận; không thử click lại.'};
+  await sleep(250);
+  const real = view.betMoneyTrue || {};
+  const realAmount = readTmp(side) === 0 ? Number(real[side === 'P' ? 'Player' : 'Banker']
+    || real[side === 'P' ? 'player' : 'banker'] || 0) : 0;
+  if (realAmount < amountK * scale)
+    return {ok:false,staged:true,confirmed:false,round_id:roundId,side,amount_k:amountK,
+      error:'Chip đã xếp nhưng chưa xác nhận được cược từ trạng thái DG.'};
+  return {ok:true,staged:true,confirmed:true,round_id:roundId,side,amount_k:amountK};
+})().then(done).catch(error=>done({ok:false,error:'Lỗi Laya khi đặt chip ('+(error?.name||'Error')+').' }));
+"""
+
 _DG_LOBBY_JS = r"""
 return (() => {
   if (typeof Laya === 'undefined' || !Laya.stage) return {ready: false, tables: []};
@@ -440,6 +634,76 @@ def _loader_url(location, src, table_id):
     if "direct1.html" not in path:
         path = path.rsplit("/", 1)[0] + "/direct1.html"
     return urlunsplit((parsed.scheme, parsed.netloc, path, urlencode(query, doseq=True), ""))
+
+
+def exact_chip_sequence(amount, denominations):
+    """Return the fewest exact chip denominations, or an empty list if impossible."""
+    try:
+        target = int(amount)
+    except (TypeError, ValueError):
+        return []
+    denoms = set()
+    for value in denominations or []:
+        try:
+            denomination = int(value)
+        except (TypeError, ValueError):
+            continue
+        if denomination > 0:
+            denoms.add(denomination)
+    denoms = sorted(denoms, reverse=True)
+    if target <= 0 or target > 10000 or not denoms:
+        return []
+    best = [None] * (target + 1)
+    best[0] = []
+    for total in range(1, target + 1):
+        for denomination in denoms:
+            if denomination > total:
+                continue
+            previous = best[total - denomination]
+            if previous is not None and (best[total] is None
+                                         or len(previous) + 1 < len(best[total])):
+                best[total] = previous + [denomination]
+    return sorted(best[target] or [], reverse=True)
+
+
+def bet_state(driver, wait=0.0):
+    """Read a sanitized DG round, limits and chip state from its Laya frame."""
+    if driver is None:
+        return {"ok": False, "error": "Mở profile Chrome trước khi đọc trạng thái cược DG."}
+    try:
+        ctx = _dg_context(driver, wait)
+        if ctx is None:
+            return {"ok": False, "error": "Chưa thấy frame game DG đang tải."}
+        state = driver.execute_script(_DG_BET_STATE_JS) or {}
+        if not state.get("in_table"):
+            return {"ok": False, "in_table": False, "error": "Profile chưa ở trong bàn DG."}
+        state["ok"] = True
+        return state
+    except Exception as exc:
+        return {"ok": False, "error": "Không đọc được trạng thái cược DG (%s)." % type(exc).__name__}
+
+
+def stage_bet(driver, side, amount_k, round_id, confirm=False, wait=0.0):
+    """Stage an exact DG chip amount once; confirmation is opt-in and verified."""
+    side = str(side or "").strip().upper()
+    if side not in ("P", "B"):
+        return {"ok": False, "error": "Cửa DG chỉ hỗ trợ Player hoặc Banker."}
+    try:
+        amount = int(amount_k)
+    except (TypeError, ValueError):
+        return {"ok": False, "error": "Mức chip không hợp lệ."}
+    if amount <= 0 or amount > 10000:
+        return {"ok": False, "error": "Mức chip phải nằm trong 1–10.000k."}
+    if driver is None:
+        return {"ok": False, "error": "Mở profile Chrome trước khi đặt chip DG."}
+    try:
+        ctx = _dg_context(driver, wait)
+        if ctx is None:
+            return {"ok": False, "error": "Chưa thấy frame game DG đang tải."}
+        return driver.execute_async_script(_DG_STAGE_BET_JS, side, amount,
+                                           str(round_id or ""), bool(confirm)) or {}
+    except Exception as exc:
+        return {"ok": False, "error": "Không đặt được chip DG (%s)." % type(exc).__name__}
 
 
 def current_table(driver, wait=15.0):

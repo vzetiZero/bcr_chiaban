@@ -727,6 +727,33 @@ class BaccaratController:
             return FEBET.sync_table(self.browser.driver, (params or {}).get("table_id"),
                                     wait=30.0, settle=120.0)
 
+    def febet_bet_state(self, _params=None):
+        with self.browser.lock:
+            return FEBET.bet_state(self.browser.driver, wait=0.0)
+
+    def febet_stage_bet(self, params):
+        params = params or {}
+        with self.browser.lock:
+            return FEBET.stage_bet(
+                self.browser.driver, params.get("side"), params.get("amount_k"),
+                params.get("round_id"), confirm=bool(params.get("confirm")), wait=0.0)
+
+    def bet_ladder_result(self, params):
+        """Advance the configured ladder from a verified, settled table result."""
+        outcome = str((params or {}).get("outcome") or "").strip().upper()
+        if outcome not in ("WIN", "LOSS", "PUSH"):
+            return {"ok": False, "error": "Kết quả phải là WIN, LOSS hoặc PUSH."}
+        with self.lock:
+            stake = self.bet_ladder.on_result(outcome)
+            self.config["ladder_step"] = self.bet_ladder.step
+            self.config["bet_stake"] = stake
+            self.bet_config["stake"] = stake
+            step = self.bet_ladder.step
+        self._save_state()
+        self._push_state()
+        return {"ok": True, "outcome": outcome, "step": step,
+                "steps": len(self.bet_ladder.stakes), "stake": stake}
+
     def chrome_attach(self):
         if self.chrome_busy:
             return {"ok": False, "error": "Đang bận thao tác Chrome."}
@@ -2670,7 +2697,10 @@ class BaccaratController:
             "ai.key.set": self.ai_key_set,
             "bet.config": self.bet_config_set,
             "bet.ladder.configure": self.bet_ladder_config_set,
+            "bet.ladder.result": self.bet_ladder_result,
             "bet.place": lambda p: self.bet_place(),
+            "febet.betState": self.febet_bet_state,
+            "febet.stageBet": self.febet_stage_bet,
         }
         handler = table.get(method)
         if handler is None:

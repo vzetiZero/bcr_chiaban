@@ -93,6 +93,19 @@ class WidgetOriginTest(unittest.TestCase):
         self.assertTrue(F._is_widget_origin(""))
 
 
+class ChipSequenceTest(unittest.TestCase):
+    def test_finds_exact_minimum_chip_count(self):
+        self.assertEqual(F.exact_chip_sequence(125, [100, 50, 25, 10]), [100, 25])
+
+    def test_rejects_unrepresentable_or_unsafe_amounts(self):
+        self.assertEqual(F.exact_chip_sequence(17, [10, 5]), [])
+        self.assertEqual(F.exact_chip_sequence(10001, [500, 100, 10, 1]), [])
+
+    def test_rejects_empty_or_invalid_denominations(self):
+        self.assertEqual(F.exact_chip_sequence(20, []), [])
+        self.assertEqual(F.exact_chip_sequence(20, [0, -10, "bad"]), [])
+
+
 class CurrentTableTest(unittest.TestCase):
     def test_only_confirmed_60xxx_ids_are_real_tables(self):
         self.assertTrue(F._is_real_table_id("60101"))

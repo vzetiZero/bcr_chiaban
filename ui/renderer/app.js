@@ -331,7 +331,7 @@ async function scanFebetTables() {
     : { ok: false, error: 'Sảnh DG chưa trả về mã bàn thật.' };
 }
 
-async function syncSelectedFebetTable() {
+async function syncSelectedFebetTable({ startBetting = false } = {}) {
   const tableId = $('#febet-table-select').value;
   if (!/^60\d{3,}$/.test(tableId)) {
     showNotice('Hãy chọn mã bàn Baccarat DG thuộc dải 60xxx.', true);
@@ -355,7 +355,11 @@ async function syncSelectedFebetTable() {
     showNotice(`${notInTable.length} profile vẫn ở sảnh, chưa có cửa cược. ${detail}`, true);
     return false;
   }
-  showNotice(`Cả ${sync.count} profile đã vào bàn ${sync.table_id}; đang áp dụng dãy cược hai cửa…`);
+  showNotice(`Cả ${sync.count} profile đã vào bàn ${sync.table_id}.`);
+  if (!startBetting) {
+    showNotice(`Cả ${sync.count} profile đã vào bàn ${sync.table_id}. Chưa xếp chip.`);
+    return true;
+  }
   const tableIds = Array.from($('#febet-table-select').options)
     .map((option) => option.value).filter((value) => /^60\d{3,}$/.test(value));
   const bets = await api.applyBets(sync.table_id, tableIds);
@@ -367,7 +371,7 @@ async function syncSelectedFebetTable() {
   const betFailed = (bets.replies || []).filter((reply) => !reply.ok);
   showNotice(betFailed.length
     ? `Đã vào bàn ${sync.table_id}; ${betFailed.length} profile lỗi cấu hình chip.`
-    : `Hoàn tất: cả ${sync.count} profile ở bàn ${sync.table_id}; đã gán dãy cược cho hai cửa đối lập.`,
+    : `Cả ${sync.count} profile đã sẵn sàng; chờ cùng mở cược để xếp chip hai cửa.`,
   betFailed.length > 0);
   return betFailed.length === 0;
 }
@@ -427,7 +431,7 @@ runButton.addEventListener('click', async () => {
       }
       // Laya renders the lobby as canvas and does not expose stable table nodes.
       // Use the selected, confirmed DG tableId directly through direct1.html.
-      await syncSelectedFebetTable();
+      await syncSelectedFebetTable({ startBetting: true });
     } else {
       showNotice(failed
         ? `Đã gửi lệnh mở ${result.count} profile; ${failed} profile báo lỗi.`
@@ -507,6 +511,7 @@ function readBetConfig() {
     hop_min: $('#bet-hop-rounds').value.trim(),
     hop_max: Number($('#bet-hop-limit').value),
     split: $('#bet-split').value,
+    auto_confirm: $('#bet-auto-confirm').checked,
   };
 }
 
@@ -528,6 +533,7 @@ function fillBetConfig(config) {
   $('#bet-hop-rounds').value = config.hop_min ?? '2';
   $('#bet-hop-limit').value = config.hop_max ?? 5;
   $('#bet-split').value = config.split === 'odd-b' ? 'odd-b' : 'odd-p';
+  $('#bet-auto-confirm').checked = config.auto_confirm === true;
   const match = Object.entries(LADDER_PRESETS).find(([, sequence]) =>
     sequence === $('#bet-ladder-stakes').value);
   $('#bet-ladder-preset').value = match ? match[0] : 'custom';
@@ -545,6 +551,7 @@ $('#bet-ladder-stakes').addEventListener('input', () => {
 });
 document.querySelectorAll('#bet-min-stake, #bet-max-stake, #bet-min-profiles, #bet-total-target, #bet-hop-rounds, #bet-hop-limit, #bet-split')
   .forEach((input) => input.addEventListener('input', updateBetPreview));
+$('#bet-auto-confirm').addEventListener('change', updateBetPreview);
 $('#save-bet-config').addEventListener('click', async (event) => {
   const button = event.currentTarget;
   button.disabled = true;

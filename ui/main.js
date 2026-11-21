@@ -36,6 +36,7 @@ const DEFAULT_BET_CONFIG = Object.freeze({
   hop_min: '2',
   hop_max: 5,
   split: 'odd-p',
+  auto_confirm: false,
 });
 
 function betConfigPath() {
@@ -66,6 +67,7 @@ function normalizeBetConfig(value = {}) {
     hop_min,
     hop_max,
     split: value.split === 'odd-b' ? 'odd-b' : 'odd-p',
+    auto_confirm: value.auto_confirm === true,
   };
 }
 
@@ -320,7 +322,6 @@ class Engine {
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('engine:event', { game: this.game, event, data });
     }
-    if (event === 'state') observeSharedHop(this.profileIndex, data);
   }
 
   call(method, params = {}, timeout = 30000) {
@@ -362,6 +363,9 @@ const engines = { baccarat: new Engine('baccarat', 1) };
 const activeProxyBridges = new Map();
 const activeProfileIndices = new Set();
 let sharedHop = null;
+let groupBetting = null;
+let groupBetTimer = null;
+let lastGroupStatusAt = 0;
 
 function configuredHopRounds(value) {
   const rounds = String(value || '2').trim().split(/[\s,-]+/)
@@ -441,42 +445,179 @@ async function rotateSharedProfiles() {
   sharedHop.tableId = target;
   sharedHop.hops += 1;
   sharedHop.rounds = 0;
-  sharedHop.since = Date.now() / 1000;
-  sharedHop.pending.clear();
-  sharedHop.counted.clear();
+  if (groupBetting) {
+    groupBetting.tableId = target;
+    groupBetting.lastPlaced = null;
+  }
   sendHopStatus({ active: true, table_id: target, hops: sharedHop.hops,
     note: `Cả ${indices.length} profile đã cùng vào bàn ${target}.` });
 }
 
-function observeSharedHop(profileIndex, state) {
-  if (!sharedHop || !sharedHop.active || sharedHop.busy
-      || !sharedHop.indices.includes(profileIndex) || !state || !Array.isArray(state.history)) return;
-  for (const entry of state.history) {
-    if (!entry || Number(entry.time) < sharedHop.since || !entry.hand
-        || !['B', 'P', 'T'].includes(String(entry.result || '').toUpperCase())) continue;
-    const signature = `${entry.table || ''}|${entry.hand}|${String(entry.result).toUpperCase()}`;
-    if (sharedHop.counted.has(signature)) continue;
-    if (!sharedHop.pending.has(signature)) sharedHop.pending.set(signature, new Map());
-    sharedHop.pending.get(signature).set(profileIndex, entry);
-    const confirmations = sharedHop.pending.get(signature);
-    if (sharedHop.indices.some((index) => !confirmations.has(index))) continue;
-    sharedHop.counted.add(signature);
+function startGroupBetting(tableId, indices, config) {
+  if (groupBetTimer) clearInterval(groupBetTimer);
+  groupBetting = {
+    active: true, busy: false, tableId: String(tableId), indices: [...indices],
+    config, lastPlaced: null, totalWagered: 0, lastMessage: '',
+  };
+  groupBetTimer = setInterval(() => { void groupBettingTick(); }, 450);
+  sendHopStatus({ active: true, table_id: String(tableId),
+    note: `Đang chờ các profile cùng bàn và cùng ván để xếp chip.` });
+}
+
+function groupStatus(note, error = false) {
+  if (!groupBetting || groupBetting.lastMessage === note) return;
+  groupBetting.lastMessage = note;
+  sendHopStatus({ active: groupBetting.active, table_id: groupBetting.tableId,
+    rounds: sharedHop?.rounds || 0, hops: sharedHop?.hops || 0,
+    total_bet: groupBetting.totalWagered, error, note });
+}
+
+function stopGroupBetting(note, error = true) {
+  if (groupBetTimer) clearInterval(groupBetTimer);
+  groupBetTimer = null;
+  if (groupBetting) groupBetting.active = false;
+  if (sharedHop) sharedHop.active = false;
+  groupStatus(note, error);
+}
+
+function normalizedWinner(states) {
+  const winners = states.map((state) => state.winner);
+  return winners.length && winners[0] && winners.every((winner) => winner === winners[0])
+    ? winners[0] : '';
+}
+
+async function settleGroupRound(states, placed) {
+  if (!placed || placed.settled) return false;
+  const winner = normalizedWinner(states);
+  if (!winner) return false;
+  const updates = await Promise.allSettled(placed.indices.map((index, offset) => {
+    const outcome = winner === 'T' ? 'PUSH' : winner === placed.sides[offset] ? 'WIN' : 'LOSS';
+    return profileEngine(index).call('bet.ladder.result', { outcome }, 30000);
+  }));
+  if (updates.some((entry) => entry.status !== 'fulfilled' || !entry.value?.ok)) {
+    stopGroupBetting('Kết quả ván đã đọc được nhưng chưa cập nhật được mọi dãy cược; đã dừng nhóm.', true);
+    return false;
+  }
+  placed.settled = true;
+  groupBetting.totalWagered += placed.stakes.reduce((sum, stake) => sum + stake, 0);
+  if (sharedHop?.active) {
     sharedHop.rounds += 1;
-    for (const result of confirmations.values()) {
-      sharedHop.totalWagered += Math.max(0, Number(result.stake) || 0);
-    }
-    if (!sharedHop.targetNotified && sharedHop.config.total_bet > 0
-        && sharedHop.totalWagered >= sharedHop.config.total_bet) {
-      sharedHop.targetNotified = true;
-      sendHopStatus({ active: true, table_id: sharedHop.tableId, hops: sharedHop.hops,
-        total_bet: sharedHop.totalWagered, target_bet: sharedHop.config.total_bet,
-        note: `Đã đạt mục tiêu doanh số cược ${sharedHop.totalWagered}/${sharedHop.config.total_bet}.` });
-    }
     const threshold = sharedHop.schedule[sharedHop.hops % sharedHop.schedule.length];
-    sendHopStatus({ active: true, table_id: sharedHop.tableId, rounds: sharedHop.rounds,
-      hops: sharedHop.hops, total_bet: sharedHop.totalWagered, target_bet: sharedHop.config?.total_bet,
-      note: `Đã xác nhận ${sharedHop.rounds}/${threshold} ván chung.` });
-    if (sharedHop.rounds >= threshold) void rotateSharedProfiles();
+    groupStatus(`Đã xác nhận kết quả ván ${sharedHop.rounds}/${threshold}; tổng cược ${groupBetting.totalWagered}k.`);
+    if (sharedHop.config.total_bet > 0 && !sharedHop.targetNotified
+        && groupBetting.totalWagered >= sharedHop.config.total_bet) {
+      sharedHop.targetNotified = true;
+      groupStatus(`Đã đạt mục tiêu tổng cược ${groupBetting.totalWagered}/${sharedHop.config.total_bet}k.`);
+    }
+    if (sharedHop.rounds >= threshold) await rotateSharedProfiles();
+  } else {
+    groupStatus(`Đã quyết toán ván ${placed.roundId}; kết quả ${winner}.`);
+  }
+  return true;
+}
+
+async function groupBettingTick() {
+  if (!groupBetting?.active || groupBetting.busy) return;
+  const currentIndices = Array.from(activeProfileIndices).sort((a, b) => a - b);
+  if (currentIndices.length !== groupBetting.indices.length
+      || currentIndices.some((index, offset) => index !== groupBetting.indices[offset])) {
+    stopGroupBetting('Danh sách profile đã đổi; dừng để tránh tách nhóm.', true);
+    return;
+  }
+  groupBetting.busy = true;
+  try {
+    const results = await Promise.allSettled(groupBetting.indices.map((index) =>
+      profileEngine(index).call('febet.betState', {}, 10000)));
+    const states = results.map((result) => result.status === 'fulfilled' ? result.value : null);
+    const ready = states.length === groupBetting.indices.length
+      && states.every((state) => state?.ok && state.in_table === true
+        && String(state.table_id) === groupBetting.tableId && state.round_id);
+    if (!ready) {
+      groupStatus('Chờ tất cả profile tải xong trạng thái bàn DG.');
+      return;
+    }
+    const roundIds = new Set(states.map((state) => String(state.round_id)));
+    if (roundIds.size !== 1) {
+      groupStatus('Các profile chưa đồng bộ cùng mã ván; chưa đặt chip.');
+      return;
+    }
+    const roundId = String(states[0].round_id);
+    if (groupBetting.lastPlaced && groupBetting.lastPlaced.roundId !== roundId
+        && !groupBetting.lastPlaced.settled) {
+      const prior = groupBetting.lastPlaced;
+      const confirmFlags = states.map((state, offset) =>
+        Number(state.confirmed?.[prior.sides[offset]] || 0) >= prior.stakes[offset]);
+      if (confirmFlags.some(Boolean) && !confirmFlags.every(Boolean)) {
+        prior.partialSince ||= Date.now();
+        if (Date.now() - prior.partialSince < 2000) return;
+        stopGroupBetting('Chỉ một phần profile xác nhận cược thật; đã dừng nhóm để không lệch tài khoản.', true);
+        return;
+      }
+      prior.partialSince = 0;
+      const settled = await settleGroupRound(states, prior);
+      if (!settled) {
+        stopGroupBetting('Không xác nhận được kết quả ván trước từ Laya; đã dừng để không đoán bước dãy cược.', true);
+        return;
+      }
+      if (!groupBetting.active || sharedHop?.busy
+          || groupBetting.tableId !== String(states[0].table_id)) return;
+    }
+    const placed = groupBetting.lastPlaced;
+    if (placed && placed.roundId === roundId) {
+      const confirmationFlags = states.map((state, offset) =>
+        Number(state.confirmed?.[placed.sides[offset]] || 0) >= placed.stakes[offset]);
+      if (confirmationFlags.some(Boolean) && !confirmationFlags.every(Boolean)) {
+        placed.partialSince ||= Date.now();
+        if (Date.now() - placed.partialSince < 2000) return;
+        stopGroupBetting('Chỉ một phần profile xác nhận cược thật; đã dừng nhóm để không lệch tài khoản.', true);
+        return;
+      }
+      placed.partialSince = 0;
+      placed.confirmed = confirmationFlags.every(Boolean);
+      if (!states.some((state) => state.bet_open) && !placed.settled) {
+        await settleGroupRound(states, placed);
+      }
+      return;
+    }
+    if (!states.every((state) => state.bet_open)) {
+      groupStatus('Đang đợi cửa cược DG mở đủ lâu trên mọi profile.');
+      return;
+    }
+    const sides = groupBetting.indices.map((index) => {
+      const oddSide = groupBetting.config.split === 'odd-b' ? 'B' : 'P';
+      return index % 2 === 1 ? oddSide : (oddSide === 'P' ? 'B' : 'P');
+    });
+    const engineStates = await Promise.all(groupBetting.indices.map((index) =>
+      profileEngine(index).call('state', {}, 10000)));
+    const stakes = engineStates.map((state) => Math.trunc(Number(state?.bet_ladder?.stake) || 0));
+    if (stakes.some((stake) => !Number.isInteger(stake) || stake <= 0)) {
+      stopGroupBetting('Không đọc được mức dãy cược hiện tại của mọi profile.', true);
+      return;
+    }
+    groupStatus(`Đang xếp chip ${stakes.join('/')}k vào các cửa ${sides.join('/')}…`);
+    const placements = await Promise.allSettled(groupBetting.indices.map((index, offset) =>
+      profileEngine(index).call('febet.stageBet', {
+        side: sides[offset], amount_k: stakes[offset], round_id: roundId,
+        confirm: groupBetting.config.auto_confirm,
+      }, 30000)));
+    const replies = placements.map((entry) => entry.status === 'fulfilled' ? entry.value
+      : { ok: false, error: entry.reason?.message || 'Lỗi gửi chip.' });
+    if (!replies.every((reply) => reply?.ok && reply.staged)) {
+      const details = replies.map((reply, i) => reply?.ok
+        ? `P${groupBetting.indices[i]}: ${reply.amount_k}k ${reply.side}`
+        : `P${groupBetting.indices[i]}: ${reply?.error || 'không xếp được chip'}`).join(' · ');
+      stopGroupBetting(`Không xếp đủ chip cho cả nhóm; dừng và không tự thử lại. ${details}`, true);
+      return;
+    }
+    groupBetting.lastPlaced = { roundId, indices: [...groupBetting.indices], sides, stakes,
+      confirmed: replies.every((reply) => reply.confirmed === true), settled: false };
+    groupStatus(replies.every((reply) => reply.confirmed)
+      ? `Đã xếp và xác nhận chip cho ${replies.length} profile ở ván ${roundId}.`
+      : `Đã xếp chip cho ${replies.length} profile ở ván ${roundId}; chờ xác nhận trên từng bàn.`);
+  } catch (error) {
+    groupStatus(`Đang chờ dữ liệu cược: ${error.message || error}.`);
+  } finally {
+    if (groupBetting) groupBetting.busy = false;
   }
 }
 
@@ -668,6 +809,7 @@ ipcMain.handle('bets:apply', async (_event, { tableId, tableIds } = {}) => {
   const failed = replies.filter((reply) => !reply.ok).length;
   if (failed === 0 && /^60\d{3,}$/.test(String(tableId || ''))) {
     startSharedHop(tableId, tableIds, config, indices);
+    startGroupBetting(tableId, indices, config);
   }
   return { ok: failed === 0, count: indices.length, stake: ladderStake(config),
     config, replies, error: failed ? `${failed} profile không nhận được cấu hình dãy cược.` : '' };

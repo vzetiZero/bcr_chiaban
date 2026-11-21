@@ -71,6 +71,15 @@ class DispatchTests(unittest.TestCase):
         self.assertEqual(service.config["hop_rounds"], [3, 4, 2])
         self.assertEqual(service.config["hop_max"], 2)
 
+    def test_verified_bet_result_advances_the_configured_ladder(self):
+        service = make_service()
+        service.bet_ladder_config_set({"stakes": "10 20 30", "min_t": 1,
+                                       "max_t": 100, "side": "P"})
+        self.assertEqual(service.bet_ladder_result({"outcome": "LOSS"})["stake"], 20)
+        self.assertEqual(service.bet_ladder_result({"outcome": "PUSH"})["stake"], 20)
+        self.assertEqual(service.bet_ladder_result({"outcome": "WIN"})["stake"], 10)
+        self.assertFalse(service.bet_ladder_result({"outcome": "UNKNOWN"})["ok"])
+
     def test_ping_and_state_are_answered(self):
         service = make_service()
         result, error = engine.dispatch(service, "ping", {})
