@@ -991,8 +991,14 @@ ipcMain.handle('profile:open', async (_event, { index, count, profile, url, sour
     if (omni) {
       const navigated = await engine.call('site.open', { url }, 45000);
       if (!navigated || !navigated.ok) {
-        await stopOmniProfile(omni);
-        return { ok: false, error: navigated?.error || 'Không mở được website trong profile.' };
+        // Chrome belongs to OmniLogin. Stopping the profile here makes OmniLogin
+        // kill the browser window the user just watched open, so keep it alive
+        // and only report the navigation problem.
+        activeOmniProfiles.set(profileIndex, omni);
+        activeProfileIndices.add(profileIndex);
+        return { ok: false, keepProfile: true,
+          error: navigated?.error || 'Không mở được website trong profile.',
+          proxy: `Proxy theo cài đặt của ${omni.provider === 'omni' ? 'OmniLogin' : 'Hidemium'}` };
       }
     }
     if (omni) activeOmniProfiles.set(profileIndex, omni);
@@ -1629,9 +1635,9 @@ ipcMain.handle('profiles:open', async (_event, { count, siteId, siteIds, indices
     }
     const reply = await engine.call('site.open', { url: sites[index].url }, 45000);
     if ((!reply || !reply.ok) && (source === 'omni' || source === 'hidemium')) {
-      const activeOmni = activeOmniProfiles.get(profileIndex);
-      activeOmniProfiles.delete(profileIndex);
-      if (activeOmni) await stopOmniProfile(activeOmni);
+      // Keep the managed profile registered: OmniLogin/Hidemium own the browser,
+      // and asking them to stop would close the window the user is watching.
+      activeProfileIndices.add(profileIndex);
     }
     return { ...reply, index: profileIndex, site: sites[index].label,
       proxy: source === 'omni' || source === 'hidemium' ? `Proxy theo cấu hình ${source === 'omni' ? 'OmniLogin' : 'Hidemium'}` : settings[index].proxyLabel,

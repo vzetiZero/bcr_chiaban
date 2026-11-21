@@ -682,16 +682,20 @@ class BaccaratController:
         self.config["start_url"] = url
         self._save_state()
         if getattr(self.browser, "external_browser", False) and self.browser.driver is not None:
-            try:
-                with self.browser.lock:
-                    self.browser.driver.get(url)
-                window = self._window()
+            # Navigation must never be the reason a managed profile disappears.
+            # A blocking page load waits up to the page-load timeout (20 s) and
+            # raises on slow sites; the caller would then stop the profile, which
+            # makes OmniLogin kill Chrome. Issue Page.navigate over CDP instead so
+            # a slow page counts as "still loading", not as a failure.
+            opened, note = self.browser.navigate(url)
+            if not opened:
+                return {"ok": False, "error": note}
+            window = self._window()
+            with self.browser.lock:
                 self.browser.resize_window(window, pos=self._window_pos(window))
-                self.connection_text = "Đã mở website trong profile OmniLogin."
-                self._push_state()
-                return {"ok": True, "note": self.connection_text}
-            except Exception as exc:
-                return {"ok": False, "error": "Không mở được website trong profile OmniLogin (%s)." % type(exc).__name__}
+            self.connection_text = "Đã mở website trong profile OmniLogin."
+            self._push_state()
+            return {"ok": True, "note": self.connection_text}
         if self.browser.connected:
             ok, note = self.browser.navigate(url)
             if not ok:
