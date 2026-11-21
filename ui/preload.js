@@ -18,6 +18,7 @@ contextBridge.exposeInMainWorld('aibcr', {
   listOmniProfiles: (apiUrl) => ipcRenderer.invoke('omni:profiles', { apiUrl }),
   openDreamGaming: () => ipcRenderer.invoke('febet:open-dg'),
   autoRunFebet: () => ipcRenderer.invoke('febet:auto-run'),
+  runDGGroup: (count) => ipcRenderer.invoke('dg:auto-run', { count }),
   listFebetTables: () => ipcRenderer.invoke('febet:tables'),
   syncFebetTableById: (tableId) => ipcRenderer.invoke('febet:sync-table', { tableId }),
   getBetConfig: () => ipcRenderer.invoke('bets:config:get'),

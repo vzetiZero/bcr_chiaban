@@ -277,12 +277,30 @@ def _is_real_table_id(table_id):
 
 
 def _lobby_handle(driver):
+    """Find the current site tab whose frame tree contains the DG game.
+
+    The operator may be embedded by FEBET, GK881, or another casino site.  The
+    game origin is the shared DG marker; requiring a FEBET URL here prevented
+    the common table/bet flow from working on other hosts.
+    """
+    from selenium.webdriver.common.by import By
+
     for handle in reversed(driver.window_handles):
         try:
             driver.switch_to.window(handle)
             driver.switch_to.default_content()
-            if _is_lobby(driver.current_url):
-                return handle
+            frames = driver.find_elements(By.CSS_SELECTOR, "iframe, frame")
+            for frame in frames:
+                try:
+                    driver.switch_to.default_content()
+                    driver.switch_to.frame(frame)
+                    location = driver.execute_script("return location.href") or ""
+                    if "ddnewpc" in location.lower():
+                        driver.switch_to.default_content()
+                        return handle
+                except Exception:
+                    continue
+            driver.switch_to.default_content()
         except Exception:
             continue
     return None
@@ -604,7 +622,7 @@ def _dg_window(driver):
 
 
 def _dg_context(driver, wait=15.0):
-    """Đặt driver vào đúng document DG (tab riêng hoặc iframe sảnh), chờ tới khi tải."""
+    """Đặt driver vào đúng document DG (tab riêng hoặc iframe của site bất kỳ)."""
     deadline = time.monotonic() + max(0.0, wait)
     while True:
         if _dg_window(driver) is not None:
@@ -797,7 +815,7 @@ def sync_table(driver, table_id, wait=30.0, settle=120.0):
             driver.execute_script("location.href = %s;" % json.dumps(new_url))
         else:
             if _lobby_handle(driver) is None:
-                return {"ok": False, "error": "Profile cần mở sảnh FEBET Baccarat trước."}
+                return {"ok": False, "error": "Profile cần mở sảnh DG trên site trước khi đồng bộ bàn."}
             index = ctx["index"]
             src = driver.execute_script(
                 "return (() => { const f = document.querySelectorAll('iframe,frame')[%d];"

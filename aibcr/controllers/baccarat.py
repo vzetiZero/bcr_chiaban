@@ -2705,6 +2705,9 @@ class BaccaratController:
             "febet.table": self.febet_current_table,
             "febet.tables": self.febet_lobby_tables,
             "febet.syncTable": self.febet_sync_table,
+            "dg.table": self.febet_current_table,
+            "dg.tables": self.febet_lobby_tables,
+            "dg.syncTable": self.febet_sync_table,
             "chrome.attach": lambda p: self.chrome_attach(),
             "chrome.close": lambda p: self.chrome_close(),
             "chrome.window": self.apply_window,
@@ -2744,6 +2747,8 @@ class BaccaratController:
             "bet.place": lambda p: self.bet_place(),
             "febet.betState": self.febet_bet_state,
             "febet.stageBet": self.febet_stage_bet,
+            "dg.betState": self.febet_bet_state,
+            "dg.stageBet": self.febet_stage_bet,
         }
         handler = table.get(method)
         if handler is None:

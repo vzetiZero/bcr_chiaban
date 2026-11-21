@@ -139,8 +139,11 @@ class CurrentTableTest(unittest.TestCase):
         result = F.current_table(driver, wait=0)
         self.assertFalse(result["ok"])
 
-    def test_not_lobby(self):
-        self.assertFalse(F.current_table(FakeDriver("https://febet.kiwi/login", DG_LOC), wait=0)["ok"])
+    def test_same_dg_frame_works_from_another_site_host(self):
+        driver = FakeDriver("https://m.gk881.vip/", DG_LOC)
+        result = F.current_table(driver, wait=0)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["table_id"], "60101")
 
 
 class SyncTableTest(unittest.TestCase):

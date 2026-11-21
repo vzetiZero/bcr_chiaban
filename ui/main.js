@@ -519,7 +519,7 @@ async function rotateSharedProfiles() {
   sendHopStatus({ active: true, table_id: target, hops: sharedHop.hops,
     note: `Đủ ${sharedHop.rounds} ván; đang chuyển cả nhóm sang bàn ${target}…` });
   const results = await Promise.allSettled(indices.map((index) =>
-    profileEngine(index).call('febet.syncTable', { table_id: target }, 180000)));
+    profileEngine(index).call('dg.syncTable', { table_id: target }, 180000)));
   const replies = results.map((result, offset) => result.status === 'fulfilled'
     ? result.value : { index: indices[offset], ok: false, error: result.reason.message });
   const successful = replies.length === indices.length
@@ -616,7 +616,7 @@ async function groupBettingTick() {
   groupBetting.busy = true;
   try {
     const results = await Promise.allSettled(groupBetting.indices.map((index) =>
-      profileEngine(index).call('febet.betState', {}, 10000)));
+      profileEngine(index).call('dg.betState', {}, 10000)));
     const states = results.map((result) => result.status === 'fulfilled' ? result.value : null);
     const ready = states.length === groupBetting.indices.length
       && states.every((state) => state?.ok && state.in_table === true
@@ -685,7 +685,7 @@ async function groupBettingTick() {
     }
     groupStatus(`Đang xếp chip ${stakes.join('/')}k vào các cửa ${sides.join('/')}…`);
     const placements = await Promise.allSettled(groupBetting.indices.map((index, offset) =>
-      profileEngine(index).call('febet.stageBet', {
+      profileEngine(index).call('dg.stageBet', {
         side: sides[offset], amount_k: stakes[offset], round_id: roundId,
         confirm: groupBetting.config.auto_confirm,
       }, 30000)));
@@ -847,9 +847,13 @@ ipcMain.handle('febet:open-dg', async (_event) => {
       : { index: indices[offset], ok: false, error: result.reason.message }) };
 });
 
-ipcMain.handle('febet:auto-run', async () => {
+async function runDGGroup(count) {
   const indices = Array.from(activeProfileIndices).sort((a, b) => a - b);
-  if (!indices.length) return { ok: false, error: 'Ch\u01b0a c\u00f3 profile n\u00e0o \u0111ang m\u1edf.' };
+  if (!indices.length) return { ok: false, error: 'Hãy mở profile trước, tự vào site và mở sảnh DG rồi mới chạy đồng bộ nhóm.' };
+  const requested = Math.max(1, Math.min(8, Math.trunc(Number(count) || indices.length)));
+  if (indices.length !== requested || indices.some((index, offset) => index !== offset + 1)) {
+    return { ok: false, error: `Đã chọn ${requested} profile nhưng đang mở ${indices.length}. Hãy mở đúng các Profile 1–${requested} trước khi chạy.` };
+  }
   const config = await loadBetConfig();
   if (indices.length < config.min_tk) {
     return { ok: false, error: `C\u1ea5u h\u00ecnh y\u00eau c\u1ea7u t\u1ed1i thi\u1ec3u ${config.min_tk} profile; hi\u1ec7n c\u00f3 ${indices.length}.` };
@@ -857,10 +861,10 @@ ipcMain.handle('febet:auto-run', async () => {
   const leader = profileEngine(indices[0]);
   let scan = null;
   const deadline = Date.now() + 180000;
-  sendHopStatus({ active: true, note: '\u0110ang \u0111\u1ee3i s\u1ea3nh DG t\u1ea3i xong \u0111\u1ec3 t\u1ef1 ch\u1ecdn b\u00e0n...' });
+  sendHopStatus({ active: true, note: '\u0110ang \u0111\u1ee3i s\u1ea3nh DG t\u1ea3i xong tr\u00ean profile d\u1eabn \u0111\u1ea7u \u0111\u1ec3 ch\u1ecdn b\u00e0n...' });
   while (Date.now() < deadline) {
     try {
-      scan = await leader.call('febet.tables', {}, 40000);
+      scan = await leader.call('dg.tables', {}, 40000);
       if (scan?.ok && (scan.tables || []).some((row) => /^60[0-9]{3,}$/.test(String(row.table_id || '')))) break;
     } catch (error) {
       scan = { ok: false, error: error.message };
@@ -880,7 +884,7 @@ ipcMain.handle('febet:auto-run', async () => {
   sendHopStatus({ active: true, table_id: tableId,
     note: `\u0110\u00e3 t\u1ef1 ch\u1ecdn ${tables[0].name || `b\u00e0n ${tableId}`} (${tableId}); \u0111ang \u0111\u1ed3ng b\u1ed9 ${indices.length} profile...` });
   const syncResults = await Promise.allSettled(indices.map((index) =>
-    profileEngine(index).call('febet.syncTable', { table_id: tableId }, 180000)));
+    profileEngine(index).call('dg.syncTable', { table_id: tableId }, 180000)));
   const syncReplies = syncResults.map((result, offset) => result.status === 'fulfilled'
     ? { index: indices[offset], ...result.value }
     : { index: indices[offset], ok: false, error: result.reason.message });
@@ -906,19 +910,22 @@ ipcMain.handle('febet:auto-run', async () => {
   sendHopStatus({ active: true, table_id: tableId,
     note: `C\u1ea3 ${indices.length} profile \u0111\u00e3 v\u00e0o ${result.table_name} (${tableId}); \u0111ang ch\u1edd tr\u1ea1ng th\u00e1i c\u01b0\u1ee3c \u0111\u1ed3ng b\u1ed9.` });
   return result;
-});
+}
+
+ipcMain.handle('dg:auto-run', async (_event, { count } = {}) => runDGGroup(count));
+ipcMain.handle('febet:auto-run', async () => runDGGroup());
 
 ipcMain.handle('febet:tables', async () => {
   const indices = Array.from(activeProfileIndices).sort((a, b) => a - b);
   if (!indices.length) return { ok: false, error: 'Chưa có profile nào đang mở.' };
   const leader = profileEngine(indices[0]);
   try {
-    const current = await leader.call('febet.table', {}, 30000);
+    const current = await leader.call('dg.table', {}, 30000);
     if (current && current.ok && current.in_table && /^60\d{3,}$/.test(String(current.table_id || ''))) {
       return { ok: true, tables: [{ table_id: current.table_id,
         name: current.label || `Bàn ${current.table_id}`, online: 0 }], current_table: true };
     }
-    const result = await leader.call('febet.tables', {}, 60000);
+    const result = await leader.call('dg.tables', {}, 60000);
     if (!result || !result.ok || !(result.tables || []).length) {
       return { ok: false, error: (result && result.error) || 'Chưa đọc được bàn thật từ sảnh DG.' };
     }
@@ -936,11 +943,11 @@ ipcMain.handle('febet:sync-table', async (_event, { tableId }) => {
   if (!target) {
     try {
       const leader = profileEngine(indices[0]);
-      const read = await leader.call('febet.table', {}, 30000);
+      const read = await leader.call('dg.table', {}, 30000);
       if (read && read.ok && read.in_table && /^60\d{3,}$/.test(String(read.table_id || ''))) {
         target = String(read.table_id);
       } else {
-        const scan = await leader.call('febet.tables', {}, 60000);
+        const scan = await leader.call('dg.tables', {}, 60000);
         if (!scan || !scan.ok || !(scan.tables || []).length) {
           return { ok: false, error: (scan && scan.error) || 'Không đọc được danh sách bàn của sảnh DG.' };
         }
@@ -954,7 +961,7 @@ ipcMain.handle('febet:sync-table', async (_event, { tableId }) => {
     return { ok: false, error: 'Mã bàn DG không hợp lệ; mã bàn Baccarat DG phải thuộc dải 60xxx (ví dụ 60102).' };
   }
   const results = await Promise.allSettled(indices.map((index) =>
-    profileEngine(index).call('febet.syncTable', { table_id: target }, 180000)));
+    profileEngine(index).call('dg.syncTable', { table_id: target }, 180000)));
   return { ok: true, count: indices.length, table_id: target, replies: results.map((result, offset) =>
     result.status === 'fulfilled' ? { index: indices[offset], ...result.value }
       : { index: indices[offset], ok: false, error: result.reason.message }) };

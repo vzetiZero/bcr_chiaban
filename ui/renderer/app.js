@@ -81,10 +81,8 @@ function updateSitePreview() {
   const source = $('#profile-source').value;
   runButton.disabled = !site || !site.value;
   $('#run-site-stat').textContent = site && site.value ? site.textContent : 'Ch\u01b0a ch\u1ecdn';
-  $('#run-mode-title').textContent = source === 'omni' ? 'Ch\u1ea1y profile qua OmniLogin'
-    : site && site.value === 'febet' ? 'T\u1ef1 ch\u1ecdn b\u00e0n Dream Gaming' : 'M\u1edf \u0111\u1ed3ng th\u1eddi c\u00e1c profile';
-  $('#run-mode-badge').textContent = source === 'omni' ? 'OMNILOGIN'
-    : site && site.value === 'febet' ? 'T\u1ef0 \u0110\u1ed8NG' : 'S\u1eb4N S\u00c0NG';
+  $('#run-mode-title').textContent = '\u0110\u1ed3ng b\u1ed9 b\u00e0n DG v\u00e0 v\u1eadn h\u00e0nh nh\u00f3m';
+  $('#run-mode-badge').textContent = source === 'omni' ? 'OMNILOGIN' : 'DG GROUP';
 }
 
 function populateProxySelect(select, selectedId = '') {
@@ -376,45 +374,23 @@ runButton.addEventListener('click', async () => {
   const count = Math.max(1, Math.min(8, Math.trunc(Number(profileCount.value) || 1)));
   profileCount.value = String(count);
   $('#run-count-stat').textContent = String(count);
-  $('#run-table-stat').textContent = profileSelect.value === 'febet' ? '\u0110ang qu\u00e9t...' : '\u2014';
+  $('#run-table-stat').textContent = '\u0110ang qu\u00e9t...';
   runButton.disabled = true;
   runButton.classList.add('busy');
-  showNotice('Đang khởi chạy các profile…');
+  showNotice('Ch\u1edd s\u1ea3nh DG t\u1ea3i tr\u00ean c\u00e1c profile v\u00e0 \u0111\u1ed3ng b\u1ed9 v\u00e0o c\u00f9ng b\u00e0n...');
   try {
-    const result = await api.openProfiles(count, profileSelect.value, collectSettings(count), $('#profile-source').value, $('#omni-api-url').value.trim());
+    const result = await api.runDGGroup(count);
     if (!result || !result.ok) {
-      showNotice((result && result.error) || 'Không mở được các profile.', true);
+      showNotice(result?.error || 'Ch\u01b0a th\u1ec3 \u0111\u1ed3ng b\u1ed9 s\u1ea3nh DG.', true);
       return;
     }
-    renderProfiles(result.count, result.site, result.replies);
-    $('#close-profiles').disabled = false;
-    const failed = result.replies.filter((reply) => !reply.ok).length;
-    if (profileSelect.value === 'febet') {
-      showNotice('\u0110ang m\u1edf s\u1ea3nh Dream Gaming tr\u00ean t\u1ea5t c\u1ea3 profile...');
-      const dgResult = await api.openDreamGaming();
-      if (!dgResult || !dgResult.ok) {
-        showNotice((dgResult && dgResult.error) || 'Kh\u00f4ng m\u1edf \u0111\u01b0\u1ee3c s\u1ea3nh Dream Gaming.', true);
-        return;
-      }
-      const dgFailed = dgResult.replies.filter((reply) => !reply.ok).length;
-      if (dgFailed) {
-        showNotice(`\u0110\u00e3 m\u1edf ${result.count} profile; ${dgFailed} profile ch\u01b0a t\u1ea3i \u0111\u01b0\u1ee3c s\u1ea3nh DG.`, true);
-        return;
-      }
-      showNotice('\u0110ang \u0111\u1ee3i Laya t\u1ea3i b\u00e0n, t\u1ef1 ch\u1ecdn b\u00e0n v\u00e0 \u0111\u1ed3ng b\u1ed9 c\u1ea3 nh\u00f3m...');
-      const started = await api.autoRunFebet();
-      if (!started || !started.ok) {
-        showNotice((started && started.error) || 'Ch\u01b0a th\u1ec3 \u0111\u1ed3ng b\u1ed9 nh\u00f3m v\u00e0o b\u00e0n DG.', true);
-        return;
-      }
-      $('#run-table-stat').textContent = `${started.table_name} \u00b7 ${started.table_id}`;
-      renderBetAssignments(started);
-      showNotice(`C\u1ea3 ${started.count} profile \u0111\u00e3 v\u00e0o ${started.table_name} (${started.table_id}); \u0111ang ch\u1edd tr\u1ea1ng th\u00e1i c\u01b0\u1ee3c \u0111\u1ed3ng b\u1ed9.`);
-    } else {
-      showNotice(failed
-        ? `Đã gửi lệnh mở ${result.count} profile; ${failed} profile báo lỗi.`
-        : `Đã gửi lệnh mở đồng thời ${result.count} profile tại ${result.site}.`);
+    $('#run-table-stat').textContent = `${result.table_name} \u00b7 ${result.table_id}`;
+    renderBetAssignments(result);
+    for (let index = 1; index <= count; index += 1) {
+      updateProfile(index, 'running', `\u0110\u00e3 \u0111\u1ed3ng b\u1ed9 v\u00e0o DG ${result.table_id}.`);
     }
+    $('#close-profiles').disabled = false;
+    showNotice(`C\u1ea3 ${result.count} profile \u0111\u00e3 v\u00e0o ${result.table_name} (${result.table_id}); \u0111ang v\u1eadn h\u00e0nh d\u00e3y c\u01b0\u1ee3c nh\u00f3m.`);
   } catch (error) {
     showNotice(String(error.message || error), true);
   } finally {
