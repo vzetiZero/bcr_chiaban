@@ -774,7 +774,7 @@ async function groupBettingTick() {
       const diagnostics = states.map((state, offset) => {
         const index = groupBetting.indices[offset];
         if (!state?.ok) return `P${index}: không đọc được trạng thái chip (${state?.error || 'chưa sẵn sàng'})`;
-        return `P${index}: scale=${state.scale ?? '?'}, sàn=${state.min_k ?? '?' }k, trần=${state.max_k || 'không rõ'}k, số dư=${state.balance_k ?? 'không rõ'}k, chip=[${(state.denominations_k || []).join(',')}]`;
+        return `P${index}: scale=${state.scale ?? '?'}, floor_src=${state.floor_source || '?'}, raw_min=${state.raw_min ?? '?'}, screen_min=${state.screen_floor ?? '?'}, table_min=${state.min_k ?? '?'}k, table_max=${state.max_k || '?'}k, balance=${state.balance_k ?? '?'}k, chips=[${(state.denominations_k || []).join(',')}]`;
       }).join(' · ');
       appendActivityLog({ source: 'kiểm tra chip', level: 'error',
         text: `Không tìm thấy mức chung không vượt ${targetStake}k. ${diagnostics}` });

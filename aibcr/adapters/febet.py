@@ -501,7 +501,7 @@ return (() => {
     Number(chip?.chipNum || chip?.value || chip?.amount || 0)).filter(value => value > 0);
   const maxRawChip = Math.max(0, ...chipValues);
   const parseFloor = (text) => {
-    const match = String(text || '').match(/(?:ID\s*[A-Za-z0-9_-]+\s*)?([\d,.]+)\s*([kmKM]?)\s*[-~至到/\s]\s*([\d,.]+)\s*([kmKM]?)/i);
+    const match = String(text || '').match(/(?:ID\s*[A-Za-z0-9_-]+\s*)?([\d,.]+)\s*([kmKM]?)\s*(?:-|~|\/)\s*([\d,.]+)\s*([kmKM]?)/i);
     if (!match) return 0;
     let value = Number(match[1].replace(/,/g, ''));
     const unit = String(match[2] || '').toUpperCase();
@@ -522,7 +522,7 @@ return (() => {
     }
     return 0;
   };
-  const screenFloor = findFloor(view.tableInfoMan) || findFloor(view) || findFloor(Laya.stage);
+  const screenFloor = findFloor(view.tableInfoMan);
   const floorRaw = screenFloor >= 80 ? screenFloor : rawMin;
   const scale = floorRaw >= 1000 ? 1000 : floorRaw > 0 ? 1
     : currency === 'VND' || Number(player.balance || 0) >= 100000 ? 1000
@@ -558,7 +558,8 @@ return (() => {
     table_id:(location.href.match(/tableId=([0-9]+)/) || [])[1] || '',
     round_id:roundId, state_id:stateId, countdown,
     bet_open:stateId === 1 && countdown >= 5,
-    winner, scale,
+    winner, scale, raw_min:rawMin, screen_floor:screenFloor,
+    floor_source:screenFloor >= 80 ? 'table-info' : rawMin > 0 ? 'baccarat-limit' : 'fallback',
     min_k:scale ? Math.ceil(floorRaw / scale) : 0,
     max_k:scale && rawMax ? Math.floor(rawMax / scale) : 0,
     balance_k:scale ? Number(player.balance || 0) / scale : null,
@@ -606,7 +607,7 @@ const autoConfirm = Boolean(arguments[3]);
   const currency = String(player.currency || player.currencyName || player.currencyCode || '').toUpperCase();
   let maxRawChip = Math.max(0,...(view.chipMan?.chipArray || []).map(c=>Number(c?.chipNum||c?.value||c?.amount||0)));
   const parseFloor = (text) => {
-    const match = String(text || '').match(/(?:ID\s*[A-Za-z0-9_-]+\s*)?([\d,.]+)\s*([kmKM]?)\s*[-~至到/\s]\s*([\d,.]+)\s*([kmKM]?)/i);
+    const match = String(text || '').match(/(?:ID\s*[A-Za-z0-9_-]+\s*)?([\d,.]+)\s*([kmKM]?)\s*(?:-|~|\/)\s*([\d,.]+)\s*([kmKM]?)/i);
     if (!match) return 0;
     let value = Number(match[1].replace(/,/g, ''));
     const unit = String(match[2] || '').toUpperCase();
@@ -627,7 +628,7 @@ const autoConfirm = Boolean(arguments[3]);
     }
     return 0;
   };
-  const screenFloor = findFloor(view.tableInfoMan) || findFloor(view) || findFloor(Laya.stage);
+  const screenFloor = findFloor(view.tableInfoMan);
   const floorRaw = screenFloor >= 80 ? screenFloor : rawMin;
   const scale = floorRaw >= 1000 ? 1000 : floorRaw > 0 ? 1
     : currency === 'VND' || Number(player.balance || 0) >= 100000 ? 1000
