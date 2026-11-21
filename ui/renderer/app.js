@@ -483,7 +483,7 @@ runButton.addEventListener('click', async () => {
     for (let index = 1; index <= count; index += 1) {
       updateProfile(index, 'running', `\u0110\u00e3 m\u1edf site ${opened.replies[index - 1]?.site || ''}; \u0111ang ch\u1edd v\u00e0o s\u1ea3nh DG.`);
     }
-    showNotice('\u0110ang t\u1ef1 v\u00e0o s\u1ea3nh DG tr\u00ean t\u1eebng site...');
+    showNotice('\u0110ang ch\u1edd b\u1ea1n t\u1ef1 v\u00e0o s\u1ea3nh DG. \u1ee8ng d\u1ee5ng s\u1ebd qu\u00e9t tr\u1ea1ng th\u00e1i m\u1ed7i 5 gi\u00e2y...');
     const result = await api.runDGGroup(count, siteIds);
     if (!result || !result.ok) {
       for (const reply of result?.entry_replies || []) {
@@ -638,6 +638,9 @@ updateBetPreview();
 api.onGroupHop((status) => {
   const target = $('#bet-notice');
   if (!target || !status || !status.note) return;
+  for (const profile of status.profile_states || []) {
+    updateProfile(profile.index, 'running', profile.note || 'Đang theo dõi sảnh DG.');
+  }
   target.textContent = status.note;
   if (status.table_id) $('#run-table-stat').textContent = status.table_id;
   target.dataset.state = status.error ? 'error' : 'ready';

@@ -925,12 +925,13 @@ ipcMain.handle('profile:open', async (_event, { index, count, profile, url, sour
 
 ipcMain.handle('febet:open-dg', async (_event) => {
   const indices = Array.from(activeProfileIndices).sort((a, b) => a - b);
-  if (!indices.length) return { ok: false, error: 'Hãy mở các profile ở sảnh FEBET trước.' };
+  if (!indices.length) return { ok: false, error: 'Hãy mở profile trước.' };
   const results = await Promise.allSettled(indices.map((index) =>
-    profileEngine(index).call('febet.openDG', {}, 360000)));
-  return { ok: true, count: indices.length, replies: results.map((result, offset) =>
+    profileEngine(index).call('dg.table', { wait: 0 }, 10000)));
+  const replies = results.map((result, offset) =>
     result.status === 'fulfilled' ? { index: indices[offset], ...result.value }
-      : { index: indices[offset], ok: false, error: result.reason.message }) };
+      : { index: indices[offset], ok: false, error: result.reason.message });
+  return { ok: true, count: indices.length, replies };
 });
 
 async function runDGGroup(count, siteIds) {
@@ -950,33 +951,47 @@ async function runDGGroup(count, siteIds) {
       || selectedSites.some((id) => !PROFILE_SITES.some((site) => site.id === id))) {
     return { ok: false, error: 'Mỗi profile cần có một site hợp lệ trước khi vào sảnh DG.' };
   }
-  sendHopStatus({ active: true, note: 'Đang mở sảnh Dream Gaming riêng theo site của từng profile...' });
-  const entryResults = await Promise.allSettled(indices.map((index, offset) =>
-    profileEngine(index).call('dg.openLobby', { site_id: selectedSites[offset] }, 480000)));
-  const entryReplies = entryResults.map((entry, offset) => {
-    const site = PROFILE_SITES.find((item) => item.id === selectedSites[offset]);
-    return entry.status === 'fulfilled'
-      ? { index: indices[offset], site: site.label, ...entry.value }
-      : { index: indices[offset], site: site.label, ok: false, error: entry.reason.message };
-  });
-  const entryFailures = entryReplies.filter((reply) => !reply.ok || reply.lobby_ready !== true);
-  if (entryFailures.length) {
-    const error = `${entryFailures.length}/${indices.length} profile chưa vào được sảnh DG. Kiểm tra đăng nhập và đường vào DG trên từng site.`;
-    sendHopStatus({ active: false, error: true, note: error });
-    return { ok: false, error, entry_replies: entryReplies };
+  sendHopStatus({ active: true,
+    note: 'Các site đã mở. Hãy tự vào sảnh DG trên từng profile; ứng dụng sẽ quét trạng thái mỗi 5 giây.',
+    waiting_indices: [...indices] });
+  let profileStates = [];
+  while (indices.every((index) => activeProfileIndices.has(index))) {
+    const checks = await Promise.allSettled(indices.map((index) =>
+      profileEngine(index).call('dg.table', { wait: 0 }, 10000)));
+    profileStates = checks.map((check, offset) => {
+      const index = indices[offset];
+      const result = check.status === 'fulfilled' ? check.value : null;
+      const ready = Boolean(result?.ok && (result.lobby === true || result.in_table === true));
+      return { index, ready, in_table: result?.in_table === true,
+        note: ready ? (result.in_table ? `Đã thấy đang ở bàn ${result.table_id || ''}.` : 'Đã thấy sảnh DG.')
+          : 'Chưa thấy sảnh DG; đang chờ thao tác thủ công.' };
+    });
+    const waiting = profileStates.filter((item) => !item.ready).map((item) => item.index);
+    if (!waiting.length) break;
+    sendHopStatus({ active: true, waiting_indices: waiting, profile_states: profileStates,
+      note: `Đang chờ vào sảnh DG trên profile ${waiting.join(', ')}. Tự quét lại sau 5 giây.` });
+    await new Promise((resolve) => setTimeout(resolve, 5000));
   }
+  if (!indices.every((index) => activeProfileIndices.has(index))) {
+    const error = 'Đã dừng chờ sảnh vì một hoặc nhiều profile đã được đóng.';
+    sendHopStatus({ active: false, error: true, note: error });
+    return { ok: false, cancelled: true, error, profile_states: profileStates };
+  }
+  sendHopStatus({ active: true, profile_states: profileStates,
+    note: 'Đã thấy sảnh DG trên tất cả profile; đang đọc danh sách bàn để đồng bộ nhóm...' });
   const leader = profileEngine(indices[0]);
   let scan = null;
   const deadline = Date.now() + 180000;
-  sendHopStatus({ active: true, note: '\u0110ang \u0111\u1ee3i s\u1ea3nh DG t\u1ea3i xong tr\u00ean profile d\u1eabn \u0111\u1ea7u \u0111\u1ec3 ch\u1ecdn b\u00e0n...' });
   while (Date.now() < deadline) {
     try {
-      scan = await leader.call('dg.tables', {}, 40000);
+      scan = await leader.call('dg.tables', { wait: 0 }, 10000);
       if (scan?.ok && (scan.tables || []).some((row) => /^60[0-9]{3,}$/.test(String(row.table_id || '')))) break;
     } catch (error) {
       scan = { ok: false, error: error.message };
     }
-    await new Promise((resolve) => setTimeout(resolve, 1200));
+    sendHopStatus({ active: true, profile_states: profileStates,
+      note: 'Đã thấy sảnh DG; đang đợi danh sách bàn tải xong, sẽ quét lại sau 5 giây.' });
+    await new Promise((resolve) => setTimeout(resolve, 5000));
   }
   const tables = (scan?.tables || []).filter((row) => /^60[0-9]{3,}$/.test(String(row.table_id || '')));
   if (!tables.length) {

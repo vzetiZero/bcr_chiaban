@@ -780,13 +780,23 @@ class BaccaratController:
         with self.browser.lock:
             return FEBET.open_dg_for_site(self.browser.driver, params.get("site_id"), wait=120.0)
 
-    def febet_current_table(self, _params=None):
+    def febet_current_table(self, params=None):
+        params = params or {}
+        try:
+            wait = max(0.0, min(15.0, float(params.get("wait", 15.0))))
+        except (TypeError, ValueError):
+            wait = 0.0
         with self.browser.lock:
-            return FEBET.current_table(self.browser.driver)
+            return FEBET.current_table(self.browser.driver, wait=wait)
 
-    def febet_lobby_tables(self, _params=None):
+    def febet_lobby_tables(self, params=None):
+        params = params or {}
+        try:
+            wait = max(0.0, min(25.0, float(params.get("wait", 25.0))))
+        except (TypeError, ValueError):
+            wait = 0.0
         with self.browser.lock:
-            return FEBET.lobby_tables(self.browser.driver)
+            return FEBET.lobby_tables(self.browser.driver, wait=wait)
 
     def febet_sync_table(self, params):
         with self.browser.lock:
