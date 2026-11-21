@@ -686,6 +686,33 @@ $('#save-bet-config').addEventListener('click', async (event) => {
     button.disabled = false;
   }
 });
+
+$('#run-bets').addEventListener('click', async (event) => {
+  const button = event.currentTarget;
+  button.disabled = true;
+  button.classList.add('busy');
+  $('#bet-notice').textContent = 'Đang lưu cấu hình và kiểm tra các profile đang mở tại bàn DG...';
+  try {
+    const result = await api.startBetsOnOpenProfiles(readBetConfig());
+    if (!result?.ok) {
+      $('#bet-notice').textContent = result?.error || 'Không khởi động được cược trên các profile đang mở.';
+      $('#bet-notice').dataset.state = 'error';
+      showNotice(result?.error || 'Không khởi động được cược.', true);
+      return;
+    }
+    $('#bet-notice').textContent = `Đã chạy cược cho ${result.count} profile đang mở tại ${result.table_name} (${result.table_id}); Chrome được giữ nguyên.`;
+    $('#bet-notice').dataset.state = 'ready';
+    $('#run-table-stat').textContent = `${result.table_name} · ${result.table_id}`;
+    showNotice($('#bet-notice').textContent);
+  } catch (error) {
+    $('#bet-notice').textContent = String(error.message || error);
+    $('#bet-notice').dataset.state = 'error';
+    showNotice($('#bet-notice').textContent, true);
+  } finally {
+    button.disabled = false;
+    button.classList.remove('busy');
+  }
+});
 updateBetPreview();
 
 api.onGroupHop((status) => {

@@ -1251,6 +1251,77 @@ ipcMain.handle('bets:apply', async (_event, { tableId, tableIds } = {}) => {
     config, replies, error: failed ? `${failed} profile không nhận được cấu hình dãy cược.` : '' };
 });
 
+ipcMain.handle('bets:start-open', async (_event, { config: submittedConfig } = {}) => {
+  const indices = Array.from(activeProfileIndices).sort((a, b) => a - b);
+  if (!indices.length) return { ok: false, error: 'Ch\u01b0a c\u00f3 profile \u0111ang m\u1edf do \u1ee9ng d\u1ee5ng qu\u1ea3n l\u00fd.' };
+  const config = submittedConfig ? await saveBetConfig(submittedConfig) : await loadBetConfig();
+  if (indices.length < config.min_tk) {
+    return { ok: false, error: `C\u1ea7n ${config.min_tk} profile theo c\u1ea5u h\u00ecnh, hi\u1ec7n c\u00f3 ${indices.length}.` };
+  }
+  const reads = await Promise.allSettled(indices.map((index) =>
+    profileEngine(index).call('dg.betState', {}, 15000)));
+  const states = reads.map((entry) => entry.status === 'fulfilled' ? entry.value : null);
+  const notReady = states.map((state, offset) => ({ index: indices[offset], state }))
+    .filter(({ state }) => !state?.ok || state.in_table !== true
+      || !/^60[0-9]{3,}$/.test(String(state.table_id || '')));
+  if (notReady.length) {
+    const detail = notReady.map(({ index, state }) =>
+      `P${index}: ${state?.error || 'ch\u01b0a \u1edf trong b\u00e0n DG'}`).join(' \u00b7 ');
+    return { ok: false, error: `C\u00f3 profile ch\u01b0a \u1edf trong b\u00e0n DG: ${detail}. Kh\u00f4ng m\u1edf l\u1ea1i Chrome.` };
+  }
+  const tableIds = new Set(states.map((state) => String(state.table_id)));
+  if (tableIds.size !== 1) {
+    return { ok: false, error: `Profile \u0111ang \u1edf nhi\u1ec1u b\u00e0n DG (${[...tableIds].join('/')}); h\u00e3y \u0111\u01b0a ch\u00fang v\u1ec1 c\u00f9ng b\u00e0n tr\u01b0\u1edbc.` };
+  }
+  const hasExistingBet = states.some((state) => ['pending', 'confirmed'].some((kind) =>
+    Object.values(state[kind] || {}).some((amount) => Number(amount) > 0)));
+  if (hasExistingBet) {
+    return { ok: false, error: 'Ph\u00e1t hi\u1ec7n chip \u0111\u00e3 \u0111\u1eb7t ho\u1eb7c \u0111\u00e3 x\u00e1c nh\u1eadn trong v\u00e1n hi\u1ec7n t\u1ea1i; \u0111\u00e3 kh\u00f4ng kh\u1edfi \u0111\u1ed9ng \u0111\u1ec3 tr\u00e1nh c\u01b0\u1ee3c tr\u00f9ng.' };
+  }
+  const tableId = String(states[0].table_id);
+  if (groupBetting?.active) {
+    const sameIndices = groupBetting.indices.length === indices.length
+      && indices.every((index, offset) => index === groupBetting.indices[offset]);
+    if (!sameIndices || groupBetting.tableId !== tableId) {
+      return { ok: false, error: 'A betting session is already active for a different profile group or table.' };
+    }
+  }
+  const ladderReplies = await configureProfileLadders(indices, config);
+  const failed = ladderReplies.filter((reply) => !reply.ok);
+  if (failed.length) {
+    return { ok: false, error: `${failed.length} profile kh\u00f4ng nh\u1eadn \u0111\u01b0\u1ee3c c\u1ea5u h\u00ecnh d\u00e3y c\u01b0\u1ee3c.`,
+      replies: ladderReplies };
+  }
+  if (groupBetting?.active) {
+    groupBetting.config = config;
+    if (sharedHop?.active) {
+      sharedHop.config.total_bet = config.total_bet;
+      sharedHop.schedule = configuredHopRounds(config.hop_min);
+      sharedHop.maxHops = config.hop_max;
+    }
+    appendActivityLog({ source: 'ch\u1ea1y c\u01b0\u1ee3c', level: 'info',
+      text: `\u0110\u00e3 c\u1eadp nh\u1eadt c\u1ea5u h\u00ecnh cho phi\u00ean c\u01b0\u1ee3c \u0111ang ch\u1ea1y; Chrome v\u00e0 b\u00e0n ${tableId} \u0111\u01b0\u1ee3c gi\u1eef nguy\u00ean.` });
+    void groupBettingTick();
+    return { ok: true, updated: true, count: indices.length, table_id: tableId,
+      table_name: states[0].table_name || states[0].label || `B\u00e0n ${tableId}`,
+      replies: ladderReplies, stake: ladderStake(config) };
+  }
+  let availableTables = [tableId];
+  try {
+    const result = await profileEngine(indices[0]).call('dg.tables', {}, 10000);
+    const found = (result?.tables || []).map((row) => String(row.table_id || ''))
+      .filter((id) => /^60[0-9]{3,}$/.test(id));
+    if (found.includes(tableId)) availableTables = [...new Set(found)];
+  } catch { /* current table remains a safe one-table schedule */ }
+  startSharedHop(tableId, availableTables, config, indices);
+  startGroupBetting(tableId, indices, config);
+  appendActivityLog({ source: 'ch\u1ea1y c\u01b0\u1ee3c', level: 'info',
+    text: `\u0110\u00e3 kh\u1edfi \u0111\u1ed9ng c\u01b0\u1ee3c cho ${indices.length} profile \u0111ang m\u1edf t\u1ea1i b\u00e0n ${tableId}; kh\u00f4ng m\u1edf l\u1ea1i Chrome.` });
+  return { ok: true, count: indices.length, table_id: tableId,
+    table_name: states[0].table_name || states[0].label || `B\u00e0n ${tableId}`,
+    replies: ladderReplies, stake: ladderStake(config) };
+});
+
 ipcMain.handle('profile:close', async (_event, { index }) => {
   const profileIndex = Math.trunc(Number(index));
   if (!Number.isInteger(profileIndex) || profileIndex < 1 || profileIndex > 8) {

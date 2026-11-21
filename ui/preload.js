@@ -27,6 +27,7 @@ contextBridge.exposeInMainWorld('aibcr', {
   getActivityLog: () => ipcRenderer.invoke('activity-log:get'),
   clearActivityLog: () => ipcRenderer.invoke('activity-log:clear'),
   applyBets: (tableId, tableIds) => ipcRenderer.invoke('bets:apply', { tableId, tableIds }),
+  startBetsOnOpenProfiles: (config) => ipcRenderer.invoke('bets:start-open', { config }),
   openExternal: (url) => ipcRenderer.invoke('app:openExternal', url),
   saveText: (name, text) => ipcRenderer.invoke('app:saveText', { name, text }),
   windowControl: (action) => ipcRenderer.send('window:control', action),
