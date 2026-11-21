@@ -223,6 +223,20 @@ class SiteEntryFlowTest(unittest.TestCase):
         self.assertTrue(result["lobby_ready"])
         self.assertEqual(result["site_id"], "gk881")
 
+    def test_gk881_existing_lobby_emits_sanitized_trace(self):
+        driver = FakeDriver("https://m.gk881.vip/", DG_LOC)
+        logs = []
+        result = GK881.open_dg(driver, wait=0, log=lambda text, level="info": logs.append((text, level)))
+        self.assertTrue(result["ok"])
+        self.assertTrue(any("Bắt đầu" in text for text, _ in logs))
+        self.assertTrue(any("Sảnh DG sẵn sàng" in text for text, _ in logs))
+        self.assertNotIn("SECRET", str(logs))
+
+    def test_gk881_safe_location_excludes_query_string(self):
+        driver = FakeDriver("https://m.gk881.vip/Lobby/Live?token=SECRET&x=1", DG_LOC)
+        self.assertEqual(GK881._safe_location(driver), "m.gk881.vip/Lobby/Live")
+        self.assertNotIn("SECRET", GK881._safe_location(driver))
+
     def test_no_generic_auto_entry_remains_for_unimplemented_sites(self):
         self.assertFalse(hasattr(F, "open_dg_for_site"))
 

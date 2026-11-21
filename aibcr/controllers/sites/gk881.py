@@ -15,6 +15,10 @@ class GK881EntryController(SiteEntryController):
         driver = self.browser_driver()
         if driver is None:
             return self.not_ready()
+
+        def trace(text, level="info"):
+            self.parent.log(text, level)
+
         with self.parent.browser.lock:
-            return GK881.open_dg(driver, wait=wait)
+            return GK881.open_dg(driver, wait=wait, log=trace)
 
