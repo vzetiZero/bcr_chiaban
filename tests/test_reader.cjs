@@ -39,8 +39,9 @@ function scan(canvases) {
 const history = [{pos: [0, 0], c: 'R'}, {pos: [1, 0], c: 'B', ties: 2}, {pos: [2, 0], c: 'R'}];
 
 test('chooses the largest common stake no higher than the ladder target', () => {
-  const tray = {denominations_k: [100000, 10000, 5000, 1000, 500, 100]};
-  assert.equal(commonReachableStake(260, [tray, tray]), 200);
+  const highValueTray = {denominations_k: [100000, 10000, 5000, 1000, 500, 100]};
+  const mixedTray = {denominations_k: [1000, 500, 100, 50, 25, 10]};
+  assert.equal(commonReachableStake(260, [highValueTray, mixedTray]), 200);
   assert.equal(commonReachableStake(260, [
     {denominations_k: [100, 50]}, {denominations_k: [150]}
   ]), 150);

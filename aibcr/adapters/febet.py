@@ -500,9 +500,33 @@ return (() => {
   const chipValues = (view.chipMan?.chipArray || []).map(chip =>
     Number(chip?.chipNum || chip?.value || chip?.amount || 0)).filter(value => value > 0);
   const maxRawChip = Math.max(0, ...chipValues);
-  const scale = rawMin >= 1000 || maxRawChip >= 1000 ? 1000
+  const parseFloor = (text) => {
+    const match = String(text || '').match(/(?:ID\s*[A-Za-z0-9_-]+\s*)?([\d,.]+)\s*([kmKM]?)\s*[-~至到/\s]\s*([\d,.]+)\s*([kmKM]?)/i);
+    if (!match) return 0;
+    let value = Number(match[1].replace(/,/g, ''));
+    const unit = String(match[2] || '').toUpperCase();
+    if (unit === 'M') value *= 1000;
+    else if (!unit && value >= 1000) value = Math.round(value / 1000);
+    return Number.isFinite(value) ? value : 0;
+  };
+  const findFloor = (node, depth = 0) => {
+    if (!node || depth > 80) return 0;
+    for (const text of [node.text, node._text, node.label, node._label, node.innerText,
+      node.dataSource?.text, node.dataSource?.label]) {
+      const value = parseFloor(text);
+      if (value >= 80) return value;
+    }
+    for (const child of (node._children || [])) {
+      const value = findFloor(child, depth + 1);
+      if (value >= 80) return value;
+    }
+    return 0;
+  };
+  const screenFloor = findFloor(view.tableInfoMan) || findFloor(view) || findFloor(Laya.stage);
+  const floorRaw = screenFloor >= 80 ? screenFloor : rawMin;
+  const scale = floorRaw >= 1000 ? 1000 : floorRaw > 0 ? 1
     : currency === 'VND' || Number(player.balance || 0) >= 100000 ? 1000
-    : rawMin > 0 || maxRawChip > 0 ? 1 : 0;
+    : maxRawChip >= 1000 ? 1000 : maxRawChip > 0 ? 1 : 0;
   const values = (obj, names) => {
     for (const name of names) if (obj && Number(obj[name]) > 0) return Number(obj[name]);
     return 0;
@@ -534,7 +558,7 @@ return (() => {
     round_id:roundId, state_id:stateId, countdown,
     bet_open:stateId === 1 && countdown >= 5,
     winner, scale,
-    min_k:scale ? Math.ceil(rawMin / scale) : 0,
+    min_k:scale ? Math.ceil(floorRaw / scale) : 0,
     max_k:scale && rawMax ? Math.floor(rawMax / scale) : 0,
     balance_k:scale ? Number(player.balance || 0) / scale : null,
     denominations_k:[...new Set(denoms)].sort((a,b)=>b-a),
@@ -580,14 +604,38 @@ const autoConfirm = Boolean(arguments[3]);
     || player.bpMax || player.limitMax || 0);
   const currency = String(player.currency || player.currencyName || player.currencyCode || '').toUpperCase();
   let maxRawChip = Math.max(0,...(view.chipMan?.chipArray || []).map(c=>Number(c?.chipNum||c?.value||c?.amount||0)));
-  const scale = rawMin >= 1000 || maxRawChip >= 1000 ? 1000
+  const parseFloor = (text) => {
+    const match = String(text || '').match(/(?:ID\s*[A-Za-z0-9_-]+\s*)?([\d,.]+)\s*([kmKM]?)\s*[-~至到/\s]\s*([\d,.]+)\s*([kmKM]?)/i);
+    if (!match) return 0;
+    let value = Number(match[1].replace(/,/g, ''));
+    const unit = String(match[2] || '').toUpperCase();
+    if (unit === 'M') value *= 1000;
+    else if (!unit && value >= 1000) value = Math.round(value / 1000);
+    return Number.isFinite(value) ? value : 0;
+  };
+  const findFloor = (node, depth = 0) => {
+    if (!node || depth > 80) return 0;
+    for (const text of [node.text, node._text, node.label, node._label, node.innerText,
+      node.dataSource?.text, node.dataSource?.label]) {
+      const value = parseFloor(text);
+      if (value >= 80) return value;
+    }
+    for (const child of (node._children || [])) {
+      const value = findFloor(child, depth + 1);
+      if (value >= 80) return value;
+    }
+    return 0;
+  };
+  const screenFloor = findFloor(view.tableInfoMan) || findFloor(view) || findFloor(Laya.stage);
+  const floorRaw = screenFloor >= 80 ? screenFloor : rawMin;
+  const scale = floorRaw >= 1000 ? 1000 : floorRaw > 0 ? 1
     : currency === 'VND' || Number(player.balance || 0) >= 100000 ? 1000
-    : rawMin > 0 || maxRawChip > 0 ? 1 : 0;
+    : maxRawChip >= 1000 ? 1000 : maxRawChip > 0 ? 1 : 0;
   if (!scale) return {ok:false,error:'Không xác định được đơn vị tiền của bàn DG; đã dừng để tránh đặt sai số tiền.'};
   if (Number(info.stateId ?? info.state ?? view.stateId ?? 0) !== 1
       || Number(info.countDown ?? view.countDown ?? 0) < 5)
     return {ok:false,error:'Bàn chưa mở cược đủ lâu.'};
-  const minK = Math.ceil(rawMin / scale);
+  const minK = Math.ceil(floorRaw / scale);
   const maxK = rawMax > 0 ? Math.floor(rawMax / scale) : 0;
   if (minK && amountK < minK) return {ok:false,error:`Mức ${amountK}k thấp hơn sàn bàn ${minK}k.`};
   if (maxK && amountK > maxK) return {ok:false,error:`Mức ${amountK}k vượt trần bàn ${maxK}k.`};
