@@ -152,7 +152,7 @@ function renderProfiles(count, siteLabel, replies = [], indices = null) {
 
 function updateSitePreview() {
   const source = $('#profile-source').value;
-  runButton.disabled = profileSites.length === 0;
+  runButton.disabled = profileSites.length === 0 || activeProfileSelection().length === 0;
   $('#run-site-stat').textContent = 'Ch\u1ecdn ri\u00eang t\u1eebng profile';
   $('#run-mode-title').textContent = '\u0110\u1ed3ng b\u1ed9 b\u00e0n DG v\u00e0 v\u1eadn h\u00e0nh nh\u00f3m';
   $('#run-mode-badge').textContent = source === 'omni' ? 'OMNILOGIN' : source === 'hidemium' ? 'HIDEMIUM' : 'DG GROUP';
@@ -231,6 +231,7 @@ function collectSettings(count, indices = null) {
 
 const PROFILE_SELECTION_KEY = 'aibcr.profileSelection';
 let selectedProfileIndices = [];
+let profileSelectionTouched = false;
 
 function profileCountValue() {
   return Math.max(1, Math.min(8, Math.trunc(Number(profileCount.value) || 1)));
@@ -250,7 +251,7 @@ function readStoredSelection() {
 
 function activeProfileSelection() {
   const valid = selectedProfileIndices.filter((index) => Number.isInteger(index));
-  if (valid.length) return [...valid].sort((a, b) => a - b);
+  if (valid.length || profileSelectionTouched) return [...valid].sort((a, b) => a - b);
   return Array.from({ length: profileCountValue() }, (_, offset) => offset + 1);
 }
 
@@ -277,6 +278,7 @@ function syncProfilePicker() {
     : 'Chưa chọn profile nào.';
   host.append(hint);
   $('#run-count-stat').textContent = String(selection.size || 0);
+  if (profileSites.length) runButton.disabled = selection.size === 0;
 }
 
 $('#profile-picker').addEventListener('change', (event) => {
@@ -289,6 +291,7 @@ $('#profile-picker').addEventListener('change', (event) => {
     selectedProfileIndices = selectedProfileIndices.filter((value) => value !== index);
   }
   selectedProfileIndices.sort((a, b) => a - b);
+  profileSelectionTouched = true;
   localStorage.setItem(PROFILE_SELECTION_KEY, JSON.stringify(selectedProfileIndices));
   syncProfilePicker();
 });
@@ -637,7 +640,7 @@ runButton.addEventListener('click', async () => {
     showNotice(String(error.message || error), true);
   } finally {
     runButton.classList.remove('busy');
-    runButton.disabled = profileSites.length === 0;
+    runButton.disabled = profileSites.length === 0 || activeProfileSelection().length === 0;
   }
 });
 
@@ -671,7 +674,7 @@ profileList.addEventListener('click', async (event) => {
     const result = closing
       ? await api.closeProfile(index)
       : await api.openProfile(index, Math.max(1, Math.min(8, Number(profileCount.value) || index)),
-        collectSettings(Math.max(1, Math.min(8, Number(profileCount.value) || index)))[index - 1],
+        collectSettings(1, [index])[0],
         site?.url, $('#profile-source').value, $('#omni-api-url').value.trim(), $('#hidemium-api-url').value.trim());
     if (!result || !result.ok) {
       updateProfile(index, 'error', result?.error || 'Kh\u00f4ng th\u1ef1c hi\u1ec7n \u0111\u01b0\u1ee3c thao t\u00e1c.');
@@ -853,6 +856,7 @@ api.onEngineEvent(({ game, event, data }) => {
     try { profileSiteSelections = JSON.parse(localStorage.getItem('aibcr.profileSites') || '{}') || {}; }
     catch { profileSiteSelections = {}; }
     selectedProfileIndices = readStoredSelection();
+    profileSelectionTouched = selectedProfileIndices.length > 0;
     const betConfig = await api.getBetConfig();
     if (betConfig && betConfig.ok) fillBetConfig(betConfig.config || {});
     setProxyState(await api.listProxies());
