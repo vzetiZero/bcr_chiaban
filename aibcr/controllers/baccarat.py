@@ -33,6 +33,7 @@ from aibcr.adapters.wm_bet import WMBet
 from aibcr.controllers.sites.e3951 import E3951EntryController
 from aibcr.controllers.sites.febet import FEBETEntryController
 from aibcr.controllers.sites.gk881 import GK881EntryController
+from aibcr.controllers.sites.vnwtop import VNWTopEntryController
 from aibcr.config import *  # noqa: F401,F403
 from aibcr.models.bet_ladder import (BetLadder, DEFAULT_STAKES,
                                      parse_hop_rounds, parse_stakes)
@@ -124,6 +125,7 @@ class BaccaratController:
         self.febet_entry = FEBETEntryController(self)
         self.gk881_entry = GK881EntryController(self)
         self.e3951_entry = E3951EntryController(self)
+        self.vnwtop_entry = VNWTopEntryController(self)
         self.stream = LS.LobbyStream(self.browser, human_mouse=self.config["human_mouse"],
                                      game="baccarat")
         self.sim = self._build_sim()

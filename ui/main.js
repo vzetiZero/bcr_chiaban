@@ -46,13 +46,23 @@ const PYTHON_CANDIDATES = [
 ].filter(Boolean);
 
 const PROFILE_SITES = [
-  { id: 'e3951', label: 'E3951', url: 'https://www.e3951.com/seamless?gameType=LIVE' },
-  { id: 'gk881', label: 'GK881', url: 'https://m.gk881.vip/' },
-  { id: 'vnwtop', label: 'VNWTop', url: 'https://vnwtop.com/' },
-  { id: '888ae66', label: '888AE66', url: 'https://www.888ae66.com/' },
-  { id: 'bum123', label: 'BUM123', url: 'https://www.bum123.com/aff/10459' },
-  { id: 'febet', label: 'FEBET Baccarat', url: 'https://febet.kiwi/live-casino/baccarat?a=c76811abcadb64fed7d82b32d7e79f3c&utm_campaign=social&utm_source=aphonso&utm_medium=sale&utm_term=bee&utm_content=KANGIN&event=' },
+  { id: 'e3951', label: 'E3951', url: 'https://www.e3951.com/seamless?gameType=LIVE', chips: 'small' },
+  { id: 'gk881', label: 'GK881', url: 'https://m.gk881.vip/', chips: 'small' },
+  { id: '888ae66', label: '888AE66', url: 'https://www.888ae66.com/', chips: 'small' },
+  { id: 'bum123', label: 'BUM123', url: 'https://www.bum123.com/aff/10459', chips: 'small' },
+  { id: 'vnwtop', label: 'VNWTop', url: 'https://vnwtop.com/', chips: 'large' },
+  { id: 'febet', label: 'FEBET Baccarat', url: 'https://febet.kiwi/live-casino/baccarat?a=c76811abcadb64fed7d82b32d7e79f3c&utm_campaign=social&utm_source=aphonso&utm_medium=sale&utm_term=bee&utm_content=KANGIN&event=', chips: 'large' },
 ];
+
+const SITE_CHIP_LABELS = Object.freeze({
+  small: 'Chip 10',
+  large: 'Chip 100k',
+});
+
+function siteOptionLabel(site) {
+  const chip = SITE_CHIP_LABELS[site?.chips];
+  return chip ? `${site.label} · ${chip}` : site.label;
+}
 
 const DEFAULT_BET_CONFIG = Object.freeze({
   stakes: [260, 280, 300, 240, 220, 280, 320, 340, 380, 400, 360, 420,
@@ -990,35 +1000,43 @@ ipcMain.handle('febet:open-dg', async (_event) => {
   return { ok: true, count: indices.length, replies };
 });
 
-async function runDGGroup(count, siteIds) {
+async function runDGGroup(count, siteIds, requestedIndices = null) {
+  const wanted = Array.isArray(requestedIndices) && requestedIndices.length
+    ? [...new Set(requestedIndices.map((value) => Math.trunc(Number(value)))
+      .filter((value) => Number.isInteger(value) && value >= 1 && value <= 8))].sort((a, b) => a - b)
+    : Array.from({ length: Math.max(1, Math.min(8, Math.trunc(Number(count) || 1))) }, (_, i) => i + 1);
   const indices = Array.from(activeProfileIndices).sort((a, b) => a - b);
   if (!indices.length) return { ok: false, error: 'Hãy mở profile trước, tự vào site và mở sảnh DG rồi mới chạy đồng bộ nhóm.' };
-  const requested = Math.max(1, Math.min(8, Math.trunc(Number(count) || indices.length)));
-  if (indices.length !== requested || indices.some((index, offset) => index !== offset + 1)) {
-    return { ok: false, error: `Đã chọn ${requested} profile nhưng đang mở ${indices.length}. Hãy mở đúng các Profile 1–${requested} trước khi chạy.` };
+  const missing = wanted.filter((index) => !activeProfileIndices.has(index));
+  if (missing.length) {
+    return { ok: false, error: `Profile ${missing.join(', ')} chưa mở. Hãy mở đúng các profile đã chọn trước khi chạy.` };
   }
+  const indicesToUse = wanted;
   const config = await loadBetConfig();
-  if (indices.length < config.min_tk) {
-    return { ok: false, error: `C\u1ea5u h\u00ecnh y\u00eau c\u1ea7u t\u1ed1i thi\u1ec3u ${config.min_tk} profile; hi\u1ec7n c\u00f3 ${indices.length}.` };
+  if (indicesToUse.length < config.min_tk) {
+    return { ok: false, error: `C\u1ea5u h\u00ecnh y\u00eau c\u1ea7u t\u1ed1i thi\u1ec3u ${config.min_tk} profile; hi\u1ec7n c\u00f3 ${indicesToUse.length}.` };
   }
   const selectedSites = Array.isArray(siteIds) ? siteIds.map((id) => String(id || ''))
-    : indices.map(() => 'febet');
-  if (selectedSites.length !== indices.length
+    : indicesToUse.map(() => 'febet');
+  if (selectedSites.length !== indicesToUse.length
       || selectedSites.some((id) => !PROFILE_SITES.some((site) => site.id === id))) {
     return { ok: false, error: 'Mỗi profile cần có một site hợp lệ trước khi vào sảnh DG.' };
   }
-  const autoEntryIndices = indices.filter((_, offset) => ['febet', 'gk881', 'e3951'].includes(selectedSites[offset]));
+  const siteFor = (index) => selectedSites[indicesToUse.indexOf(index)];
+  const autoEntryIndices = indicesToUse.filter((index) =>
+    ['febet', 'gk881', 'e3951', 'vnwtop'].includes(siteFor(index)));
   const autoEntryStates = new Map();
   const runSiteEntry = (index) => {
-    const siteId = selectedSites[index - 1];
+    const siteId = siteFor(index);
     if (siteId === 'febet') return profileEngine(index).call('febet.openDG', {}, 360000);
     if (siteId === 'e3951') return profileEngine(index).call('e3951.openDG', { wait: 150 }, 360000);
+    if (siteId === 'vnwtop') return profileEngine(index).call('vnwtop.openDG', { wait: 150 }, 360000);
     return profileEngine(index).call('gk881.openDG', { wait: 120 }, 360000);
   };
   const rememberSiteEntryResults = (entryIndices, results) => {
     results.forEach((result, offset) => {
       const index = entryIndices[offset];
-      const siteId = selectedSites[index - 1];
+      const siteId = siteFor(index);
       const siteLabel = PROFILE_SITES.find((site) => site.id === siteId)?.label || siteId;
       const reply = result.status === 'fulfilled' ? result.value : { ok: false, error: result.reason.message };
       autoEntryStates.set(index, reply?.ok
@@ -1027,7 +1045,7 @@ async function runDGGroup(count, siteIds) {
     });
   };
   if (autoEntryIndices.length) {
-    const labels = autoEntryIndices.map((index) => `Profile ${index} (${PROFILE_SITES.find((site) => site.id === selectedSites[index - 1])?.label || selectedSites[index - 1]})`).join(', ');
+    const labels = autoEntryIndices.map((index) => `Profile ${index} (${PROFILE_SITES.find((site) => site.id === siteFor(index))?.label || siteFor(index)})`).join(', ');
     sendHopStatus({ active: true, waiting_indices: [...indices],
       note: `\u0110ang t\u1ef1 v\u00e0o s\u1ea3nh DG cho ${labels}; c\u00e1c profile site kh\u00e1c v\u00e0o s\u1ea3nh th\u1ee7 c\u00f4ng.` });
     const autoResults = await Promise.allSettled(autoEntryIndices.map(runSiteEntry));
@@ -1059,7 +1077,7 @@ async function runDGGroup(count, siteIds) {
       return { index, ready, in_table: result?.in_table === true,
         note: ready ? (result.in_table ? `\u0110ang \u1edf b\u00e0n ${result.table_id || ''}.` : `\u0110\u00e3 nh\u1eadn di\u1ec7n s\u1ea3nh DG.`)
           : (entryState?.ready
-            ? `Lu\u1ed3ng ${selectedSites[index - 1]} \u0111\u00e3 k\u1ebft th\u00fac nh\u01b0ng ch\u01b0a x\u00e1c nh\u1eadn DG${result?.error ? ` \u00b7 ${result.error}` : ''}.`
+            ? `Lu\u1ed3ng ${siteFor(index)} \u0111\u00e3 k\u1ebft th\u00fac nh\u01b0ng ch\u01b0a x\u00e1c nh\u1eadn DG${result?.error ? ` \u00b7 ${result.error}` : ''}.`
             : (entryState?.note || `\u0110ang ch\u1edd s\u1ea3nh DG${result?.error ? ` \u00b7 ${result.error}` : ''}.`)) };
     });
     const waiting = profileStates.filter((item) => !item.ready).map((item) => item.index);
@@ -1157,7 +1175,8 @@ async function runDGGroup(count, siteIds) {
   return result;
 }
 
-ipcMain.handle('dg:auto-run', async (_event, { count, siteIds } = {}) => runDGGroup(count, siteIds));
+ipcMain.handle('dg:auto-run', async (_event, { count, siteIds, indices } = {}) =>
+  runDGGroup(count, siteIds, indices));
 ipcMain.handle('febet:auto-run', async () => runDGGroup());
 
 ipcMain.handle('febet:tables', async () => {
@@ -1419,11 +1438,17 @@ ipcMain.handle('engine:call', async (_event, { game, method, params }) => {
   }
 });
 
-ipcMain.handle('profiles:open', async (_event, { count, siteId, siteIds, profiles, source = 'local', omniApiUrl, hidemiumApiUrl }) => {
-  const total = Math.max(1, Math.min(8, Math.trunc(Number(count) || 1)));
+ipcMain.handle('profiles:open', async (_event, { count, siteId, siteIds, indices, profiles, source = 'local', omniApiUrl, hidemiumApiUrl }) => {
+  const requestedIndices = Array.isArray(indices)
+    ? [...new Set(indices.map((value) => Math.trunc(Number(value)))
+      .filter((value) => Number.isInteger(value) && value >= 1 && value <= 8))].sort((a, b) => a - b)
+    : Array.from({ length: Math.max(1, Math.min(8, Math.trunc(Number(count) || 1))) }, (_, i) => i + 1);
+  const total = requestedIndices.length;
+  if (!total) return { ok: false, error: 'Hãy chọn ít nhất một profile để mở.' };
   const selectedSiteIds = Array.isArray(siteIds) ? siteIds : Array(total).fill(siteId);
-  const sites = selectedSiteIds.slice(0, total).map((id) => PROFILE_SITES.find((item) => item.id === id));
-  if (sites.length !== total || sites.some((item) => !item)) {
+  const sites = Array.from({ length: total }, (_, offset) =>
+    PROFILE_SITES.find((item) => item.id === selectedSiteIds[offset]));
+  if (sites.some((item) => !item)) {
     return { ok: false, error: 'Hãy chọn một site hợp lệ riêng cho từng profile.' };
   }
   if (!['local', 'omni', 'hidemium'].includes(source)) return { ok: false, error: 'Nguồn profile không hợp lệ.' };
@@ -1446,7 +1471,7 @@ ipcMain.handle('profiles:open', async (_event, { count, siteId, siteIds, profile
         return { ok: false, error: 'Hai profile OmniLogin nhận cùng cổng CDP dự phòng; chọn profile khác để tránh gắn nhầm Chrome.' };
       }
       if (requested.slice(0, total).some((row, index) => row?.proxyId || row?.proxy
-          || proxyStore.assignments[String(index + 1)])) {
+          || proxyStore.assignments[String(requestedIndices[index])])) {
         return { ok: false, error: 'Proxy của profile OmniLogin cần được cấu hình trong OmniLogin; bỏ proxy gán từ tab Proxy của ứng dụng trước khi chạy.' };
       }
       const available = await listOmniProfiles(apiUrl);
@@ -1465,7 +1490,7 @@ ipcMain.handle('profiles:open', async (_event, { count, siteId, siteIds, profile
       if (hidemiumRows.some((id) => !id)) return { ok: false, error: 'Hãy gán một profile Hidemium riêng cho từng profile trước khi chạy.' };
       if (new Set(hidemiumRows).size !== hidemiumRows.length) return { ok: false, error: 'Không thể gán trùng một profile Hidemium cho nhiều cửa sổ.' };
       if (requested.slice(0, total).some((row, index) => row?.proxyId || row?.proxy
-          || proxyStore.assignments[String(index + 1)])) {
+          || proxyStore.assignments[String(requestedIndices[index])])) {
         return { ok: false, error: 'Proxy của profile Hidemium cần được cấu hình trong Hidemium; bỏ proxy gán từ tab Proxy trước khi chạy.' };
       }
       const available = await listHidemiumProfiles(apiUrl);
@@ -1485,15 +1510,16 @@ ipcMain.handle('profiles:open', async (_event, { count, siteId, siteIds, profile
       const height = Math.max(200, Math.min(2160, Math.round(Number(row.height) || 1200)));
       const scale = Math.max(50, Math.min(200, Math.round(Number(row.scale) || 60)));
       const proxy = source === 'omni' || source === 'hidemium' ? null
-        : proxyForProfile({ ...row, proxyId: row.proxyId || proxyStore.assignments[String(index + 1)] }, proxyStore);
+        : proxyForProfile({ ...row, proxyId: row.proxyId || proxyStore.assignments[String(requestedIndices[index])] }, proxyStore);
       let proxyServer = proxyServerUrl(proxy);
       if (proxy && proxy.username) {
         const bridge = await startProxyBridge(proxy);
-        newBridges.push({ index: index + 1, bridge });
+        newBridges.push({ index: requestedIndices[index], bridge });
         proxyServer = bridge.url;
       }
-      settings.push({ width, height, scale, proxyServer, proxyLabel: proxyLabel(proxy), bridge:
-        newBridges.length && newBridges[newBridges.length - 1].index === index + 1
+      settings.push({ index: requestedIndices[index], width, height, scale, proxyServer,
+        proxyLabel: proxyLabel(proxy), bridge:
+        newBridges.length && newBridges[newBridges.length - 1].index === requestedIndices[index]
           ? newBridges[newBridges.length - 1].bridge : null });
     }
   } catch (error) {
@@ -1505,7 +1531,7 @@ ipcMain.handle('profiles:open', async (_event, { count, siteId, siteIds, profile
   const area = screen.getPrimaryDisplay().workAreaSize;
   const layouts = tileProfileLayouts(settings, area);
 
-  const extras = Array.from(activeProfileIndices).filter((index) => index > total);
+  const extras = Array.from(activeProfileIndices).filter((index) => !requestedIndices.includes(index));
   if (extras.length) {
     const closeResults = await Promise.allSettled(extras.map(async (index) => {
       const engine = profileEngine(index);
@@ -1523,13 +1549,15 @@ ipcMain.handle('profiles:open', async (_event, { count, siteId, siteIds, profile
   }
 
   const started = Array.from({ length: total }, (_, offset) => ensureProfileEngine(
-    offset + 1, layouts[offset], source === 'omni' ? omniDebugPort(omniRows[offset]) : null));
+    requestedIndices[offset], layouts[offset],
+    source === 'omni' ? omniDebugPort(omniRows[offset]) : null));
 
-  for (let index = 1; index <= total; index += 1) {
+  for (let offset = 0; offset < total; offset += 1) {
+    const index = requestedIndices[offset];
     const previousOmni = activeOmniProfiles.get(index);
     const providerRows = source === 'omni' ? omniRows : hidemiumRows;
     const keep = (source === 'omni' || source === 'hidemium') && previousOmni
-      && previousOmni.provider === source && previousOmni.profileId === providerRows[index - 1]
+      && previousOmni.provider === source && previousOmni.profileId === providerRows[offset]
       && previousOmni.apiUrl === apiUrl;
     if (previousOmni && !keep) {
       await profileEngine(index).call('profile.configure', { close: true }).catch(() => {});
@@ -1550,52 +1578,54 @@ ipcMain.handle('profiles:open', async (_event, { count, siteId, siteIds, profile
     cdp_port: engine.cdpPort,
   })));
   const openResults = await Promise.allSettled(started.map(async (engine, index) => {
+    const profileIndex = requestedIndices[index];
     const result = configured[index];
     if (result.status !== 'fulfilled' || !result.value.ok) return { ok: false,
       error: result.status === 'rejected' ? result.reason.message : result.value.error,
       proxy: settings[index].proxyLabel };
     if (source === 'omni' || source === 'hidemium') {
       const providerRows = source === 'omni' ? omniRows : hidemiumRows;
-      const previousOmni = activeOmniProfiles.get(index + 1);
+      const previousOmni = activeOmniProfiles.get(profileIndex);
       if (previousOmni && (previousOmni.profileId !== providerRows[index] || previousOmni.provider !== source)) {
         await stopOmniProfile(previousOmni);
-        activeOmniProfiles.delete(index + 1);
+        activeOmniProfiles.delete(profileIndex);
       }
       const omni = source === 'omni' ? await openOmniProfile(apiUrl, providerRows[index])
         : await openHidemiumProfile(apiUrl, providerRows[index]);
-      activeOmniProfiles.set(index + 1, omni);
+      activeOmniProfiles.set(profileIndex, omni);
       const attached = await engine.call('chrome.attachExternal', {
         port: omni.port, width: settings[index].width, height: settings[index].height, provider: source,
       }, 45000);
       if (!attached?.ok) {
         await stopOmniProfile(omni);
-        activeOmniProfiles.delete(index + 1);
+        activeOmniProfiles.delete(profileIndex);
         return { ok: false, error: attached?.error || `Không gắn được Chrome profile ${source === 'omni' ? 'OmniLogin' : 'Hidemium'}.` };
       }
     } else {
-      const previousOmni = activeOmniProfiles.get(index + 1);
+      const previousOmni = activeOmniProfiles.get(profileIndex);
       if (previousOmni) {
         await stopOmniProfile(previousOmni);
-        activeOmniProfiles.delete(index + 1);
+        activeOmniProfiles.delete(profileIndex);
       }
     }
     const reply = await engine.call('site.open', { url: sites[index].url }, 45000);
     if ((!reply || !reply.ok) && (source === 'omni' || source === 'hidemium')) {
-      const activeOmni = activeOmniProfiles.get(index + 1);
-      activeOmniProfiles.delete(index + 1);
+      const activeOmni = activeOmniProfiles.get(profileIndex);
+      activeOmniProfiles.delete(profileIndex);
       if (activeOmni) await stopOmniProfile(activeOmni);
     }
-    return { ...reply, site: sites[index].label,
+    return { ...reply, index: profileIndex, site: sites[index].label,
       proxy: source === 'omni' || source === 'hidemium' ? `Proxy theo cấu hình ${source === 'omni' ? 'OmniLogin' : 'Hidemium'}` : settings[index].proxyLabel,
       width: settings[index].width, height: settings[index].height, scale: settings[index].scale,
       ...(source === 'omni' ? { omni_profile_id: omniRows[index] } : {}),
       ...(source === 'hidemium' ? { hidemium_profile_id: hidemiumRows[index] } : {}) };
   }));
 
-  for (let index = 1; index <= total; index += 1) {
-    const result = configured[index - 1];
-    const setting = settings[index - 1];
-    const openResult = openResults[index - 1];
+  for (let offset = 0; offset < total; offset += 1) {
+    const index = requestedIndices[offset];
+    const result = configured[offset];
+    const setting = settings[offset];
+    const openResult = openResults[offset];
     if (result.status === 'fulfilled' && result.value.ok
         && openResult.status === 'fulfilled' && openResult.value?.ok) {
       await closeProfileBridge(index);
@@ -1610,7 +1640,8 @@ ipcMain.handle('profiles:open', async (_event, { count, siteId, siteIds, profile
   }
   const replies = openResults.map((result, index) => result.status === 'fulfilled'
     ? result.value : { ok: false, error: result.reason.message, proxy: settings[index].proxyLabel });
-  return { ok: true, count: total, site: sites.map((item) => item.label).join(' / '),
+  return { ok: true, count: total, indices: requestedIndices,
+    site: sites.map((item) => item.label).join(' / '),
     sites: sites.map((item) => item.label), source, replies };
 });
 
@@ -1732,7 +1763,8 @@ ipcMain.handle('app:info', () => ({
   version: app.getVersion(),
   root: PROJECT_ROOT,
   engines: Object.keys(engines),
-  profileSites: PROFILE_SITES.map(({ id, label, url }) => ({ id, label, url })),
+  profileSites: PROFILE_SITES.map(({ id, label, url, chips }) => ({
+    id, label, url, chips, display: siteOptionLabel({ label, chips }) })),
 }));
 
 ipcMain.handle('app:openExternal', (_event, url) => shell.openExternal(url));

@@ -175,3 +175,9 @@ h1 { margin: 6px 0 4px; color: #f8fafc; font-size: clamp(23px, 3vw, 30px); lette
 .activity-log-meta { display: flex; justify-content: space-between; gap: 12px; color: #93a4b8; font-size: 9px; }
 .activity-log-row.error .activity-log-meta { color: #fca5a5; }
 .activity-log-row p { margin: 5px 0 0; color: #e2e8f0; font: 11px/1.5 Consolas, 'Courier New', monospace; overflow-wrap: anywhere; white-space: pre-wrap; }
+
+.profile-picker { display: flex; flex-wrap: wrap; gap: 6px; min-height: 40px; align-items: center; padding: 5px 7px; border: 1px solid rgba(148, 163, 184, .26); border-radius: 7px; background: rgba(9, 13, 22, .8); }
+.profile-picker-option { position: relative; display: inline-flex; align-items: center; gap: 5px; padding: 4px 8px; border: 1px solid rgba(148, 163, 184, .28); border-radius: 6px; background: rgba(30, 41, 59, .7); color: #cbd5e1; font-size: 10px; font-weight: 700; cursor: pointer; user-select: none; }
+.profile-picker-option input { width: 12px; height: 12px; margin: 0; accent-color: var(--amber); cursor: pointer; }
+.profile-picker-option.checked { border-color: var(--amber); background: rgba(245, 158, 11, .16); color: #fde68a; }
+.profile-picker-hint { color: #94a3b8; font-size: 10px; font-weight: 600; }

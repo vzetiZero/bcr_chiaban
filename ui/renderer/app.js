@@ -105,14 +105,16 @@ function updateProfile(index, state, detail = '') {
     .some((item) => item === 'running' || item === 'opening' || item === 'closing');
 }
 
-function renderProfiles(count, siteLabel, replies = []) {
+function renderProfiles(count, siteLabel, replies = [], indices = null) {
   profileList.replaceChildren();
   statusByIndex.clear();
   lastSiteLabel = siteLabel || 'Site ri\u00eang t\u1eebng profile';
-  $('#profile-total').textContent = `${count} profile \u00b7 ${lastSiteLabel}`;
-  $('#header-profile-count').textContent = String(count);
-  for (let index = 1; index <= count; index += 1) {
-    const reply = replies[index - 1] || {};
+  const order = Array.isArray(indices) && indices.length
+    ? indices : Array.from({ length: count }, (_, offset) => offset + 1);
+  $('#profile-total').textContent = `${order.length} profile \u00b7 ${lastSiteLabel}`;
+  $('#header-profile-count').textContent = String(order.length);
+  order.forEach((index, offset) => {
+    const reply = replies[offset] || {};
     const state = reply.ok ? 'opening' : reply.error ? 'error' : (profileStateByIndex.get(index) || 'closed');
     const row = document.createElement('article');
     row.className = `profile-row ${state}`;
@@ -124,7 +126,7 @@ function renderProfiles(count, siteLabel, replies = []) {
     for (const site of profileSites) {
       const option = document.createElement('option');
       option.value = site.id;
-      option.textContent = site.label;
+      option.textContent = site.display || site.label;
       siteSelect.append(option);
     }
     const savedSite = profileSiteSelections[String(index)];
@@ -144,7 +146,7 @@ function renderProfiles(count, siteLabel, replies = []) {
     statusByIndex.set(index, row);
     profileStateByIndex.set(index, state);
     updateProfile(index, state, row.querySelector('.profile-detail').textContent);
-  }
+  });
   localStorage.setItem('aibcr.profileSites', JSON.stringify(profileSiteSelections));
 }
 
@@ -212,15 +214,84 @@ function restoreSharedWindowSettings() {
   }
 }
 
-function collectSettings(count) {
+function collectSettings(count, indices = null) {
   const shared = readSharedWindowSettings();
-  return Array.from({ length: count }, (_, offset) => ({
-    ...shared,
-    proxyId: proxyAssignments[String(offset + 1)] || '',
-    omniProfileId: omniAssignments[String(offset + 1)] || '',
-    hidemiumProfileId: hidemiumAssignments[String(offset + 1)] || '',
-  }));
+  const order = Array.isArray(indices) && indices.length ? indices : null;
+  return Array.from({ length: count }, (_, offset) => {
+    const profileIndex = order ? order[offset] : offset + 1;
+    return {
+      ...shared,
+      index: profileIndex,
+      proxyId: proxyAssignments[String(profileIndex)] || '',
+      omniProfileId: omniAssignments[String(profileIndex)] || '',
+      hidemiumProfileId: hidemiumAssignments[String(profileIndex)] || '',
+    };
+  });
 }
+
+const PROFILE_SELECTION_KEY = 'aibcr.profileSelection';
+let selectedProfileIndices = [];
+
+function profileCountValue() {
+  return Math.max(1, Math.min(8, Math.trunc(Number(profileCount.value) || 1)));
+}
+
+function readStoredSelection() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(PROFILE_SELECTION_KEY) || '[]');
+    return Array.isArray(parsed)
+      ? [...new Set(parsed.map((value) => Math.trunc(Number(value)))
+        .filter((value) => Number.isInteger(value) && value >= 1 && value <= 8))].sort((a, b) => a - b)
+      : [];
+  } catch (error) {
+    return [];
+  }
+}
+
+function activeProfileSelection() {
+  const valid = selectedProfileIndices.filter((index) => Number.isInteger(index));
+  if (valid.length) return [...valid].sort((a, b) => a - b);
+  return Array.from({ length: profileCountValue() }, (_, offset) => offset + 1);
+}
+
+function syncProfilePicker() {
+  const host = $('#profile-picker');
+  if (!host) return;
+  host.replaceChildren();
+  const selection = new Set(activeProfileSelection());
+  for (let index = 1; index <= 8; index += 1) {
+    const label = document.createElement('label');
+    label.className = `profile-picker-option${selection.has(index) ? ' checked' : ''}`;
+    const box = document.createElement('input');
+    box.type = 'checkbox';
+    box.value = String(index);
+    box.checked = selection.has(index);
+    box.dataset.profile = String(index);
+    label.append(box, document.createTextNode(`P${index}`));
+    host.append(label);
+  }
+  const hint = document.createElement('span');
+  hint.className = 'profile-picker-hint';
+  hint.textContent = selection.size
+    ? `Đã chọn: ${[...selection].sort((a, b) => a - b).map((index) => `P${index}`).join(', ')}`
+    : 'Chưa chọn profile nào.';
+  host.append(hint);
+  $('#run-count-stat').textContent = String(selection.size || 0);
+}
+
+$('#profile-picker').addEventListener('change', (event) => {
+  const box = event.target.closest('input[type="checkbox"][data-profile]');
+  if (!box) return;
+  const index = Math.trunc(Number(box.dataset.profile));
+  if (box.checked) {
+    if (!selectedProfileIndices.includes(index)) selectedProfileIndices.push(index);
+  } else {
+    selectedProfileIndices = selectedProfileIndices.filter((value) => value !== index);
+  }
+  selectedProfileIndices.sort((a, b) => a - b);
+  localStorage.setItem(PROFILE_SELECTION_KEY, JSON.stringify(selectedProfileIndices));
+  syncProfilePicker();
+});
 
 
 const OMNI_API_KEY = 'aibcr.omniApiUrl';
@@ -407,6 +478,7 @@ profileCount.addEventListener('input', () => {
   const value = Math.max(1, Math.min(8, Math.trunc(Number(profileCount.value) || 1)));
   $('#run-count-stat').textContent = String(value);
   $('#header-profile-count').textContent = String(value);
+  syncProfilePicker();
 });
 document.querySelectorAll('[data-tab-target]').forEach((button) => {
   button.addEventListener('click', () => {
@@ -427,7 +499,8 @@ $('#profile-count').addEventListener('change', () => {
   renderProxyAssignments(value);
   renderOmniAssignments(value);
   renderHidemiumAssignments(value);
-  renderProfiles(value, lastSiteLabel);
+  syncProfilePicker();
+  renderProfiles(activeProfileSelection().length, lastSiteLabel, [], activeProfileSelection());
 });
 
 $('#proxy-assignments').addEventListener('change', async (event) => {
@@ -509,35 +582,41 @@ $('#proxy-list').addEventListener('click', async (event) => {
 });
 
 runButton.addEventListener('click', async () => {
-  const count = Math.max(1, Math.min(8, Math.trunc(Number(profileCount.value) || 1)));
-  profileCount.value = String(count);
+  const selection = activeProfileSelection();
+  const count = selection.length;
+  if (!count) {
+    showNotice('Hãy chọn ít nhất một profile trước khi chạy.', true);
+    return;
+  }
+  const indices = selection;
   $('#run-count-stat').textContent = String(count);
   $('#run-table-stat').textContent = '\u0110ang qu\u00e9t...';
   runButton.disabled = true;
   runButton.classList.add('busy');
   showNotice('Ch\u1edd s\u1ea3nh DG t\u1ea3i tr\u00ean c\u00e1c profile v\u00e0 \u0111\u1ed3ng b\u1ed9 v\u00e0o c\u00f9ng b\u00e0n...');
   try {
-    const siteIds = Array.from({ length: count }, (_, offset) =>
-      profileSiteSelections[String(offset + 1)] || profileSites[0]?.id || '');
+    const siteIds = indices.map((index) =>
+      profileSiteSelections[String(index)] || profileSites[0]?.id || '');
     showNotice('\u0110ang m\u1edf c\u00e1c profile theo site \u0111\u00e3 ch\u1ecdn...');
-    const opened = await api.openProfiles(count, siteIds[0], collectSettings(count),
-      $('#profile-source').value, $('#omni-api-url').value.trim(), siteIds, $('#hidemium-api-url').value.trim());
+    const opened = await api.openProfiles(count, siteIds[0], collectSettings(count, indices),
+      $('#profile-source').value, $('#omni-api-url').value.trim(), siteIds,
+      $('#hidemium-api-url').value.trim(), indices);
     if (!opened?.ok) {
       showNotice(opened?.error || 'Kh\u00f4ng m\u1edf \u0111\u01b0\u1ee3c c\u00e1c profile.', true);
       return;
     }
-    renderProfiles(count, opened.site, opened.replies || []);
+    renderProfiles(count, opened.site, opened.replies || [], indices);
     $('#close-profiles').disabled = false;
     const openFailures = (opened.replies || []).filter((reply) => !reply.ok);
     if (openFailures.length) {
       showNotice(`${openFailures.length}/${count} profile ch\u01b0a m\u1edf \u0111\u01b0\u1ee3c. Ki\u1ec3m tra danh s\u00e1ch Profile.` , true);
       return;
     }
-    for (let index = 1; index <= count; index += 1) {
-      updateProfile(index, 'running', `\u0110\u00e3 m\u1edf site ${opened.replies[index - 1]?.site || ''}; \u0111ang ch\u1edd v\u00e0o s\u1ea3nh DG.`);
-    }
+    indices.forEach((index, offset) => {
+      updateProfile(index, 'running', `\u0110\u00e3 m\u1edf site ${opened.replies[offset]?.site || ''}; \u0111ang ch\u1edd v\u00e0o s\u1ea3nh DG.`);
+    });
     showNotice('\u0110ang ch\u1edd b\u1ea1n t\u1ef1 v\u00e0o s\u1ea3nh DG. \u1ee8ng d\u1ee5ng s\u1ebd qu\u00e9t tr\u1ea1ng th\u00e1i m\u1ed7i 5 gi\u00e2y...');
-    const result = await api.runDGGroup(count, siteIds);
+    const result = await api.runDGGroup(count, siteIds, indices);
     if (!result || !result.ok) {
       for (const reply of result?.entry_replies || []) {
         updateProfile(reply.index, reply.ok ? 'running' : 'error', reply.ok
@@ -549,9 +628,9 @@ runButton.addEventListener('click', async () => {
     }
     $('#run-table-stat').textContent = `${result.table_name} \u00b7 ${result.table_id}`;
     renderBetAssignments(result);
-    for (let index = 1; index <= count; index += 1) {
+    indices.forEach((index) => {
       updateProfile(index, 'running', `\u0110\u00e3 \u0111\u1ed3ng b\u1ed9 v\u00e0o DG ${result.table_id}.`);
-    }
+    });
     $('#close-profiles').disabled = false;
     showNotice(`C\u1ea3 ${result.count} profile \u0111\u00e3 v\u00e0o ${result.table_name} (${result.table_id}); \u0111ang v\u1eadn h\u00e0nh d\u00e3y c\u01b0\u1ee3c nh\u00f3m.`);
   } catch (error) {
@@ -773,6 +852,7 @@ api.onEngineEvent(({ game, event, data }) => {
     renderActivityLog();
     try { profileSiteSelections = JSON.parse(localStorage.getItem('aibcr.profileSites') || '{}') || {}; }
     catch { profileSiteSelections = {}; }
+    selectedProfileIndices = readStoredSelection();
     const betConfig = await api.getBetConfig();
     if (betConfig && betConfig.ok) fillBetConfig(betConfig.config || {});
     setProxyState(await api.listProxies());
@@ -784,7 +864,8 @@ api.onEngineEvent(({ game, event, data }) => {
     try { hidemiumAssignments = JSON.parse(localStorage.getItem(HIDEMIUM_ASSIGNMENTS_KEY) || '{}') || {}; } catch { hidemiumAssignments = {}; }
     renderOmniAssignments(Math.max(1, Math.min(8, Number(profileCount.value) || 1)));
     renderHidemiumAssignments(Math.max(1, Math.min(8, Number(profileCount.value) || 1)));
-    renderProfiles(Math.max(1, Math.min(8, Number(profileCount.value) || 1)), lastSiteLabel);
+    syncProfilePicker();
+    renderProfiles(activeProfileSelection().length, lastSiteLabel, [], activeProfileSelection());
     updateSitePreview();
     showNotice('');
   } catch (error) {
