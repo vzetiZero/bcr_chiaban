@@ -781,15 +781,49 @@ async function closeProfileBridge(index) {
   if (bridge) await bridge.close().catch(() => {});
 }
 
-function profileLayout(index, count, width, height, area) {
-  const columns = Math.ceil(Math.sqrt(count));
-  const column = (index - 1) % columns;
-  const row = Math.floor((index - 1) / columns);
-  return {
-    width, height,
-    left: Math.max(0, Math.min(area.width - width, column * (width + 12))),
-    top: Math.max(0, Math.min(area.height - height, row * (height + 12))),
-  };
+function tileProfileLayouts(settings, area) {
+  const count = settings.length;
+  const gap = 12;
+  const visual = settings.map((item) => ({
+    width: Math.max(1, Math.round(item.width * item.scale / 100)),
+    height: Math.max(1, Math.round(item.height * item.scale / 100)),
+  }));
+  let columns = 1;
+  let columnWidths = [];
+  for (let candidate = count; candidate >= 1; candidate -= 1) {
+    const widths = Array(candidate).fill(0);
+    visual.forEach((size, index) => {
+      const column = index % candidate;
+      widths[column] = Math.max(widths[column], size.width);
+    });
+    const gridWidth = widths.reduce((sum, width) => sum + width, 0) + gap * (candidate - 1);
+    if (gridWidth <= area.width || candidate === 1) {
+      columns = candidate;
+      columnWidths = widths;
+      break;
+    }
+  }
+  const rows = Math.ceil(count / columns);
+  const rowHeights = Array(rows).fill(0);
+  visual.forEach((size, index) => {
+    const row = Math.floor(index / columns);
+    rowHeights[row] = Math.max(rowHeights[row], size.height);
+  });
+  const gridWidth = columnWidths.reduce((sum, width) => sum + width, 0) + gap * (columns - 1);
+  const gridHeight = rowHeights.reduce((sum, height) => sum + height, 0) + gap * (rows - 1);
+  const startX = Math.max(0, Math.floor((area.width - gridWidth) / 2));
+  const startY = Math.max(0, Math.floor((area.height - gridHeight) / 2));
+  return settings.map((item, index) => {
+    const column = index % columns;
+    const row = Math.floor(index / columns);
+    const left = startX + columnWidths.slice(0, column).reduce((sum, width) => sum + width + gap, 0);
+    const top = startY + rowHeights.slice(0, row).reduce((sum, height) => sum + height + gap, 0);
+    return { ...item, left, top };
+  });
+}
+
+function profileLayout(index, count, width, height, scale, area) {
+  return tileProfileLayouts(Array.from({ length: count }, () => ({ width, height, scale })), area)[index - 1];
 }
 
 ipcMain.handle('profile:open', async (_event, { index, count, profile, url, source = 'local', omniApiUrl, hidemiumApiUrl }) => {
@@ -844,7 +878,7 @@ ipcMain.handle('profile:open', async (_event, { index, count, profile, url, sour
     }
     const { screen } = require('electron');
     const layout = profileLayout(profileIndex, Math.max(1, Math.min(8, Number(count) || profileIndex)),
-      width, height, screen.getPrimaryDisplay().workAreaSize);
+      width, height, scale, screen.getPrimaryDisplay().workAreaSize);
     const engine = ensureProfileEngine(profileIndex, layout, omni ? omni.port : null);
     const configured = await engine.call('profile.configure', {
       url, proxy_server: proxyServer, width, height, scale, left: layout.left, top: layout.top,
@@ -1241,28 +1275,7 @@ ipcMain.handle('profiles:open', async (_event, { count, siteId, siteIds, profile
 
   const { screen } = require('electron');
   const area = screen.getPrimaryDisplay().workAreaSize;
-  const columns = Math.ceil(Math.sqrt(total));
-  const rows = Math.ceil(total / columns);
-  const columnWidths = Array(columns).fill(0);
-  const rowHeights = Array(rows).fill(0);
-  settings.forEach((item, index) => {
-    const column = index % columns;
-    const row = Math.floor(index / columns);
-    columnWidths[column] = Math.max(columnWidths[column], item.width);
-    rowHeights[row] = Math.max(rowHeights[row], item.height);
-  });
-  const gap = 12;
-  const gridWidth = columnWidths.reduce((sum, width) => sum + width, 0) + gap * (columns - 1);
-  const gridHeight = rowHeights.reduce((sum, height) => sum + height, 0) + gap * (rows - 1);
-  const startX = Math.max(0, Math.floor((area.width - gridWidth) / 2));
-  const startY = Math.max(0, Math.floor((area.height - gridHeight) / 2));
-  const layouts = settings.map((item, index) => {
-    const column = index % columns;
-    const row = Math.floor(index / columns);
-    const left = startX + columnWidths.slice(0, column).reduce((sum, width) => sum + width + gap, 0);
-    const top = startY + rowHeights.slice(0, row).reduce((sum, height) => sum + height + gap, 0);
-    return { ...item, left, top };
-  });
+  const layouts = tileProfileLayouts(settings, area);
 
   const extras = Array.from(activeProfileIndices).filter((index) => index > total);
   if (extras.length) {
