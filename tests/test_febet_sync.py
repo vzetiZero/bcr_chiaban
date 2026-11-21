@@ -52,6 +52,11 @@ class FakeDriver:
 
     def execute_script(self, js, *args):
         self.scripts.append(js)
+        if "const frames=[...document.querySelectorAll('iframe,frame')]" in js:
+            location = self.dg_location if self.frame == "dg" else (
+                "https://secure.livechatinc.com/x" if self.frame == "widget" else self.current_url)
+            return {"url": location, "title": "", "frames": 0 if self.frame else 2,
+                    "labels": []}
         if "return location.href" in js:
             return self.dg_location if self.frame == "dg" else "https://secure.livechatinc.com/x"
         if "typeof Laya" in js and "tableInfo || n._tableInfo" in js:
@@ -77,6 +82,39 @@ class FakeDriver:
                 url = json.loads(re.search(r'f\.src = (".*?");', js).group(1))
                 self.dg_location = url.replace("direct1.html", "index.html")
             return {"ok": True}
+        return None
+
+
+class NestedDGDriver:
+    """GK881-style login supplier iframe wrapping the actual DG iframe."""
+
+    def __init__(self):
+        self.window_handles = ["w1"]
+        self.current_url = "https://gk881.vip/Lobby/Navigation"
+        self.frame_path = ()
+        self.switch_to = self
+
+    def window(self, _handle):
+        pass
+
+    def default_content(self):
+        self.frame_path = ()
+
+    def frame(self, element):
+        self.frame_path += (element,)
+
+    def find_elements(self, _by, _selector):
+        return {(): [0], (0,): [0], (0, 0): []}.get(self.frame_path, [])
+
+    def execute_script(self, js, *_args):
+        if "const frames=[...document.querySelectorAll('iframe,frame')]" in js:
+            urls = {
+                (): self.current_url,
+                (0,): "https://gk881.vip/Account/LoginToSupplier?SupplierType=DG",
+                (0, 0): DG_LOC,
+            }
+            return {"url": urls[self.frame_path], "title": "", "frames": 0 if self.frame_path == (0, 0) else 1,
+                    "labels": []}
         return None
 
 
@@ -122,6 +160,115 @@ class XemGameButtonTest(unittest.TestCase):
         self.assertTrue(F._click_xem_game(driver))
         self.assertTrue(driver.button.clicked)
         self.assertIsNone(driver.frame)
+
+
+class MultiWindowSwitch:
+    def __init__(self, driver):
+        self.driver = driver
+
+    def window(self, handle):
+        self.driver.window(handle)
+
+    def default_content(self):
+        self.driver.frame = None
+
+    def frame(self, element):
+        self.driver.frame = element
+
+
+class MultiWindowDGDriver:
+    """Tab DG nằm ngoài tab đang active (GK881 mở sảnh bằng window.open)."""
+
+    def __init__(self):
+        self.window_handles = ["site-tab", "dg-tab"]
+        self.current_handle = "site-tab"
+        self.frame = None
+        self.switch_to = MultiWindowSwitch(self)
+        self.closed = []
+        self.visited = []
+
+    def window(self, handle):
+        if handle not in self.window_handles:
+            raise RuntimeError("no such window")
+        self.current_handle = handle
+        self.visited.append(handle)
+
+    def get(self, url):
+        self.current_url_value = url
+
+    def close(self):
+        handle = self.current_handle
+        if handle in self.window_handles:
+            self.window_handles = [item for item in self.window_handles if item != handle]
+        self.closed.append(handle)
+        if self.window_handles:
+            self.current_handle = self.window_handles[-1]
+
+    def find_elements(self, _by, _selector):
+        return ["dg-frame"] if self.current_handle == "dg-tab" else []
+
+    def execute_script(self, js, *_args):
+        if "const frames=[...document.querySelectorAll('iframe,frame')]" in js:
+            if self.current_handle == "dg-tab":
+                if self.frame == "dg-frame":
+                    return {"url": DG_LOC, "title": "", "frames": 0, "labels": []}
+                return {"url": "https://gk881.vip/Lobby/Navigation", "title": "",
+                        "frames": 1, "labels": []}
+            return {"url": "https://gk881.vip/Lobby/Live", "title": "", "frames": 0, "labels": []}
+        return None
+
+    @property
+    def current_url(self):
+        return DG_LOC if self.current_handle == "dg-tab" else "https://gk881.vip/Lobby/Live"
+
+
+class SingleWindowDgTest(unittest.TestCase):
+    def test_dg_frame_is_found_in_another_tab(self):
+        driver = MultiWindowDGDriver()
+        path, location = F._dg_frame(driver, wait=0.0)
+        self.assertEqual(path, (0,))
+        self.assertIn("ddnewpc", location)
+        self.assertEqual(driver.current_handle, "dg-tab")
+        self.assertEqual(F._lobby_handle(driver), "dg-tab")
+
+    def test_lobby_tables_scan_other_tabs_when_current_tab_has_no_dg(self):
+        class TablesInOtherTab(MultiWindowDGDriver):
+            def execute_script(self, js, *args):
+                data = super().execute_script(js, *args)
+                if data is None and "tableInfo || n._tableInfo" in js:
+                    return {"ready": True, "tables": [
+                        {"table_id": "60103", "name": "RB03", "online": 786}]}
+                if data is None and "typeof Laya" in js and "tableInfo" not in js:
+                    return {"ready": True, "lobby": True, "in_table": False,
+                            "label": "", "url_table": ""}
+                return data
+
+        result = F.lobby_tables(TablesInOtherTab(), wait=0)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["tables"], [
+            {"table_id": "60103", "name": "RB03", "online": 786}])
+
+    def test_navigate_in_place_patches_window_open(self):
+        driver = MultiWindowDGDriver()
+        self.assertTrue(GK881._navigate_in_place(driver))
+        self.assertIn("window.open", GK881._NAVIGATE_IN_PLACE_JS)
+        self.assertIn("location.assign", GK881._NAVIGATE_IN_PLACE_JS)
+
+    def test_merge_extra_window_closes_popup_and_keeps_one_window(self):
+        driver = MultiWindowDGDriver()
+        driver.current_handle = "site-tab"
+        self.assertTrue(GK881._merge_extra_window(driver, "site-tab"))
+        self.assertEqual(driver.window_handles, ["site-tab"])
+        self.assertEqual(driver.closed, ["dg-tab"])
+        self.assertEqual(driver.current_handle, "site-tab")
+        self.assertIn("ddnewpc", getattr(driver, "current_url_value", ""))
+
+    def test_merge_extra_window_is_noop_without_extra_windows(self):
+        driver = MultiWindowDGDriver()
+        driver.window_handles = ["site-tab"]
+        driver.current_handle = "site-tab"
+        self.assertFalse(GK881._merge_extra_window(driver, "site-tab"))
+        self.assertEqual(driver.closed, [])
 
 
 class FebetLobbyPageTest(unittest.TestCase):
@@ -212,6 +359,16 @@ class CurrentTableTest(unittest.TestCase):
         result = F.current_table(driver, wait=0)
         self.assertTrue(result["ok"])
         self.assertEqual(result["table_id"], "60101")
+
+    def test_finds_dg_nested_inside_gk881_supplier_iframe(self):
+        driver = NestedDGDriver()
+        path, location = F._dg_frame(driver, wait=0)
+        self.assertEqual(path, (0, 0))
+        self.assertIn("ddnewpc", location)
+        self.assertEqual(F._lobby_handle(driver), "w1")
+        context = F._dg_context(driver, wait=0)
+        self.assertEqual(context["mode"], "iframe")
+        self.assertEqual(context["path"], (0, 0))
 
 
 class SiteEntryFlowTest(unittest.TestCase):

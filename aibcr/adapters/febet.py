@@ -323,23 +323,13 @@ def _lobby_handle(driver):
     game origin is the shared DG marker; requiring a FEBET URL here prevented
     the common table/bet flow from working on other hosts.
     """
-    from selenium.webdriver.common.by import By
-
     for handle in reversed(driver.window_handles):
         try:
             driver.switch_to.window(handle)
-            driver.switch_to.default_content()
-            frames = driver.find_elements(By.CSS_SELECTOR, "iframe, frame")
-            for frame in frames:
-                try:
+            for _path, info in _frame_contexts(driver):
+                if "ddnewpc" in str(info.get("url") or "").lower():
                     driver.switch_to.default_content()
-                    driver.switch_to.frame(frame)
-                    location = driver.execute_script("return location.href") or ""
-                    if "ddnewpc" in location.lower():
-                        driver.switch_to.default_content()
-                        return handle
-                except Exception:
-                    continue
+                    return handle
             driver.switch_to.default_content()
         except Exception:
             continue
@@ -359,34 +349,27 @@ def _dg_frame(driver, wait=15.0):
     Site có thể nạp qua trang chờ ``direct1.html`` rồi mới redirect sang
     ``index.html?...tableId=...``; thuộc tính ``src`` không phản ánh URL thật,
     nên phải vào từng frame đọc ``location.href`` và chờ tới khi có mã bàn.
-    """
-    from selenium.webdriver.common.by import By
 
+    DG cũng có thể nằm ở **tab khác** (GK881 mở sảnh bằng ``window.open``).
+    Chỉ quét tab hiện tại sẽ báo sai "Laya chưa tải", nên phải duyệt mọi tab
+    rồi dừng lại ở tab chứa frame DG.
+    """
     deadline = time.monotonic() + max(0.0, wait)
     while True:
         try:
-            driver.switch_to.default_content()
-            frames = driver.find_elements(By.CSS_SELECTOR, "iframe, frame")
-        except Exception:
-            frames = []
-        for index in range(len(frames)):
-            location = ""
-            try:
-                driver.switch_to.default_content()
-                driver.switch_to.frame(frames[index])
-                location = driver.execute_script("return location.href") or ""
-            except Exception:
-                pass
-            finally:
+            for handle in list(reversed(driver.window_handles)):
                 try:
-                    driver.switch_to.default_content()
+                    driver.switch_to.window(handle)
                 except Exception:
-                    pass
-            # A DG lobby may not have a tableId yet, or may expose only a
-            # lobby identifier. Detect the DG document first; validate 60xxx
-            # only when selecting a real baccarat table.
-            if "ddnewpc" in location.lower():
-                return index, location
+                    continue
+                for path, info in _frame_contexts(driver):
+                    location = str(info.get("url") or "")
+                    if "ddnewpc" in location.lower():
+                        driver.switch_to.default_content()
+                        return path, location
+                driver.switch_to.default_content()
+        except Exception:
+            pass
         if time.monotonic() >= deadline:
             return None, None
         time.sleep(0.5)
@@ -734,15 +717,11 @@ def _dg_context(driver, wait=15.0):
         if _dg_window(driver) is not None:
             location = driver.current_url or ""
             return {"mode": "tab", "location": location}
-        elif _lobby_handle(driver) is not None:
-            index, location = _dg_frame(driver, wait=0)
-            if index is not None:
-                from selenium.webdriver.common.by import By
-
-                driver.switch_to.default_content()
-                frames = driver.find_elements(By.CSS_SELECTOR, "iframe, frame")
-                driver.switch_to.frame(frames[index])
-                return {"mode": "iframe", "index": index, "location": location}
+        else:
+            path, location = _dg_frame(driver, wait=0)
+            if path is not None:
+                _enter_path(driver, path)
+                return {"mode": "iframe", "path": path, "location": location}
         if time.monotonic() >= deadline:
             return None
         time.sleep(0.5)
@@ -921,7 +900,10 @@ def sync_table(driver, table_id, wait=30.0, settle=120.0):
         else:
             if _lobby_handle(driver) is None:
                 return {"ok": False, "error": "Profile cần mở sảnh DG trên site trước khi đồng bộ bàn."}
-            index = ctx["index"]
+            path = tuple(ctx.get("path") or (ctx.get("index"),))
+            driver.switch_to.default_content()
+            _enter_path(driver, path[:-1])
+            index = path[-1]
             src = driver.execute_script(
                 "return (() => { const f = document.querySelectorAll('iframe,frame')[%d];"
                 " return f ? (f.getAttribute('src') || '') : ''; })()" % index) or ""

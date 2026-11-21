@@ -36,6 +36,79 @@ def _safe_location(driver):
         return "unknown"
 
 
+_NAVIGATE_IN_PLACE_JS = r"""
+if (!window.__aibcrInPlaceNav) {
+  window.__aibcrInPlaceNav = true;
+  window.__aibcrOriginalOpen = window.open;
+  window.open = function (url) {
+    const target = typeof url === 'string' ? url.trim() : '';
+    if (target && !/^about:blank$/i.test(target)) {
+      try { window.location.assign(target); } catch (error) {}
+      return null;
+    }
+    return window.__aibcrOriginalOpen
+      ? window.__aibcrOriginalOpen.apply(window, arguments) : null;
+  };
+}
+return true;
+"""
+
+
+def _navigate_in_place(driver):
+    """Make the site's ``window.open`` reuse this tab instead of a second window.
+
+    GK881 opens the DG lobby with ``window.open('/Lobby/Navigation')``. Chrome
+    then shows a second, badly positioned window next to the profile window, and
+    both are driven at once. Overriding the call keeps a single window whose
+    address becomes the DG lobby URL, which is what the desktop UI expects.
+    The override lives only in this document, so it is applied right before the
+    provider card is clicked.
+    """
+    try:
+        driver.execute_script(_NAVIGATE_IN_PLACE_JS)
+        return True
+    except Exception:
+        return False
+
+
+def _merge_extra_window(driver, source_handle):
+    """Fallback: move a stray popup URL into ``source_handle`` and close it.
+
+    If the site bypasses ``window.open`` (e.g. an anchor with ``target=_blank``)
+    a second window still appears. Keeping only the profile window is required,
+    so the lobby URL is loaded in the source tab first and the extra window is
+    closed afterwards. The URL is never logged because it carries a session token.
+    """
+    handles = [item for item in driver.window_handles if item != source_handle]
+    if not handles:
+        return False
+    lobby_url = ""
+    for handle in reversed(handles):
+        try:
+            driver.switch_to.window(handle)
+            driver.switch_to.default_content()
+            current = driver.current_url or ""
+            if "gk881" in current.lower() or "ddnewpc" in current.lower():
+                lobby_url = current
+                break
+        except Exception:
+            continue
+    if not lobby_url:
+        return False
+    for handle in handles:
+        try:
+            driver.switch_to.window(handle)
+            driver.close()
+        except Exception:
+            continue
+    driver.switch_to.window(source_handle)
+    try:
+        driver.get(lobby_url)
+    except Exception:
+        return False
+    return True
+
+
 def open_dg(driver, wait=120.0, log=None):
     """Open GK881's DG lobby using the live site's Casino > DG card flow.
 
@@ -173,48 +246,47 @@ def open_dg(driver, wait=120.0, log=None):
         driver.execute_script("arguments[0].scrollIntoView({block:'center',inline:'center'});", card)
         before = set(driver.window_handles)
 
-        # Click the card's explicit entry button, matching the live DOM
-        # (li > h2[model=entrance] + button), with the card as fallback.
-        buttons = card.find_elements(By.CSS_SELECTOR, 'button[ng-click*="entrance.click"]')
-        target = buttons[0] if buttons else card
+        # Click its provider heading, matching the requested "DG Trực Tuyến"
+        # control in the live DOM. Both the <li> and nested button have the
+        # same ng-click; clicking the button bubbles and can invoke it twice.
+        headings = card.find_elements(By.CSS_SELECTOR, "h2[nav-link-display][model=\"entrance\"]")
+        target = headings[0] if headings else card
         stage = "mở DG Trực Tuyến"
+        # The lobby is opened with window.open(), which gives Chrome a second
+        # window. Patch it first so the DG lobby replaces this tab instead.
+        if _navigate_in_place(driver):
+            report("Đã chuyển sảnh DG sang mở trong tab hiện tại (1 cửa sổ Chrome).")
         try:
             target.click()
         except Exception:
             driver.execute_script("arguments[0].click();", target)
-        report("Đã bấm vào DG Trực Tuyến; chờ popup/iframe DG xuất hiện.")
+        report("Đã bấm vào DG Trực Tuyến; chờ sảnh DG xuất hiện.")
 
         stage = "chờ iframe hoặc tab DG"
         target_handle = None
         next_trace = 0.0
+        merged = False
         while time.monotonic() < deadline:
             handles = driver.window_handles
-            new_handles = [item for item in handles if item not in before]
-            for handle in reversed(new_handles):
-                try:
-                    driver.switch_to.window(handle)
-                    driver.switch_to.default_content()
-                    if "ddnewpc" in (driver.current_url or "").lower() or DG._lobby_handle(driver) == handle:
-                        target_handle = handle
-                        break
-                except Exception:
-                    continue
+            extra = [item for item in handles if item not in before]
+            if extra and not merged:
+                # Some builds still open a popup (anchor target=_blank). Fold it
+                # into the main window so only one Chrome window stays open.
+                if _merge_extra_window(driver, source_handle):
+                    merged = True
+                    before = set(driver.window_handles)
+                    report("Đã gộp cửa sổ DG vào tab chính; chỉ còn 1 cửa sổ Chrome.")
+                    handles = driver.window_handles
+            try:
+                target_handle = DG._lobby_handle(driver) or DG._dg_window(driver)
+            except Exception:
+                target_handle = None
             if target_handle:
                 break
-            # Some builds reuse the source tab; others first open /Lobby/Navigation
-            # with an Account/LoginToSupplier iframe, which later hosts ddnewpc.
-            try:
-                driver.switch_to.window(source_handle)
-                driver.switch_to.default_content()
-                if DG._dg_window(driver) == source_handle or DG._lobby_handle(driver) == source_handle:
-                    target_handle = source_handle
-                    break
-            except Exception:
-                pass
             if time.monotonic() >= next_trace:
                 report("Vẫn chờ iframe DG tải; đã mở %s tab." % len(handles))
                 next_trace = time.monotonic() + 5.0
-            time.sleep(0.5)
+            time.sleep(1.0)
 
         if target_handle is None:
             stage = "chờ iframe hoặc tab DG"
