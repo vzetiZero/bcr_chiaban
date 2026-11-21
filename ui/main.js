@@ -797,7 +797,9 @@ function tileProfileLayouts(settings, area) {
       widths[column] = Math.max(widths[column], size.width);
     });
     const gridWidth = widths.reduce((sum, width) => sum + width, 0) + gap * (candidate - 1);
-    if (gridWidth <= area.width || candidate === 1) {
+    // Keep a full row when it is only slightly wider than the desktop. Chrome's
+    // visible bounds can be smaller than the configured viewport at reduced scale.
+    if (gridWidth <= area.width * 1.15 || candidate === 1) {
       columns = candidate;
       columnWidths = widths;
       break;
@@ -811,12 +813,14 @@ function tileProfileLayouts(settings, area) {
   });
   const gridWidth = columnWidths.reduce((sum, width) => sum + width, 0) + gap * (columns - 1);
   const gridHeight = rowHeights.reduce((sum, height) => sum + height, 0) + gap * (rows - 1);
-  const startX = Math.max(0, Math.floor((area.width - gridWidth) / 2));
+  const startX = gridWidth <= area.width ? Math.floor((area.width - gridWidth) / 2) : 0;
   const startY = Math.max(0, Math.floor((area.height - gridHeight) / 2));
+  const horizontalFit = gridWidth > area.width ? area.width / gridWidth : 1;
   return settings.map((item, index) => {
     const column = index % columns;
     const row = Math.floor(index / columns);
-    const left = startX + columnWidths.slice(0, column).reduce((sum, width) => sum + width + gap, 0);
+    const naturalLeft = columnWidths.slice(0, column).reduce((sum, width) => sum + width + gap, 0);
+    const left = startX + Math.floor(naturalLeft * horizontalFit);
     const top = startY + rowHeights.slice(0, row).reduce((sum, height) => sum + height + gap, 0);
     return { ...item, left, top };
   });
