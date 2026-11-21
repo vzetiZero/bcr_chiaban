@@ -52,6 +52,13 @@
             <option>Đang tải danh sách…</option>
           </select>
         </label>
+        <label class="field profile-source-field">
+          <span>Nguồn profile</span>
+          <select id="profile-source">
+            <option value="local">Chrome riêng của ứng dụng</option>
+            <option value="omni">OmniLogin</option>
+          </select>
+        </label>
       </div>
       <div class="run-overview">
         <div class="run-overview-heading">
@@ -73,6 +80,20 @@
     </div>
 
     <div class="tab-panel" role="tabpanel" data-tab-panel="profiles">
+    <section class="card omni-manager">
+      <div class="section-heading">
+        <div><div class="eyebrow">PROFILE PROVIDER</div><h2>Kết nối OmniLogin</h2></div>
+        <span class="total">API cục bộ</span>
+      </div>
+      <div class="omni-config-row">
+        <label class="field" for="omni-api-url"><span>Địa chỉ API OmniLogin</span>
+          <input id="omni-api-url" type="url" value="http://127.0.0.1:35353" spellcheck="false" />
+        </label>
+        <button id="omni-refresh" class="close-button" type="button">Kết nối / tải profiles</button>
+      </div>
+      <div id="omni-notice" class="notice" role="status" aria-live="polite">Chọn OmniLogin ở màn Chạy Tool, sau đó gán một profile cho mỗi cửa sổ.</div>
+      <div id="omni-profile-assignments" class="omni-profile-assignments"></div>
+    </section>
     <section class="profiles-section settings-section">
       <div class="section-heading">
         <div><div class="eyebrow">CẤU HÌNH CHUNG</div><h2>Kích thước cửa sổ</h2></div>

@@ -9,6 +9,8 @@ const statusByIndex = new Map();
 const profileStateByIndex = new Map();
 let proxyItems = [];
 let proxyAssignments = {};
+let omniProfiles = [];
+let omniAssignments = {};
 let lastSiteLabel = 'Chưa chạy';
 
 window.addEventListener('error', (event) => showNotice(String(event.message || event.error), true));
@@ -76,10 +78,13 @@ function renderProfiles(count, siteLabel, replies = []) {
 
 function updateSitePreview() {
   const site = profileSelect.selectedOptions[0];
+  const source = $('#profile-source').value;
   runButton.disabled = !site || !site.value;
   $('#run-site-stat').textContent = site && site.value ? site.textContent : 'Ch\u01b0a ch\u1ecdn';
-  $('#run-mode-title').textContent = site && site.value === 'febet' ? 'T\u1ef1 ch\u1ecdn b\u00e0n Dream Gaming' : 'M\u1edf \u0111\u1ed3ng th\u1eddi c\u00e1c profile';
-  $('#run-mode-badge').textContent = site && site.value === 'febet' ? 'T\u1ef0 \u0110\u1ed8NG' : 'S\u1eb4N S\u00c0NG';
+  $('#run-mode-title').textContent = source === 'omni' ? 'Ch\u1ea1y profile qua OmniLogin'
+    : site && site.value === 'febet' ? 'T\u1ef1 ch\u1ecdn b\u00e0n Dream Gaming' : 'M\u1edf \u0111\u1ed3ng th\u1eddi c\u00e1c profile';
+  $('#run-mode-badge').textContent = source === 'omni' ? 'OMNILOGIN'
+    : site && site.value === 'febet' ? 'T\u1ef0 \u0110\u1ed8NG' : 'S\u1eb4N S\u00c0NG';
 }
 
 function populateProxySelect(select, selectedId = '') {
@@ -143,8 +148,73 @@ function collectSettings(count) {
   return Array.from({ length: count }, (_, offset) => ({
     ...shared,
     proxyId: proxyAssignments[String(offset + 1)] || '',
+    omniProfileId: omniAssignments[String(offset + 1)] || '',
   }));
 }
+
+
+const OMNI_API_KEY = 'aibcr.omniApiUrl';
+const OMNI_ASSIGNMENTS_KEY = 'aibcr.omniAssignments';
+const PROFILE_SOURCE_KEY = 'aibcr.profileSource';
+
+function renderOmniAssignments(count) {
+  const list = $('#omni-profile-assignments');
+  if (!list) return;
+  list.replaceChildren();
+  for (let index = 1; index <= count; index += 1) {
+    const row = document.createElement('label');
+    row.className = 'omni-assignment-row';
+    row.innerHTML = '<span></span><select></select>';
+    row.querySelector('span').textContent = `Profile ${index}`;
+    const select = row.querySelector('select');
+    select.dataset.profile = String(index);
+    const empty = document.createElement('option');
+    empty.value = '';
+    empty.textContent = omniProfiles.length ? 'Ch\u1ecdn profile OmniLogin' : 'K\u1ebft n\u1ed1i API \u0111\u1ec3 t\u1ea3i profiles';
+    select.append(empty);
+    for (const profile of omniProfiles) {
+      const option = document.createElement('option');
+      option.value = profile.id;
+      option.textContent = `${profile.name} \u00b7 ${profile.id}`;
+      select.append(option);
+    }
+    select.value = omniAssignments[String(index)] || '';
+    list.append(row);
+  }
+}
+
+async function refreshOmniProfiles() {
+  const button = $('#omni-refresh');
+  button.disabled = true;
+  $('#omni-notice').textContent = '\u0110ang k\u1ebft n\u1ed1i API OmniLogin...';
+  try {
+    const result = await api.listOmniProfiles($('#omni-api-url').value.trim());
+    if (!result || !result.ok) throw new Error(result?.error || 'Kh\u00f4ng t\u1ea3i \u0111\u01b0\u1ee3c profiles.');
+    omniProfiles = result.profiles || [];
+    $('#omni-api-url').value = result.apiUrl;
+    localStorage.setItem(OMNI_API_KEY, result.apiUrl);
+    omniAssignments = Object.fromEntries(Object.entries(omniAssignments)
+      .filter(([, id]) => omniProfiles.some((profile) => profile.id === id)));
+    localStorage.setItem(OMNI_ASSIGNMENTS_KEY, JSON.stringify(omniAssignments));
+    renderOmniAssignments(Math.max(1, Math.min(8, Number(profileCount.value) || 1)));
+    $('#omni-notice').textContent = `OmniLogin k\u1ebft n\u1ed1i th\u00e0nh c\u00f4ng ? ${omniProfiles.length} profiles.`;
+  } catch (error) {
+    $('#omni-notice').textContent = String(error.message || error);
+  } finally {
+    button.disabled = false;
+  }
+}
+
+$('#omni-refresh').addEventListener('click', refreshOmniProfiles);
+$('#omni-api-url').addEventListener('change', () => localStorage.setItem(OMNI_API_KEY, $('#omni-api-url').value.trim()));
+$('#omni-profile-assignments').addEventListener('change', (event) => {
+  const select = event.target.closest('select[data-profile]');
+  if (!select) return;
+  if (select.value) omniAssignments[select.dataset.profile] = select.value;
+  else delete omniAssignments[select.dataset.profile];
+  localStorage.setItem(OMNI_ASSIGNMENTS_KEY, JSON.stringify(omniAssignments));
+  $('#omni-notice').textContent = `\u0110\u00e3 l\u01b0u g\u00e1n cho Profile ${select.dataset.profile}.`;
+});
 
 for (const input of Object.values(sharedWindowInputs)) {
   input.addEventListener('change', saveSharedWindowSettings);
@@ -194,6 +264,10 @@ function renderProxyAssignments(count) {
 }
 
 profileSelect.addEventListener('change', updateSitePreview);
+$('#profile-source').addEventListener('change', () => {
+  localStorage.setItem(PROFILE_SOURCE_KEY, $('#profile-source').value);
+  updateSitePreview();
+});
 profileCount.addEventListener('input', () => {
   const value = Math.max(1, Math.min(8, Math.trunc(Number(profileCount.value) || 1)));
   $('#run-count-stat').textContent = String(value);
@@ -216,6 +290,7 @@ $('#profile-count').addEventListener('change', () => {
   const value = Math.max(1, Math.min(8, Number(profileCount.value) || 1));
   profileCount.value = String(value);
   renderProxyAssignments(value);
+  renderOmniAssignments(value);
   renderProfiles(value, lastSiteLabel);
 });
 
@@ -306,7 +381,7 @@ runButton.addEventListener('click', async () => {
   runButton.classList.add('busy');
   showNotice('Đang khởi chạy các profile…');
   try {
-    const result = await api.openProfiles(count, profileSelect.value, collectSettings(count));
+    const result = await api.openProfiles(count, profileSelect.value, collectSettings(count), $('#profile-source').value, $('#omni-api-url').value.trim());
     if (!result || !result.ok) {
       showNotice((result && result.error) || 'Không mở được các profile.', true);
       return;
@@ -377,7 +452,8 @@ profileList.addEventListener('click', async (event) => {
       ? await api.closeProfile(index)
       : await api.openProfile(index, Math.max(1, Math.min(8, Number(profileCount.value) || index)),
         collectSettings(Math.max(1, Math.min(8, Number(profileCount.value) || index)))[index - 1],
-        profileSelect.selectedOptions[0] && profileSelect.selectedOptions[0].dataset.url);
+        profileSelect.selectedOptions[0] && profileSelect.selectedOptions[0].dataset.url,
+        $('#profile-source').value, $('#omni-api-url').value.trim());
     if (!result || !result.ok) {
       updateProfile(index, 'error', (result && result.error) || 'Không thực hiện được thao tác.');
       return;
@@ -533,6 +609,10 @@ api.onEngineEvent(({ game, event, data }) => {
     const betConfig = await api.getBetConfig();
     if (betConfig && betConfig.ok) fillBetConfig(betConfig.config || {});
     setProxyState(await api.listProxies());
+    $('#profile-source').value = localStorage.getItem(PROFILE_SOURCE_KEY) === 'omni' ? 'omni' : 'local';
+    $('#omni-api-url').value = localStorage.getItem(OMNI_API_KEY) || 'http://127.0.0.1:35353';
+    try { omniAssignments = JSON.parse(localStorage.getItem(OMNI_ASSIGNMENTS_KEY) || '{}') || {}; } catch { omniAssignments = {}; }
+    renderOmniAssignments(Math.max(1, Math.min(8, Number(profileCount.value) || 1)));
     renderProfiles(Math.max(1, Math.min(8, Number(profileCount.value) || 1)), lastSiteLabel);
     updateSitePreview();
     showNotice('');

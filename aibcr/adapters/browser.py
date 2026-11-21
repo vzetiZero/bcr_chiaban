@@ -403,6 +403,8 @@ class BrowserSession:
         # nhưng vẫn phát hiện được người dùng tự đóng cửa sổ Chrome.
         self._alive_checked_at = 0.0
         self._alive_ok = False
+        self.external_browser = False
+        self._external_service = None
 
     @property
     def connected(self):
@@ -461,6 +463,13 @@ class BrowserSession:
             self.wm_open_key = ""
             self.driver = None
             self.cdp_attached = False
+            if self._external_service:
+                try:
+                    self._external_service.stop()
+                except Exception:
+                    pass
+            self._external_service = None
+            self.external_browser = False
             self.mode = ""
             self._selected_handle = None
             self._reader = None
@@ -551,6 +560,59 @@ class BrowserSession:
                     "Không gắn được Chrome CDP 9222 (%s)." % type(exc).__name__
                 self.last_error = self.note
                 self.connection_state = "error"
+                return False
+
+    def attach_external(self, port):
+        """Attach Selenium to an externally managed Chrome profile."""
+        with self.lock:
+            if self.driver is not None and self.external_browser and self.alive():
+                return True
+            self.stop()
+            global CDP_PORT
+            service = None
+            try:
+                port = int(port)
+                if not 1 <= port <= 65535:
+                    raise ValueError("invalid_cdp_port")
+                CDP_PORT = port
+                from selenium import webdriver
+                from selenium.webdriver.chrome.options import Options
+                from selenium.webdriver.chrome.service import Service
+
+                opts = Options()
+                opts.debugger_address = "127.0.0.1:%d" % port
+                kind, _why = driver_for()
+                service = Service(DRIVER_PATH) if kind == "local" else Service()
+                driver = webdriver.Chrome(service=service, options=opts)
+                driver.set_page_load_timeout(PAGE_LOAD_TIMEOUT)
+                driver.set_script_timeout(SCRIPT_TIMEOUT)
+                driver.implicitly_wait(0)
+                self.driver = driver
+                self._external_service = service
+                self.external_browser = True
+                self._selected_handle = driver.current_window_handle
+                version = driver.capabilities.get("browserVersion") or "Chrome"
+                self._driver_info = "%s \u00b7 OmniLogin CDP %d" % (version, port)
+                self.mode = "omnilogin"
+                self.note = "\u0110\u00e3 g\u1eafn Chrome profile OmniLogin; profile do OmniLogin qu\u1ea3n l\u00fd."
+                self.connection_state = "waiting"
+                self._alive_checked_at = 0.0
+                self._alive_ok = True
+                return True
+            except Exception as exc:
+                if service:
+                    try:
+                        service.stop()
+                    except Exception:
+                        pass
+                self._external_service = None
+                self.external_browser = False
+                self.driver = None
+                self.mode = ""
+                self.last_error = "Kh\u00f4ng g\u1eafn \u0111\u01b0\u1ee3c OmniLogin CDP (%s)." % type(exc).__name__
+                self.note = self.last_error
+                self.connection_state = "error"
+                self._alive_ok = False
                 return False
 
     def navigate(self, url):
@@ -801,6 +863,24 @@ class BrowserSession:
                 self.last_error = ""
                 self.connection_state = "closed"
                 self.note = "Đã ngắt CDP; Chrome và phiên đăng nhập vẫn được giữ nguyên."
+                return self.note
+            if self.external_browser:
+                self.driver = None
+                service, self._external_service = self._external_service, None
+                self.external_browser = False
+                self.mode = ""
+                self._selected_handle = None
+                self._driver_info = "Đã ngắt ChromeDriver khỏi profile OmniLogin."
+                self.last_frames = 0
+                self.last_diag = {}
+                self.last_error = ""
+                self.connection_state = "closed"
+                if service:
+                    try:
+                        service.stop()
+                    except Exception as exc:
+                        self.last_error = "Không dừng được tiến trình ChromeDriver (%s)." % type(exc).__name__
+                self.note = "Đã ngắt điều khiển; profile OmniLogin vẫn được giữ nguyên."
                 return self.note
             driver, self.driver = self.driver, None
             self.mode = ""

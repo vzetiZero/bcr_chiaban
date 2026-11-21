@@ -630,12 +630,46 @@ class BaccaratController:
         self._push_state()
         return {"ok": True, "note": "Đang mở Chrome…"}
 
+    def chrome_attach_omni(self, params):
+        """Gắn WebDriver vào Chrome do OmniLogin mở; không sở hữu tiến trình Chrome."""
+        params = params or {}
+        try:
+            port = int(params.get("port"))
+            if not 1 <= port <= 65535:
+                raise ValueError
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "Cổng CDP OmniLogin không hợp lệ."}
+        BR.CDP_PORT = port
+        if not self.browser.attach_external(port):
+            return {"ok": False, "error": self.browser.last_error or "Không gắn được profile OmniLogin."}
+        window = self._window()
+        pos = self._window_pos(window)
+        width = min(3840, max(520, _as_int(params.get("width"), window["width"])))
+        height = min(2160, max(200, _as_int(params.get("height"), window["height"])))
+        self.browser.resize_window({"width": width, "height": height,
+                                    "percent": window.get("percent", 60), "fullscreen": False}, pos=pos)
+        self.connection_text = "Đã kết nối profile OmniLogin · CDP %d." % port
+        self._push_state()
+        return {"ok": True, "note": self.connection_text,
+                "width": width, "height": height, "cdp_port": port}
+
     def site_open(self, params):
         url = str((params or {}).get("url") or "").strip()
         if not BR.valid_site_url(url):
             return {"ok": False, "error": "URL site không hợp lệ; chỉ hỗ trợ HTTPS công khai."}
         self.config["start_url"] = url
         self._save_state()
+        if getattr(self.browser, "external_browser", False) and self.browser.driver is not None:
+            try:
+                with self.browser.lock:
+                    self.browser.driver.get(url)
+                window = self._window()
+                self.browser.resize_window(window, pos=self._window_pos(window))
+                self.connection_text = "Đã mở website trong profile OmniLogin."
+                self._push_state()
+                return {"ok": True, "note": self.connection_text}
+            except Exception as exc:
+                return {"ok": False, "error": "Không mở được website trong profile OmniLogin (%s)." % type(exc).__name__}
         if self.browser.connected:
             ok, note = self.browser.navigate(url)
             if not ok:
@@ -649,6 +683,14 @@ class BaccaratController:
     def profile_configure(self, params):
         """Apply ephemeral proxy and per-profile window settings before launching Chrome."""
         params = params or {}
+        if params.get("cdp_port") is not None:
+            try:
+                cdp_port = int(params.get("cdp_port"))
+                if not 1 <= cdp_port <= 65535:
+                    raise ValueError
+                BR.CDP_PORT = cdp_port
+            except (TypeError, ValueError):
+                return {"ok": False, "error": "Cổng CDP profile không hợp lệ."}
         if params.get("close"):
             self.tool_running = False
             try:
@@ -2656,6 +2698,7 @@ class BaccaratController:
             "ping": lambda p: {"ok": True, "pong": True, "game": "baccarat"},
             "state": lambda p: self.snapshot(),
             "chrome.open": lambda p: self.chrome_open(),
+            "chrome.attachOmni": self.chrome_attach_omni,
             "site.open": self.site_open,
             "profile.configure": self.profile_configure,
             "febet.openDG": self.febet_open_dg,

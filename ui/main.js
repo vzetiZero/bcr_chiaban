@@ -93,6 +93,93 @@ function proxyStorePath() {
   return path.join(app.getPath('userData'), 'proxy-vault.json');
 }
 
+function normalizeOmniApiUrl(value) {
+  const url = new URL(String(value || 'http://127.0.0.1:35353').trim());
+  if (url.protocol !== 'http:' || !['127.0.0.1', 'localhost', '::1'].includes(url.hostname)
+      || url.username || url.password || url.pathname !== '/' || url.search || url.hash) {
+    throw new Error('OmniLogin API phải là địa chỉ HTTP cục bộ, ví dụ http://127.0.0.1:35353.');
+  }
+  return url.origin;
+}
+
+async function omniRequest(apiUrl, pathname, timeout = 5000) {
+  const base = normalizeOmniApiUrl(apiUrl);
+  const response = await fetch(`${base}${pathname}`, { signal: AbortSignal.timeout(timeout) });
+  const text = await response.text();
+  if (!response.ok) throw new Error(`OmniLogin API trả HTTP ${response.status}.`);
+  return text;
+}
+
+async function listOmniProfiles(apiUrl) {
+  let payload;
+  try { payload = JSON.parse(await omniRequest(apiUrl, '/profiles')); }
+  catch (error) { throw new Error(`Không đọc được danh sách profile OmniLogin: ${error.message || error}`); }
+  const docs = Array.isArray(payload) ? payload : payload && payload.docs;
+  if (!Array.isArray(docs)) throw new Error('OmniLogin API không trả về danh sách docs hợp lệ.');
+  return docs.map((doc) => ({ id: String(doc.id ?? '').trim(),
+    name: String(doc.name || `Profile ${doc.id ?? ''}`).trim() }))
+    .filter((doc) => doc.id && doc.id.length <= 128);
+}
+
+function omniDebugPort(profileId) {
+  const value = String(profileId);
+  const numericId = Number(value);
+  const stable = Number.isSafeInteger(Math.abs(numericId))
+    ? Math.abs(numericId)
+    : [...value].reduce((hash, char) => ((hash * 31) + char.charCodeAt(0)) % 500, 1);
+  return 9230 + (stable % 500);
+}
+
+async function waitForOmniDebugPort(port, timeout = 20000) {
+  const deadline = Date.now() + timeout;
+  while (Date.now() < deadline) {
+    try {
+      const raw = await omniRequest(`http://127.0.0.1:${port}`, '/json/version', 1000);
+      const version = JSON.parse(raw);
+      if (typeof version.Browser === 'string' && version.Browser.includes('Chrome')) return true;
+    } catch { /* profile browser is still starting */ }
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+  return false;
+}
+
+async function openOmniProfile(apiUrl, profileId) {
+  const base = normalizeOmniApiUrl(apiUrl);
+  const wantedPort = omniDebugPort(profileId);
+  let port = wantedPort;
+  let isActive = false;
+  try { isActive = String(await omniRequest(base, `/active/${encodeURIComponent(profileId)}`, 1500)).trim().toLowerCase() === 'true'; }
+  catch { /* Older OmniLogin builds may not expose /active; use /open below. */ }
+  if (!(isActive && await waitForOmniDebugPort(port, 1000))) {
+    const query = new URLSearchParams({ profile_id: String(profileId), remote_debug_port: String(wantedPort) });
+    let response;
+    try { response = JSON.parse(await omniRequest(base, `/open?${query}`, 15000)); }
+    catch (error) { throw new Error(`Không mở được profile OmniLogin ${profileId}: ${error.message || error}`); }
+    if (response.success === false || response.ok === false) {
+      throw new Error(String(response.error || response.message || `OmniLogin từ chối mở profile ${profileId}.`));
+    }
+    const address = response.remote_debug_address || response.data?.remote_debug_address || '';
+    const socket = response.web_socket_debugger_url || response.data?.web_socket_debugger_url || '';
+    const addressPort = String(address).match(/:(\d+)$/);
+    const socketPort = String(socket).match(/:(\d+)\//);
+    port = Number((addressPort && addressPort[1]) || (socketPort && socketPort[1]) || wantedPort);
+  }
+  if (!(await waitForOmniDebugPort(port, 20000))) {
+    throw new Error(`Profile OmniLogin ${profileId} chưa mở cổng CDP ${port} sau 20 giây.`);
+  }
+  return { profileId: String(profileId), port, apiUrl: base };
+}
+
+async function stopOmniProfile(profile) {
+  if (!profile) return;
+  const id = encodeURIComponent(String(profile.profileId));
+  try { await omniRequest(profile.apiUrl, `/stop/${id}`, 5000); }
+  catch (error) {
+    // Keep the local ChromeDriver detached even if the manager is already stopped.
+    console.warn(`Không xác nhận được lệnh đóng OmniLogin ${id}: ${error.message || error}`);
+  }
+}
+
 async function loadProxyStore() {
   try {
     const value = JSON.parse(await fs.promises.readFile(proxyStorePath(), 'utf8'));
@@ -136,10 +223,11 @@ function proxyForProfile(row, store) {
 let mainWindow = null;
 
 class Engine {
-  constructor(game, profileIndex = 1, layout = null) {
+  constructor(game, profileIndex = 1, layout = null, cdpPort = null) {
     this.game = game;
     this.profileIndex = profileIndex;
     this.layout = layout;
+    this.cdpPort = cdpPort || 9222 + profileIndex - 1;
     this.child = null;
     this.buffer = '';
     this.nextId = 1;
@@ -205,7 +293,7 @@ class Engine {
     this.stderrTail = '';
     this.buffer = '';
     const args = ['-m', 'aibcr.service.engine', '--game', 'baccarat',
-      '--cdp-port', String(9222 + this.profileIndex - 1),
+      '--cdp-port', String(this.cdpPort),
       '--profile-dir', this.profileIndex === 1 ? 'chrome_profile' : `chrome_profile_${this.profileIndex}`,
       '--state', this.profileIndex === 1 ? 'aibcr_state_baccarat.json' : `aibcr_state_baccarat_${this.profileIndex}.json`];
     if (this.layout) args.push('--window-position', String(this.layout.left), String(this.layout.top),
@@ -362,6 +450,7 @@ class Engine {
 const engines = { baccarat: new Engine('baccarat', 1) };
 const activeProxyBridges = new Map();
 const activeProfileIndices = new Set();
+const activeOmniProfiles = new Map();
 let sharedHop = null;
 let groupBetting = null;
 let groupBetTimer = null;
@@ -625,6 +714,15 @@ function profileEngine(index) {
   return engines[index === 1 ? 'baccarat' : `baccarat-profile-${index}`];
 }
 
+function ensureProfileEngine(index, layout = null, cdpPort = null) {
+  const game = index === 1 ? 'baccarat' : `baccarat-profile-${index}`;
+  if (!engines[game]) engines[game] = new Engine(game, index, layout, cdpPort);
+  const engine = engines[game];
+  engine.layout = layout || engine.layout;
+  engine.cdpPort = cdpPort || 9222 + index - 1;
+  return engine;
+}
+
 function proxyServerUrl(proxy) {
   if (!proxy) return '';
   const host = proxy.host.includes(':') ? `[${proxy.host}]` : proxy.host;
@@ -648,11 +746,12 @@ function profileLayout(index, count, width, height, area) {
   };
 }
 
-ipcMain.handle('profile:open', async (_event, { index, count, profile, url }) => {
+ipcMain.handle('profile:open', async (_event, { index, count, profile, url, source = 'local', omniApiUrl }) => {
   const profileIndex = Math.trunc(Number(index));
   if (!Number.isInteger(profileIndex) || profileIndex < 1 || profileIndex > 8) {
     return { ok: false, error: 'Profile không hợp lệ.' };
   }
+  if (!['local', 'omni'].includes(source)) return { ok: false, error: 'Nguồn profile không hợp lệ.' };
   if (!PROFILE_SITES.some((site) => site.url === url)) {
     return { ok: false, error: 'Hãy chọn một website hợp lệ trước khi mở profile.' };
   }
@@ -662,9 +761,34 @@ ipcMain.handle('profile:open', async (_event, { index, count, profile, url }) =>
   const scale = Math.max(50, Math.min(200, Math.round(Number(row.scale) || 60)));
   let proxy;
   let newBridge = null;
+  let omni = null;
   try {
     const proxyStore = await loadProxyStore();
-    proxy = proxyForProfile({ ...row, proxyId: row.proxyId || proxyStore.assignments[String(profileIndex)] }, proxyStore);
+    if (source === 'omni') {
+      const profileId = String(row.omniProfileId || '').trim();
+      if (!profileId) return { ok: false, error: `Chưa gán profile OmniLogin cho Profile ${profileIndex}.` };
+      if (row.proxyId || row.proxy || proxyStore.assignments[String(profileIndex)]) {
+        return { ok: false, error: 'Proxy của profile OmniLogin cần được cấu hình trong OmniLogin.' };
+      }
+      const apiUrl = normalizeOmniApiUrl(omniApiUrl);
+      const available = await listOmniProfiles(apiUrl);
+      if (!available.some((item) => item.id === profileId)) {
+        return { ok: false, error: `Không tìm thấy profile OmniLogin ${profileId} trong danh sách hiện tại.` };
+      }
+      const port = omniDebugPort(profileId);
+      for (const [otherIndex, other] of activeOmniProfiles) {
+        if (otherIndex !== profileIndex && (other.profileId === profileId || omniDebugPort(other.profileId) === port)) {
+          return { ok: false, error: 'Profile OmniLogin này đang được gán cho một cửa sổ khác.' };
+        }
+      }
+      const oldOmni = activeOmniProfiles.get(profileIndex);
+      if (oldOmni && oldOmni.profileId !== profileId) await stopOmniProfile(oldOmni);
+      omni = await openOmniProfile(apiUrl, profileId);
+    } else {
+      const oldOmni = activeOmniProfiles.get(profileIndex);
+      if (oldOmni) await stopOmniProfile(oldOmni);
+      proxy = proxyForProfile({ ...row, proxyId: row.proxyId || proxyStore.assignments[String(profileIndex)] }, proxyStore);
+    }
     let proxyServer = proxyServerUrl(proxy);
     if (proxy && proxy.username) {
       newBridge = await startProxyBridge(proxy);
@@ -673,29 +797,42 @@ ipcMain.handle('profile:open', async (_event, { index, count, profile, url }) =>
     const { screen } = require('electron');
     const layout = profileLayout(profileIndex, Math.max(1, Math.min(8, Number(count) || profileIndex)),
       width, height, screen.getPrimaryDisplay().workAreaSize);
-    const game = profileIndex === 1 ? 'baccarat' : `baccarat-profile-${profileIndex}`;
-    if (!engines[game]) engines[game] = new Engine(game, profileIndex, layout);
-    const engine = engines[game];
-    engine.layout = layout;
+    const engine = ensureProfileEngine(profileIndex, layout, omni ? omni.port : null);
     const configured = await engine.call('profile.configure', {
       url, proxy_server: proxyServer, width, height, scale, left: layout.left, top: layout.top,
+      cdp_port: engine.cdpPort,
     });
     if (!configured || !configured.ok) {
       if (newBridge) await newBridge.close().catch(() => {});
+      if (omni) await stopOmniProfile(omni);
       return { ok: false, error: (configured && configured.error) || 'Không áp dụng được cấu hình profile.' };
     }
     await closeProfileBridge(profileIndex);
-    const opened = await engine.call('chrome.open');
+    const opened = omni
+      ? await engine.call('chrome.attachOmni', { port: omni.port, width, height }, 45000)
+      : await engine.call('chrome.open');
     if (!opened || !opened.ok) {
       if (newBridge) await newBridge.close().catch(() => {});
+      if (omni) await stopOmniProfile(omni);
       activeProfileIndices.delete(profileIndex);
       return { ok: false, error: (opened && opened.error) || 'Không mở được Chrome.' };
     }
+    if (omni) {
+      const navigated = await engine.call('site.open', { url }, 45000);
+      if (!navigated || !navigated.ok) {
+        await stopOmniProfile(omni);
+        return { ok: false, error: navigated?.error || 'Không mở được website trong profile.' };
+      }
+    }
+    if (omni) activeOmniProfiles.set(profileIndex, omni);
+    else activeOmniProfiles.delete(profileIndex);
     if (newBridge) activeProxyBridges.set(profileIndex, newBridge);
     activeProfileIndices.add(profileIndex);
-    return { ok: true, note: 'Đang mở Chrome profile.', proxy: proxyLabel(proxy), width, height, scale };
+    return { ok: true, note: omni ? `Đã mở profile OmniLogin ${omni.profileId}.` : 'Đang mở Chrome profile.',
+      proxy: omni ? 'Proxy theo cấu hình OmniLogin' : proxyLabel(proxy), width, height, scale };
   } catch (error) {
     if (newBridge) await newBridge.close().catch(() => {});
+    if (omni) await stopOmniProfile(omni);
     return { ok: false, error: error.message || 'Không mở được Chrome profile.' };
   }
 });
@@ -888,6 +1025,9 @@ ipcMain.handle('profile:close', async (_event, { index }) => {
     if (!reply || !reply.ok) return reply || { ok: false, error: 'Không đóng được profile.' };
     activeProfileIndices.delete(profileIndex);
     await closeProfileBridge(profileIndex);
+    const omni = activeOmniProfiles.get(profileIndex);
+    activeOmniProfiles.delete(profileIndex);
+    if (omni) await stopOmniProfile(omni);
     return reply;
   } catch (error) {
     return { ok: false, error: error.message || 'Không đóng được profile.' };
@@ -941,12 +1081,41 @@ ipcMain.handle('engine:call', async (_event, { game, method, params }) => {
   }
 });
 
-ipcMain.handle('profiles:open', async (_event, { count, siteId, profiles }) => {
+ipcMain.handle('profiles:open', async (_event, { count, siteId, profiles, source = 'local', omniApiUrl }) => {
   const total = Math.max(1, Math.min(8, Math.trunc(Number(count) || 1)));
   const site = PROFILE_SITES.find((item) => item.id === siteId);
   if (!site) return { ok: false, error: 'Hãy chọn một site trong danh sách.' };
+  if (!['local', 'omni'].includes(source)) return { ok: false, error: 'Nguồn profile không hợp lệ.' };
   const requested = Array.isArray(profiles) ? profiles : [];
   const proxyStore = await loadProxyStore();
+  let apiUrl = '';
+  let omniRows = [];
+  if (source === 'omni') {
+    try {
+      apiUrl = normalizeOmniApiUrl(omniApiUrl);
+      omniRows = Array.from({ length: total }, (_, i) => String(requested[i]?.omniProfileId || '').trim());
+      if (omniRows.some((id) => !id)) {
+        return { ok: false, error: 'Hãy gán một profile OmniLogin riêng cho từng profile trước khi chạy.' };
+      }
+      if (new Set(omniRows).size !== omniRows.length) {
+        return { ok: false, error: 'Không thể gán trùng một profile OmniLogin cho nhiều cửa sổ.' };
+      }
+      const ports = omniRows.map(omniDebugPort);
+      if (new Set(ports).size !== ports.length) {
+        return { ok: false, error: 'Hai profile OmniLogin nhận cùng cổng CDP dự phòng; chọn profile khác để tránh gắn nhầm Chrome.' };
+      }
+      if (requested.slice(0, total).some((row, index) => row?.proxyId || row?.proxy
+          || proxyStore.assignments[String(index + 1)])) {
+        return { ok: false, error: 'Proxy của profile OmniLogin cần được cấu hình trong OmniLogin; bỏ proxy gán từ tab Proxy của ứng dụng trước khi chạy.' };
+      }
+      const available = await listOmniProfiles(apiUrl);
+      if (omniRows.some((id) => !available.some((item) => item.id === id))) {
+        return { ok: false, error: 'Có profile OmniLogin được gán nhưng không còn trong danh sách API.' };
+      }
+    } catch (error) {
+      return { ok: false, error: error.message || 'Không kết nối được OmniLogin.' };
+    }
+  }
   const settings = [];
   const newBridges = [];
   try {
@@ -955,7 +1124,8 @@ ipcMain.handle('profiles:open', async (_event, { count, siteId, profiles }) => {
       const width = Math.max(520, Math.min(3840, Math.round(Number(row.width) || 900)));
       const height = Math.max(200, Math.min(2160, Math.round(Number(row.height) || 1200)));
       const scale = Math.max(50, Math.min(200, Math.round(Number(row.scale) || 60)));
-      const proxy = proxyForProfile({ ...row, proxyId: row.proxyId || proxyStore.assignments[String(index + 1)] }, proxyStore);
+      const proxy = source === 'omni' ? null
+        : proxyForProfile({ ...row, proxyId: row.proxyId || proxyStore.assignments[String(index + 1)] }, proxyStore);
       let proxyServer = proxyServerUrl(proxy);
       if (proxy && proxy.username) {
         const bridge = await startProxyBridge(proxy);
@@ -1002,6 +1172,9 @@ ipcMain.handle('profiles:open', async (_event, { count, siteId, profiles }) => {
       const engine = profileEngine(index);
       if (engine) await engine.call('profile.configure', { close: true });
       await closeProfileBridge(index);
+      const omni = activeOmniProfiles.get(index);
+      activeOmniProfiles.delete(index);
+      if (omni) await stopOmniProfile(omni);
       activeProfileIndices.delete(index);
     }));
     if (closeResults.some((item) => item.status === 'rejected')) {
@@ -1010,12 +1183,19 @@ ipcMain.handle('profiles:open', async (_event, { count, siteId, profiles }) => {
     }
   }
 
-  const started = [];
-  for (let i = 1; i <= total; i += 1) {
-    const game = i === 1 ? 'baccarat' : `baccarat-profile-${i}`;
-    if (!engines[game]) engines[game] = new Engine(game, i, layouts[i - 1]);
-    engines[game].layout = layouts[i - 1];
-    started.push(engines[game]);
+  const started = Array.from({ length: total }, (_, offset) => ensureProfileEngine(
+    offset + 1, layouts[offset], source === 'omni' ? omniDebugPort(omniRows[offset]) : null));
+
+  for (let index = 1; index <= total; index += 1) {
+    const previousOmni = activeOmniProfiles.get(index);
+    const keep = source === 'omni' && previousOmni
+      && previousOmni.profileId === omniRows[index - 1] && previousOmni.apiUrl === apiUrl;
+    if (previousOmni && !keep) {
+      await profileEngine(index).call('profile.configure', { close: true }).catch(() => {});
+      await stopOmniProfile(previousOmni);
+      activeOmniProfiles.delete(index);
+      activeProfileIndices.delete(index);
+    }
   }
 
   const configured = await Promise.allSettled(started.map((engine, index) => engine.call('profile.configure', {
@@ -1026,41 +1206,77 @@ ipcMain.handle('profiles:open', async (_event, { count, siteId, profiles }) => {
     scale: layouts[index].scale,
     left: layouts[index].left,
     top: layouts[index].top,
+    cdp_port: engine.cdpPort,
   })));
-  const openResults = await Promise.allSettled(started.map((engine, index) => {
+  const openResults = await Promise.allSettled(started.map(async (engine, index) => {
     const result = configured[index];
-    if (result.status !== 'fulfilled' || !result.value.ok) {
-      return Promise.resolve({ ok: false,
-        error: result.status === 'rejected' ? result.reason.message : result.value.error,
-        proxy: settings[index].proxyLabel });
+    if (result.status !== 'fulfilled' || !result.value.ok) return { ok: false,
+      error: result.status === 'rejected' ? result.reason.message : result.value.error,
+      proxy: settings[index].proxyLabel };
+    if (source === 'omni') {
+      const previousOmni = activeOmniProfiles.get(index + 1);
+      if (previousOmni && previousOmni.profileId !== omniRows[index]) {
+        await stopOmniProfile(previousOmni);
+        activeOmniProfiles.delete(index + 1);
+      }
+      const omni = await openOmniProfile(apiUrl, omniRows[index]);
+      activeOmniProfiles.set(index + 1, omni);
+      const attached = await engine.call('chrome.attachOmni', {
+        port: omni.port, width: settings[index].width, height: settings[index].height,
+      }, 45000);
+      if (!attached?.ok) {
+        await stopOmniProfile(omni);
+        activeOmniProfiles.delete(index + 1);
+        return { ok: false, error: attached?.error || 'Không gắn được Chrome profile OmniLogin.' };
+      }
+    } else {
+      const previousOmni = activeOmniProfiles.get(index + 1);
+      if (previousOmni) {
+        await stopOmniProfile(previousOmni);
+        activeOmniProfiles.delete(index + 1);
+      }
     }
-    return engine.call('site.open', { url: site.url }).then((reply) => ({
-      ...reply, proxy: settings[index].proxyLabel, width: settings[index].width,
-      height: settings[index].height, scale: settings[index].scale,
-    }));
+    const reply = await engine.call('site.open', { url: site.url }, 45000);
+    if ((!reply || !reply.ok) && source === 'omni') {
+      const activeOmni = activeOmniProfiles.get(index + 1);
+      activeOmniProfiles.delete(index + 1);
+      if (activeOmni) await stopOmniProfile(activeOmni);
+    }
+    return { ...reply, proxy: source === 'omni' ? 'Proxy theo cấu hình OmniLogin' : settings[index].proxyLabel,
+      width: settings[index].width, height: settings[index].height, scale: settings[index].scale,
+      ...(source === 'omni' ? { omni_profile_id: omniRows[index] } : {}) };
   }));
 
   for (let index = 1; index <= total; index += 1) {
     const result = configured[index - 1];
     const setting = settings[index - 1];
-    if (result.status === 'fulfilled' && result.value.ok) {
+    const openResult = openResults[index - 1];
+    if (result.status === 'fulfilled' && result.value.ok
+        && openResult.status === 'fulfilled' && openResult.value?.ok) {
       await closeProfileBridge(index);
       if (setting.bridge) activeProxyBridges.set(index, setting.bridge);
       activeProfileIndices.add(index);
     } else if (setting.bridge) {
       await setting.bridge.close().catch(() => {});
       activeProfileIndices.delete(index);
+    } else {
+      activeProfileIndices.delete(index);
     }
   }
   const replies = openResults.map((result, index) => result.status === 'fulfilled'
     ? result.value : { ok: false, error: result.reason.message, proxy: settings[index].proxyLabel });
-  return { ok: true, count: total, site: site.label, replies };
+  return { ok: true, count: total, site: site.label, source, replies };
 });
 
 ipcMain.handle('profiles:close', async () => {
   const indices = Array.from(activeProfileIndices);
   const targets = indices.map((index) => ({ index, engine: profileEngine(index) })).filter((item) => item.engine);
   const replies = await Promise.allSettled(targets.map(({ engine }) => engine.call('profile.configure', { close: true })));
+  await Promise.all(indices.map(async (index) => {
+    const omni = activeOmniProfiles.get(index);
+    activeOmniProfiles.delete(index);
+    if (omni) await stopOmniProfile(omni);
+  }));
   await Promise.all(Array.from(activeProxyBridges.keys(), (index) => closeProfileBridge(index)));
   activeProfileIndices.clear();
   return { ok: true, count: targets.length, replies: replies.map((result) => result.status === 'fulfilled'
@@ -1144,6 +1360,16 @@ ipcMain.handle('proxy:check', async () => {
   return { ok: true, items, assignments: store.assignments,
     live: items.filter((item) => item.status === 'live').length,
     dead: items.filter((item) => item.status === 'dead').length };
+});
+
+ipcMain.handle('omni:profiles', async (_event, { apiUrl }) => {
+  try {
+    const normalized = normalizeOmniApiUrl(apiUrl);
+    const profiles = await listOmniProfiles(normalized);
+    return { ok: true, apiUrl: normalized, profiles };
+  } catch (error) {
+    return { ok: false, error: error.message || 'Không kết nối được OmniLogin API.' };
+  }
 });
 
 ipcMain.handle('app:info', () => ({
