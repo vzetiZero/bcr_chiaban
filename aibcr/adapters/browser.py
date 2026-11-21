@@ -571,8 +571,29 @@ class BrowserSession:
                 self.connection_state = "error"
                 return False
 
+    def _cdp_browser_version(self, port):
+        """Major Chrome version of an external CDP endpoint, or "" on failure."""
+        try:
+            with urlopen("http://127.0.0.1:%d/json/version" % port, timeout=3) as response:
+                browser = (json.load(response).get("Browser") or "")
+        except Exception:
+            return ""
+        parts = str(browser).split("/")
+        if len(parts) < 2:
+            return ""
+        major = parts[-1].split(".")[0]
+        return major if major.isdigit() else ""
+
     def attach_external(self, port):
-        """Attach Selenium to an externally managed Chrome profile."""
+        """Attach Selenium to an externally managed Chrome profile.
+
+        Selenium Manager picks a chromedriver for the *installed* Chrome, but a
+        manager like OmniLogin ships its own older build (observed: OmniLogin
+        Chrome 157 on a machine with Chrome 158). The version mismatch raises
+        SessionNotCreatedException, so the browser's real major version is read
+        from CDP and passed as the ``browserVersion`` capability so the matching
+        driver is resolved instead of the installed one's.
+        """
         with self.lock:
             if self.driver is not None and self.external_browser and self.alive():
                 return True
@@ -590,6 +611,9 @@ class BrowserSession:
 
                 opts = Options()
                 opts.debugger_address = "127.0.0.1:%d" % port
+                major = self._cdp_browser_version(port)
+                if major:
+                    opts.browser_version = major
                 kind, _why = driver_for()
                 service = Service(DRIVER_PATH) if kind == "local" else Service()
                 driver = webdriver.Chrome(service=service, options=opts)
