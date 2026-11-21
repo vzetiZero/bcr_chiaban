@@ -653,6 +653,20 @@ class BaccaratController:
         return {"ok": True, "note": self.connection_text,
                 "width": width, "height": height, "cdp_port": port}
 
+    def chrome_attach_external(self, params):
+        params = dict(params or {})
+        provider = str(params.get("provider") or "external").strip().title()
+        result = self.chrome_attach_omni(params)
+        if result.get("ok"):
+            self.browser.mode = provider.lower()
+            self.browser._driver_info = "%s · %s CDP %s" % (
+                self.browser._driver_info.split(" · ", 1)[0], provider, result.get("cdp_port"))
+            self.browser.note = "Đã gắn Chrome profile %s; profile do %s quản lý." % (provider, provider)
+            self.connection_text = "Đã kết nối profile %s · CDP %s." % (provider, result.get("cdp_port"))
+            result["note"] = self.connection_text
+            self._push_state()
+        return result
+
     def site_open(self, params):
         url = str((params or {}).get("url") or "").strip()
         if not BR.valid_site_url(url):
@@ -2709,6 +2723,7 @@ class BaccaratController:
             "state": lambda p: self.snapshot(),
             "chrome.open": lambda p: self.chrome_open(),
             "chrome.attachOmni": self.chrome_attach_omni,
+            "chrome.attachExternal": self.chrome_attach_external,
             "site.open": self.site_open,
             "profile.configure": self.profile_configure,
             "febet.openDG": self.febet_open_dg,

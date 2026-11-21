@@ -10,6 +10,8 @@ let proxyItems = [];
 let proxyAssignments = {};
 let omniProfiles = [];
 let omniAssignments = {};
+let hidemiumProfiles = [];
+let hidemiumAssignments = {};
 let profileSites = [];
 let profileSiteSelections = {};
 let lastSiteLabel = 'Chưa chạy';
@@ -98,7 +100,7 @@ function updateSitePreview() {
   runButton.disabled = profileSites.length === 0;
   $('#run-site-stat').textContent = 'Ch\u1ecdn ri\u00eang t\u1eebng profile';
   $('#run-mode-title').textContent = '\u0110\u1ed3ng b\u1ed9 b\u00e0n DG v\u00e0 v\u1eadn h\u00e0nh nh\u00f3m';
-  $('#run-mode-badge').textContent = source === 'omni' ? 'OMNILOGIN' : 'DG GROUP';
+  $('#run-mode-badge').textContent = source === 'omni' ? 'OMNILOGIN' : source === 'hidemium' ? 'HIDEMIUM' : 'DG GROUP';
 }
 
 function populateProxySelect(select, selectedId = '') {
@@ -163,12 +165,15 @@ function collectSettings(count) {
     ...shared,
     proxyId: proxyAssignments[String(offset + 1)] || '',
     omniProfileId: omniAssignments[String(offset + 1)] || '',
+    hidemiumProfileId: hidemiumAssignments[String(offset + 1)] || '',
   }));
 }
 
 
 const OMNI_API_KEY = 'aibcr.omniApiUrl';
 const OMNI_ASSIGNMENTS_KEY = 'aibcr.omniAssignments';
+const HIDEMIUM_API_KEY = 'aibcr.hidemiumApiUrl';
+const HIDEMIUM_ASSIGNMENTS_KEY = 'aibcr.hidemiumAssignments';
 const PROFILE_SOURCE_KEY = 'aibcr.profileSource';
 
 function renderOmniAssignments(count) {
@@ -228,6 +233,64 @@ $('#omni-profile-assignments').addEventListener('change', (event) => {
   else delete omniAssignments[select.dataset.profile];
   localStorage.setItem(OMNI_ASSIGNMENTS_KEY, JSON.stringify(omniAssignments));
   $('#omni-notice').textContent = `\u0110\u00e3 l\u01b0u g\u00e1n cho Profile ${select.dataset.profile}.`;
+});
+
+function renderHidemiumAssignments(count) {
+  const list = $('#hidemium-profile-assignments');
+  list.replaceChildren();
+  for (let index = 1; index <= count; index += 1) {
+    const row = document.createElement('label');
+    row.className = 'omni-assignment-row';
+    row.innerHTML = '<span></span><select></select>';
+    row.querySelector('span').textContent = `Profile ${index}`;
+    const select = row.querySelector('select');
+    select.dataset.profile = String(index);
+    const empty = document.createElement('option');
+    empty.value = '';
+    empty.textContent = hidemiumProfiles.length ? 'Chọn profile Hidemium' : 'Kết nối API để tải profiles';
+    select.append(empty);
+    for (const profile of hidemiumProfiles) {
+      const option = document.createElement('option');
+      option.value = profile.id;
+      option.textContent = `${profile.name} · ${profile.id}`;
+      select.append(option);
+    }
+    select.value = hidemiumAssignments[String(index)] || '';
+    list.append(row);
+  }
+}
+
+async function refreshHidemiumProfiles() {
+  const button = $('#hidemium-refresh');
+  button.disabled = true;
+  $('#hidemium-notice').textContent = 'Đang kết nối API Hidemium...';
+  try {
+    const result = await api.listHidemiumProfiles($('#hidemium-api-url').value.trim());
+    if (!result?.ok) throw new Error(result?.error || 'Không tải được profiles.');
+    hidemiumProfiles = result.profiles || [];
+    $('#hidemium-api-url').value = result.apiUrl;
+    localStorage.setItem(HIDEMIUM_API_KEY, result.apiUrl);
+    hidemiumAssignments = Object.fromEntries(Object.entries(hidemiumAssignments)
+      .filter(([, id]) => hidemiumProfiles.some((profile) => profile.id === id)));
+    localStorage.setItem(HIDEMIUM_ASSIGNMENTS_KEY, JSON.stringify(hidemiumAssignments));
+    renderHidemiumAssignments(Math.max(1, Math.min(8, Number(profileCount.value) || 1)));
+    $('#hidemium-notice').textContent = `Hidemium kết nối thành công · ${hidemiumProfiles.length} profiles.`;
+  } catch (error) {
+    $('#hidemium-notice').textContent = String(error.message || error);
+  } finally {
+    button.disabled = false;
+  }
+}
+
+$('#hidemium-refresh').addEventListener('click', refreshHidemiumProfiles);
+$('#hidemium-api-url').addEventListener('change', () => localStorage.setItem(HIDEMIUM_API_KEY, $('#hidemium-api-url').value.trim()));
+$('#hidemium-profile-assignments').addEventListener('change', (event) => {
+  const select = event.target.closest('select[data-profile]');
+  if (!select) return;
+  if (select.value) hidemiumAssignments[select.dataset.profile] = select.value;
+  else delete hidemiumAssignments[select.dataset.profile];
+  localStorage.setItem(HIDEMIUM_ASSIGNMENTS_KEY, JSON.stringify(hidemiumAssignments));
+  $('#hidemium-notice').textContent = `Đã lưu gán cho Profile ${select.dataset.profile}.`;
 });
 
 for (const input of Object.values(sharedWindowInputs)) {
@@ -310,6 +373,7 @@ $('#profile-count').addEventListener('change', () => {
   profileCount.value = String(value);
   renderProxyAssignments(value);
   renderOmniAssignments(value);
+  renderHidemiumAssignments(value);
   renderProfiles(value, lastSiteLabel);
 });
 
@@ -404,7 +468,7 @@ runButton.addEventListener('click', async () => {
       profileSiteSelections[String(offset + 1)] || profileSites[0]?.id || '');
     showNotice('\u0110ang m\u1edf c\u00e1c profile theo site \u0111\u00e3 ch\u1ecdn...');
     const opened = await api.openProfiles(count, siteIds[0], collectSettings(count),
-      $('#profile-source').value, $('#omni-api-url').value.trim(), siteIds);
+      $('#profile-source').value, $('#omni-api-url').value.trim(), siteIds, $('#hidemium-api-url').value.trim());
     if (!opened?.ok) {
       showNotice(opened?.error || 'Kh\u00f4ng m\u1edf \u0111\u01b0\u1ee3c c\u00e1c profile.', true);
       return;
@@ -476,7 +540,7 @@ profileList.addEventListener('click', async (event) => {
       ? await api.closeProfile(index)
       : await api.openProfile(index, Math.max(1, Math.min(8, Number(profileCount.value) || index)),
         collectSettings(Math.max(1, Math.min(8, Number(profileCount.value) || index)))[index - 1],
-        site?.url, $('#profile-source').value, $('#omni-api-url').value.trim());
+        site?.url, $('#profile-source').value, $('#omni-api-url').value.trim(), $('#hidemium-api-url').value.trim());
     if (!result || !result.ok) {
       updateProfile(index, 'error', result?.error || 'Kh\u00f4ng th\u1ef1c hi\u1ec7n \u0111\u01b0\u1ee3c thao t\u00e1c.');
       return;
@@ -626,10 +690,14 @@ api.onEngineEvent(({ game, event, data }) => {
     const betConfig = await api.getBetConfig();
     if (betConfig && betConfig.ok) fillBetConfig(betConfig.config || {});
     setProxyState(await api.listProxies());
-    $('#profile-source').value = localStorage.getItem(PROFILE_SOURCE_KEY) === 'omni' ? 'omni' : 'local';
+    const savedSource = localStorage.getItem(PROFILE_SOURCE_KEY);
+    $('#profile-source').value = ['omni', 'hidemium'].includes(savedSource) ? savedSource : 'local';
     $('#omni-api-url').value = localStorage.getItem(OMNI_API_KEY) || 'http://127.0.0.1:35353';
+    $('#hidemium-api-url').value = localStorage.getItem(HIDEMIUM_API_KEY) || 'http://127.0.0.1:5555';
     try { omniAssignments = JSON.parse(localStorage.getItem(OMNI_ASSIGNMENTS_KEY) || '{}') || {}; } catch { omniAssignments = {}; }
+    try { hidemiumAssignments = JSON.parse(localStorage.getItem(HIDEMIUM_ASSIGNMENTS_KEY) || '{}') || {}; } catch { hidemiumAssignments = {}; }
     renderOmniAssignments(Math.max(1, Math.min(8, Number(profileCount.value) || 1)));
+    renderHidemiumAssignments(Math.max(1, Math.min(8, Number(profileCount.value) || 1)));
     renderProfiles(Math.max(1, Math.min(8, Number(profileCount.value) || 1)), lastSiteLabel);
     updateSitePreview();
     showNotice('');

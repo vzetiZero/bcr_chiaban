@@ -51,6 +51,7 @@
           <select id="profile-source">
             <option value="local">Chrome riêng của ứng dụng</option>
             <option value="omni">OmniLogin</option>
+            <option value="hidemium">Hidemium</option>
           </select>
         </label>
       </div>
@@ -74,6 +75,14 @@
     </div>
 
     <div class="tab-panel" role="tabpanel" data-tab-panel="profiles">
+    <section class="profiles-section">
+      <div class="section-heading">
+        <div><div class="eyebrow">QUẢN LÝ</div><h2>Profiles</h2></div>
+        <span id="profile-total" class="total">0 profile</span>
+      </div>
+      <p class="notice">Ch&#7885;n site ri&#234;ng cho t&#7915;ng profile; n&#250;t M&#7903; s&#7869; m&#7903; URL site &#273;&#227; ch&#7885;n.</p>
+      <div id="profile-list" class="profile-list"></div>
+    </section>
     <section class="card omni-manager">
       <div class="section-heading">
         <div><div class="eyebrow">PROFILE PROVIDER</div><h2>Kết nối OmniLogin</h2></div>
@@ -88,6 +97,20 @@
       <div id="omni-notice" class="notice" role="status" aria-live="polite">Chọn OmniLogin ở màn Chạy Tool, sau đó gán một profile cho mỗi cửa sổ.</div>
       <div id="omni-profile-assignments" class="omni-profile-assignments"></div>
     </section>
+    <section class="card hidemium-manager">
+      <div class="section-heading">
+        <div><div class="eyebrow">PROFILE PROVIDER</div><h2>K&#7871;t n&#7889;i Hidemium</h2></div>
+        <span class="total">API c&#7909;c b&#7897; &#183; v2</span>
+      </div>
+      <div class="omni-config-row">
+        <label class="field" for="hidemium-api-url"><span>&#272;&#7883;a ch&#7881; API Hidemium</span>
+          <input id="hidemium-api-url" type="url" value="http://127.0.0.1:5555" spellcheck="false" />
+        </label>
+        <button id="hidemium-refresh" class="close-button" type="button">K&#7871;t n&#7889;i / t&#7843;i profiles</button>
+      </div>
+      <div id="hidemium-notice" class="notice" role="status" aria-live="polite">Ch&#7885;n Hidemium &#7903; m&#224;n Ch&#7841;y Tool, sau &#273;&#243; g&#225;n UUID profile cho t&#7915;ng c&#7917;a s&#7893;.</div>
+      <div id="hidemium-profile-assignments" class="omni-profile-assignments"></div>
+    </section>
     <section class="profiles-section settings-section">
       <div class="section-heading">
         <div><div class="eyebrow">CẤU HÌNH CHUNG</div><h2>Kích thước cửa sổ</h2></div>
@@ -98,14 +121,6 @@
         <label class="setting-field"><span>Cao (px)</span><input id="shared-window-height" type="number" min="200" max="2160" step="1" value="1200" /></label>
         <label class="setting-field"><span>Scale (%)</span><input id="shared-window-scale" type="number" min="50" max="200" step="1" value="60" /></label>
       </div>
-    </section>
-    <section class="profiles-section">
-      <div class="section-heading">
-        <div><div class="eyebrow">QUẢN LÝ</div><h2>Profiles</h2></div>
-        <span id="profile-total" class="total">0 profile</span>
-      </div>
-      <p class="notice">Ch&#7885;n site ri&#234;ng cho t&#7915;ng profile; n&#250;t M&#7903; s&#7869; m&#7903; URL site &#273;&#227; ch&#7885;n.</p>
-      <div id="profile-list" class="profile-list"></div>
     </section>
     </div>
 

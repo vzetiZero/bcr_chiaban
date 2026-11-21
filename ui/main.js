@@ -167,17 +167,63 @@ async function openOmniProfile(apiUrl, profileId) {
   if (!(await waitForOmniDebugPort(port, 20000))) {
     throw new Error(`Profile OmniLogin ${profileId} chưa mở cổng CDP ${port} sau 20 giây.`);
   }
-  return { profileId: String(profileId), port, apiUrl: base };
+  return { provider: 'omni', profileId: String(profileId), port, apiUrl: base };
 }
 
 async function stopOmniProfile(profile) {
   if (!profile) return;
   const id = encodeURIComponent(String(profile.profileId));
-  try { await omniRequest(profile.apiUrl, `/stop/${id}`, 5000); }
+  try {
+    if (profile.provider === 'hidemium') await hidemiumRequest(profile.apiUrl, `/closeProfile?uuid=${id}`, 10000);
+    else await omniRequest(profile.apiUrl, `/stop/${id}`, 5000);
+  }
   catch (error) {
     // Keep the local ChromeDriver detached even if the manager is already stopped.
     console.warn(`Không xác nhận được lệnh đóng OmniLogin ${id}: ${error.message || error}`);
   }
+}
+
+function normalizeHidemiumApiUrl(value) {
+  const url = new URL(String(value || 'http://127.0.0.1:5555').trim());
+  if (url.protocol !== 'http:' || !['127.0.0.1', 'localhost', '::1'].includes(url.hostname)
+      || url.username || url.password || url.pathname !== '/' || url.search || url.hash) {
+    throw new Error('Hidemium API phải là địa chỉ HTTP cục bộ, ví dụ http://127.0.0.1:5555.');
+  }
+  return url.origin;
+}
+
+async function hidemiumRequest(apiUrl, pathname, timeout = 10000, method = 'GET') {
+  const base = normalizeHidemiumApiUrl(apiUrl);
+  const response = await fetch(`${base}${pathname}`, { method, signal: AbortSignal.timeout(timeout) });
+  const text = await response.text();
+  if (!response.ok) throw new Error(`Hidemium API trả HTTP ${response.status}.`);
+  try { return JSON.parse(text); } catch { return text; }
+}
+
+async function listHidemiumProfiles(apiUrl) {
+  let payload = await hidemiumRequest(apiUrl, '/profileList?page=1&limit=1000');
+  let content = payload?.data?.content || payload?.content || payload?.data;
+  // The docs list POST as the method but show GET in their request example.
+  if (!Array.isArray(content)) {
+    payload = await hidemiumRequest(apiUrl, '/profileList?page=1&limit=1000', 10000, 'POST');
+    content = payload?.data?.content || payload?.content || payload?.data;
+  }
+  if (!Array.isArray(content)) throw new Error('Hidemium API không trả về danh sách profile hợp lệ.');
+  return content.map((item) => ({ id: String(item.uuid ?? item.browser_uuid ?? '').trim(),
+    name: String(item.name || `Profile ${item.uuid || ''}`).trim() }))
+    .filter((item) => item.id && item.id.length <= 128);
+}
+
+async function openHidemiumProfile(apiUrl, profileId) {
+  const base = normalizeHidemiumApiUrl(apiUrl);
+  const uuid = encodeURIComponent(String(profileId));
+  const reply = await hidemiumRequest(base, `/openProfile?uuid=${uuid}`, 30000);
+  const data = reply?.data || reply;
+  const port = Number(data?.remote_port);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error(`Hidemium không trả về remote_port hợp lệ cho profile ${profileId}.`);
+  }
+  return { provider: 'hidemium', profileId: String(profileId), port, apiUrl: base };
 }
 
 async function loadProxyStore() {
@@ -746,12 +792,12 @@ function profileLayout(index, count, width, height, area) {
   };
 }
 
-ipcMain.handle('profile:open', async (_event, { index, count, profile, url, source = 'local', omniApiUrl }) => {
+ipcMain.handle('profile:open', async (_event, { index, count, profile, url, source = 'local', omniApiUrl, hidemiumApiUrl }) => {
   const profileIndex = Math.trunc(Number(index));
   if (!Number.isInteger(profileIndex) || profileIndex < 1 || profileIndex > 8) {
     return { ok: false, error: 'Profile không hợp lệ.' };
   }
-  if (!['local', 'omni'].includes(source)) return { ok: false, error: 'Nguồn profile không hợp lệ.' };
+  if (!['local', 'omni', 'hidemium'].includes(source)) return { ok: false, error: 'Nguồn profile không hợp lệ.' };
   if (!PROFILE_SITES.some((site) => site.url === url)) {
     return { ok: false, error: 'Hãy chọn một website hợp lệ trước khi mở profile.' };
   }
@@ -764,26 +810,28 @@ ipcMain.handle('profile:open', async (_event, { index, count, profile, url, sour
   let omni = null;
   try {
     const proxyStore = await loadProxyStore();
-    if (source === 'omni') {
-      const profileId = String(row.omniProfileId || '').trim();
-      if (!profileId) return { ok: false, error: `Chưa gán profile OmniLogin cho Profile ${profileIndex}.` };
+    if (source === 'omni' || source === 'hidemium') {
+      const provider = source;
+      const profileId = String((provider === 'omni' ? row.omniProfileId : row.hidemiumProfileId) || '').trim();
+      if (!profileId) return { ok: false, error: `Chưa gán profile ${provider === 'omni' ? 'OmniLogin' : 'Hidemium'} cho Profile ${profileIndex}.` };
       if (row.proxyId || row.proxy || proxyStore.assignments[String(profileIndex)]) {
-        return { ok: false, error: 'Proxy của profile OmniLogin cần được cấu hình trong OmniLogin.' };
+        return { ok: false, error: `Proxy của profile ${provider === 'omni' ? 'OmniLogin' : 'Hidemium'} cần được cấu hình trong ${provider === 'omni' ? 'OmniLogin' : 'Hidemium'}.` };
       }
-      const apiUrl = normalizeOmniApiUrl(omniApiUrl);
-      const available = await listOmniProfiles(apiUrl);
+      const apiUrl = provider === 'omni' ? normalizeOmniApiUrl(omniApiUrl) : normalizeHidemiumApiUrl(hidemiumApiUrl);
+      const available = provider === 'omni' ? await listOmniProfiles(apiUrl) : await listHidemiumProfiles(apiUrl);
       if (!available.some((item) => item.id === profileId)) {
-        return { ok: false, error: `Không tìm thấy profile OmniLogin ${profileId} trong danh sách hiện tại.` };
+        return { ok: false, error: `Không tìm thấy profile ${provider === 'omni' ? 'OmniLogin' : 'Hidemium'} ${profileId} trong danh sách hiện tại.` };
       }
-      const port = omniDebugPort(profileId);
+      const port = provider === 'omni' ? omniDebugPort(profileId) : 0;
       for (const [otherIndex, other] of activeOmniProfiles) {
-        if (otherIndex !== profileIndex && (other.profileId === profileId || omniDebugPort(other.profileId) === port)) {
-          return { ok: false, error: 'Profile OmniLogin này đang được gán cho một cửa sổ khác.' };
+        if (otherIndex !== profileIndex && other.provider === provider && (other.profileId === profileId
+            || (port && omniDebugPort(other.profileId) === port))) {
+          return { ok: false, error: `Profile ${provider === 'omni' ? 'OmniLogin' : 'Hidemium'} này đang được gán cho một cửa sổ khác.` };
         }
       }
       const oldOmni = activeOmniProfiles.get(profileIndex);
-      if (oldOmni && oldOmni.profileId !== profileId) await stopOmniProfile(oldOmni);
-      omni = await openOmniProfile(apiUrl, profileId);
+      if (oldOmni && (oldOmni.profileId !== profileId || oldOmni.provider !== provider)) await stopOmniProfile(oldOmni);
+      omni = provider === 'omni' ? await openOmniProfile(apiUrl, profileId) : await openHidemiumProfile(apiUrl, profileId);
     } else {
       const oldOmni = activeOmniProfiles.get(profileIndex);
       if (oldOmni) await stopOmniProfile(oldOmni);
@@ -809,7 +857,7 @@ ipcMain.handle('profile:open', async (_event, { index, count, profile, url, sour
     }
     await closeProfileBridge(profileIndex);
     const opened = omni
-      ? await engine.call('chrome.attachOmni', { port: omni.port, width, height }, 45000)
+      ? await engine.call('chrome.attachExternal', { port: omni.port, width, height, provider: omni.provider }, 45000)
       : await engine.call('chrome.open');
     if (!opened || !opened.ok) {
       if (newBridge) await newBridge.close().catch(() => {});
@@ -828,8 +876,8 @@ ipcMain.handle('profile:open', async (_event, { index, count, profile, url, sour
     else activeOmniProfiles.delete(profileIndex);
     if (newBridge) activeProxyBridges.set(profileIndex, newBridge);
     activeProfileIndices.add(profileIndex);
-    return { ok: true, note: omni ? `Đã mở profile OmniLogin ${omni.profileId}.` : 'Đang mở Chrome profile.',
-      proxy: omni ? 'Proxy theo cấu hình OmniLogin' : proxyLabel(proxy), width, height, scale };
+    return { ok: true, note: omni ? `Đã mở profile ${omni.provider === 'omni' ? 'OmniLogin' : 'Hidemium'} ${omni.profileId}.` : 'Đang mở Chrome profile.',
+      proxy: omni ? `Proxy theo cấu hình ${omni.provider === 'omni' ? 'OmniLogin' : 'Hidemium'}` : proxyLabel(proxy), width, height, scale };
   } catch (error) {
     if (newBridge) await newBridge.close().catch(() => {});
     if (omni) await stopOmniProfile(omni);
@@ -1109,14 +1157,14 @@ ipcMain.handle('engine:call', async (_event, { game, method, params }) => {
   }
 });
 
-ipcMain.handle('profiles:open', async (_event, { count, siteId, siteIds, profiles, source = 'local', omniApiUrl }) => {
+ipcMain.handle('profiles:open', async (_event, { count, siteId, siteIds, profiles, source = 'local', omniApiUrl, hidemiumApiUrl }) => {
   const total = Math.max(1, Math.min(8, Math.trunc(Number(count) || 1)));
   const selectedSiteIds = Array.isArray(siteIds) ? siteIds : Array(total).fill(siteId);
   const sites = selectedSiteIds.slice(0, total).map((id) => PROFILE_SITES.find((item) => item.id === id));
   if (sites.length !== total || sites.some((item) => !item)) {
     return { ok: false, error: 'Hãy chọn một site hợp lệ riêng cho từng profile.' };
   }
-  if (!['local', 'omni'].includes(source)) return { ok: false, error: 'Nguồn profile không hợp lệ.' };
+  if (!['local', 'omni', 'hidemium'].includes(source)) return { ok: false, error: 'Nguồn profile không hợp lệ.' };
   const requested = Array.isArray(profiles) ? profiles : [];
   const proxyStore = await loadProxyStore();
   let apiUrl = '';
@@ -1147,6 +1195,25 @@ ipcMain.handle('profiles:open', async (_event, { count, siteId, siteIds, profile
       return { ok: false, error: error.message || 'Không kết nối được OmniLogin.' };
     }
   }
+  let hidemiumRows = [];
+  if (source === 'hidemium') {
+    try {
+      apiUrl = normalizeHidemiumApiUrl(hidemiumApiUrl);
+      hidemiumRows = Array.from({ length: total }, (_, i) => String(requested[i]?.hidemiumProfileId || '').trim());
+      if (hidemiumRows.some((id) => !id)) return { ok: false, error: 'Hãy gán một profile Hidemium riêng cho từng profile trước khi chạy.' };
+      if (new Set(hidemiumRows).size !== hidemiumRows.length) return { ok: false, error: 'Không thể gán trùng một profile Hidemium cho nhiều cửa sổ.' };
+      if (requested.slice(0, total).some((row, index) => row?.proxyId || row?.proxy
+          || proxyStore.assignments[String(index + 1)])) {
+        return { ok: false, error: 'Proxy của profile Hidemium cần được cấu hình trong Hidemium; bỏ proxy gán từ tab Proxy trước khi chạy.' };
+      }
+      const available = await listHidemiumProfiles(apiUrl);
+      if (hidemiumRows.some((id) => !available.some((item) => item.id === id))) {
+        return { ok: false, error: 'Có profile Hidemium được gán nhưng không còn trong danh sách API.' };
+      }
+    } catch (error) {
+      return { ok: false, error: error.message || 'Không kết nối được Hidemium.' };
+    }
+  }
   const settings = [];
   const newBridges = [];
   try {
@@ -1155,7 +1222,7 @@ ipcMain.handle('profiles:open', async (_event, { count, siteId, siteIds, profile
       const width = Math.max(520, Math.min(3840, Math.round(Number(row.width) || 900)));
       const height = Math.max(200, Math.min(2160, Math.round(Number(row.height) || 1200)));
       const scale = Math.max(50, Math.min(200, Math.round(Number(row.scale) || 60)));
-      const proxy = source === 'omni' ? null
+      const proxy = source === 'omni' || source === 'hidemium' ? null
         : proxyForProfile({ ...row, proxyId: row.proxyId || proxyStore.assignments[String(index + 1)] }, proxyStore);
       let proxyServer = proxyServerUrl(proxy);
       if (proxy && proxy.username) {
@@ -1219,8 +1286,10 @@ ipcMain.handle('profiles:open', async (_event, { count, siteId, siteIds, profile
 
   for (let index = 1; index <= total; index += 1) {
     const previousOmni = activeOmniProfiles.get(index);
-    const keep = source === 'omni' && previousOmni
-      && previousOmni.profileId === omniRows[index - 1] && previousOmni.apiUrl === apiUrl;
+    const providerRows = source === 'omni' ? omniRows : hidemiumRows;
+    const keep = (source === 'omni' || source === 'hidemium') && previousOmni
+      && previousOmni.provider === source && previousOmni.profileId === providerRows[index - 1]
+      && previousOmni.apiUrl === apiUrl;
     if (previousOmni && !keep) {
       await profileEngine(index).call('profile.configure', { close: true }).catch(() => {});
       await stopOmniProfile(previousOmni);
@@ -1244,21 +1313,23 @@ ipcMain.handle('profiles:open', async (_event, { count, siteId, siteIds, profile
     if (result.status !== 'fulfilled' || !result.value.ok) return { ok: false,
       error: result.status === 'rejected' ? result.reason.message : result.value.error,
       proxy: settings[index].proxyLabel };
-    if (source === 'omni') {
+    if (source === 'omni' || source === 'hidemium') {
+      const providerRows = source === 'omni' ? omniRows : hidemiumRows;
       const previousOmni = activeOmniProfiles.get(index + 1);
-      if (previousOmni && previousOmni.profileId !== omniRows[index]) {
+      if (previousOmni && (previousOmni.profileId !== providerRows[index] || previousOmni.provider !== source)) {
         await stopOmniProfile(previousOmni);
         activeOmniProfiles.delete(index + 1);
       }
-      const omni = await openOmniProfile(apiUrl, omniRows[index]);
+      const omni = source === 'omni' ? await openOmniProfile(apiUrl, providerRows[index])
+        : await openHidemiumProfile(apiUrl, providerRows[index]);
       activeOmniProfiles.set(index + 1, omni);
-      const attached = await engine.call('chrome.attachOmni', {
-        port: omni.port, width: settings[index].width, height: settings[index].height,
+      const attached = await engine.call('chrome.attachExternal', {
+        port: omni.port, width: settings[index].width, height: settings[index].height, provider: source,
       }, 45000);
       if (!attached?.ok) {
         await stopOmniProfile(omni);
         activeOmniProfiles.delete(index + 1);
-        return { ok: false, error: attached?.error || 'Không gắn được Chrome profile OmniLogin.' };
+        return { ok: false, error: attached?.error || `Không gắn được Chrome profile ${source === 'omni' ? 'OmniLogin' : 'Hidemium'}.` };
       }
     } else {
       const previousOmni = activeOmniProfiles.get(index + 1);
@@ -1268,15 +1339,16 @@ ipcMain.handle('profiles:open', async (_event, { count, siteId, siteIds, profile
       }
     }
     const reply = await engine.call('site.open', { url: sites[index].url }, 45000);
-    if ((!reply || !reply.ok) && source === 'omni') {
+    if ((!reply || !reply.ok) && (source === 'omni' || source === 'hidemium')) {
       const activeOmni = activeOmniProfiles.get(index + 1);
       activeOmniProfiles.delete(index + 1);
       if (activeOmni) await stopOmniProfile(activeOmni);
     }
     return { ...reply, site: sites[index].label,
-      proxy: source === 'omni' ? 'Proxy theo cấu hình OmniLogin' : settings[index].proxyLabel,
+      proxy: source === 'omni' || source === 'hidemium' ? `Proxy theo cấu hình ${source === 'omni' ? 'OmniLogin' : 'Hidemium'}` : settings[index].proxyLabel,
       width: settings[index].width, height: settings[index].height, scale: settings[index].scale,
-      ...(source === 'omni' ? { omni_profile_id: omniRows[index] } : {}) };
+      ...(source === 'omni' ? { omni_profile_id: omniRows[index] } : {}),
+      ...(source === 'hidemium' ? { hidemium_profile_id: hidemiumRows[index] } : {}) };
   }));
 
   for (let index = 1; index <= total; index += 1) {
@@ -1402,6 +1474,16 @@ ipcMain.handle('omni:profiles', async (_event, { apiUrl }) => {
     return { ok: true, apiUrl: normalized, profiles };
   } catch (error) {
     return { ok: false, error: error.message || 'Không kết nối được OmniLogin API.' };
+  }
+});
+
+ipcMain.handle('hidemium:profiles', async (_event, { apiUrl }) => {
+  try {
+    const normalized = normalizeHidemiumApiUrl(apiUrl);
+    const profiles = await listHidemiumProfiles(normalized);
+    return { ok: true, apiUrl: normalized, profiles };
+  } catch (error) {
+    return { ok: false, error: error.message || 'Không kết nối được Hidemium API.' };
   }
 });
 
