@@ -910,10 +910,10 @@ process.on('unhandledRejection', (reason) => reportMainError('promise bị từ 
 
 function createWindow() {
   mainWindow = new BrowserWindow({
-    width: 1180,
-    height: 800,
-    minWidth: 1000,
-    minHeight: 680,
+    width: 1360,
+    height: 900,
+    minWidth: 980,
+    minHeight: 650,
     frame: false,
     backgroundColor: '#0b1220',
     show: false,

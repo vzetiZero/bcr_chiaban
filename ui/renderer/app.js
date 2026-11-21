@@ -52,6 +52,7 @@ function renderProfiles(count, siteLabel, replies = []) {
   statusByIndex.clear();
   lastSiteLabel = siteLabel || lastSiteLabel;
   $('#profile-total').textContent = `${count} profile · ${lastSiteLabel}`;
+  $('#header-profile-count').textContent = String(count);
   for (let index = 1; index <= count; index += 1) {
     const reply = replies[index - 1] || {};
     const state = reply.ok ? 'opening' : reply.error ? 'error' : (profileStateByIndex.get(index) || 'closed');
@@ -196,6 +197,7 @@ profileSelect.addEventListener('change', updateSitePreview);
 profileCount.addEventListener('input', () => {
   const value = Math.max(1, Math.min(8, Math.trunc(Number(profileCount.value) || 1)));
   $('#run-count-stat').textContent = String(value);
+  $('#header-profile-count').textContent = String(value);
 });
 document.querySelectorAll('[data-tab-target]').forEach((button) => {
   button.addEventListener('click', () => {
