@@ -124,6 +124,26 @@ class XemGameButtonTest(unittest.TestCase):
         self.assertIsNone(driver.frame)
 
 
+class FebetLobbyPageTest(unittest.TestCase):
+    def test_lobby_url_accepts_febet_subdomain_and_rejects_lookalikes(self):
+        self.assertTrue(F._is_lobby("https://m.febet.kiwi/live-casino/baccarat"))
+        self.assertTrue(F._is_lobby("https://febet.kiwi/live-casino/baccarat/?source=test"))
+        self.assertFalse(F._is_lobby("https://febet.kiwi.evil.test/live-casino/baccarat"))
+        self.assertFalse(F._is_lobby("https://febet.kiwi/live-casino/slots"))
+
+    def test_finds_febet_lobby_before_dg_iframe_exists(self):
+        class PageDriver:
+            window_handles = ["febet-tab"]
+            current_url = "https://febet.kiwi/live-casino/baccarat"
+            switch_to = FakeSwitch(None)
+
+            def __init__(self):
+                self.switch_to.driver = self
+
+        driver = PageDriver()
+        self.assertEqual(F._febet_lobby_handle(driver), "febet-tab")
+
+
 class WidgetOriginTest(unittest.TestCase):
     def test_widgets_excluded(self):
         for origin in ("https://secure.livechatinc.com", "https://www.google.com",

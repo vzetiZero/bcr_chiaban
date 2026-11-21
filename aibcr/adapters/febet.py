@@ -40,11 +40,26 @@ def _public_origin(url):
 def _is_lobby(url):
     try:
         parsed = urlsplit(url or "")
-        return (parsed.scheme == "https" and parsed.hostname == "febet.kiwi"
+        host = (parsed.hostname or "").lower()
+        is_febet_host = host == "febet.kiwi" or host.endswith(".febet.kiwi")
+        return (parsed.scheme == "https" and is_febet_host
                 and parsed.path.rstrip("/").endswith("/live-casino/baccarat")
                 and parsed.port in (None, 443))
     except (TypeError, ValueError):
         return False
+
+
+def _febet_lobby_handle(driver):
+    """Find the FEBET Baccarat page before its DG iframe has been launched."""
+    for handle in reversed(driver.window_handles):
+        try:
+            driver.switch_to.window(handle)
+            driver.switch_to.default_content()
+            if _is_lobby(driver.current_url):
+                return handle
+        except Exception:
+            continue
+    return None
 
 
 def _enter_path(driver, path):
@@ -176,21 +191,17 @@ def open_dream_gaming_baccarat(driver):
         if _dg_window(driver) is not None:
             return {"ok": True, "already_open": True, "mode": "tab",
                     "note": "Game DG đã mở ở tab riêng của profile này."}
-        if _lobby_handle(driver) is None:
+        # _lobby_handle only recognizes a DG iframe. Before clicking the provider
+        # image that iframe does not exist, so select the FEBET page independently.
+        page_handle = _febet_lobby_handle(driver)
+        if page_handle is None:
             driver.switch_to.window(driver.window_handles[-1])
             driver.switch_to.default_content()
             driver.get(LOBBY_URL)
-        # Chờ điều hướng mạng chậm; đừng kết luận profile lỗi khi Chrome vừa mở.
-        deadline = time.monotonic() + 60
-        while time.monotonic() < deadline:
-            try:
-                if _is_lobby(driver.current_url):
-                    break
-            except Exception:
-                pass
-            time.sleep(0.25)
-        if not _is_lobby(driver.current_url):
-            return {"ok": False, "error": "FEBET chưa tải được sảnh Baccarat."}
+            page_handle = _febet_lobby_handle(driver)
+        if page_handle is not None:
+            driver.switch_to.window(page_handle)
+            driver.switch_to.default_content()
 
         if _dg_window(driver) is not None:
             return {"ok": True, "already_open": True, "mode": "tab",
@@ -198,15 +209,15 @@ def open_dream_gaming_baccarat(driver):
         existing = inspect(driver)
         if existing.get("ok") and existing.get("loaded"):
             return {"ok": True, "already_open": True, "note": "Iframe game đã mở trong profile này."}
-        if _lobby_handle(driver) is None:
-            return {"ok": False, "error": "FEBET chưa tải được sảnh Baccarat."}
-
         from selenium.webdriver.support.ui import WebDriverWait
-        from selenium.common.exceptions import ElementClickInterceptedException
+        from selenium.common.exceptions import ElementClickInterceptedException, TimeoutException
 
-        image = WebDriverWait(driver, 45).until(lambda current: next((item for item in
-            current.find_elements(By.CSS_SELECTOR, 'img[alt="partner"]')
-            if "dream-gaming-square.webp" in (item.get_attribute("src") or "").lower()), None))
+        try:
+            image = WebDriverWait(driver, 45).until(lambda current: next((item for item in
+                current.find_elements(By.CSS_SELECTOR, 'img[alt="partner"]')
+                if "dream-gaming-square.webp" in (item.get_attribute("src") or "").lower()), None))
+        except TimeoutException:
+            return {"ok": False, "error": "Đã mở trang FEBET nhưng không tìm thấy ảnh Dream Gaming trong sảnh (%s)." % _safe_url(driver.current_url)}
         # Ảnh DG chỉ là logo nhỏ trong thẻ game; lớp phủ hover của thẻ che mất ảnh
         # nên phải bấm cả thẻ (div cursor-pointer), không bấm thẳng vào ảnh.
         try:
