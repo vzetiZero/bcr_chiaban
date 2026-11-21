@@ -6,6 +6,7 @@ import re
 import unittest
 
 from aibcr.adapters import febet as F
+from aibcr.adapters import gk881 as GK881
 
 
 class FakeSwitch:
@@ -193,20 +194,17 @@ class CurrentTableTest(unittest.TestCase):
         self.assertEqual(result["table_id"], "60101")
 
 
-class MultiSiteDGEntryTest(unittest.TestCase):
-    def test_non_febet_sites_reuse_an_already_open_dg_lobby(self):
-        for site_id in ("e3951", "gk881", "vnwtop", "888ae66", "bum123"):
-            with self.subTest(site_id=site_id):
-                result = F.open_dg_for_site(FakeDriver("https://m.gk881.vip/", DG_LOC),
-                                            site_id, wait=0)
-                self.assertTrue(result["ok"])
-                self.assertTrue(result["lobby_ready"])
-                self.assertEqual(result["site_id"], site_id)
+class SiteEntryFlowTest(unittest.TestCase):
+    def test_gk881_entry_controller_reuses_an_open_dg_lobby(self):
+        driver = FakeDriver("https://m.gk881.vip/", DG_LOC)
+        result = GK881.open_dg(driver, wait=0)
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["already_open"])
+        self.assertTrue(result["lobby_ready"])
+        self.assertEqual(result["site_id"], "gk881")
 
-    def test_unknown_site_does_not_try_a_generic_click(self):
-        result = F.open_dg_for_site(FakeDriver("https://m.gk881.vip/", DG_LOC),
-                                    "unknown", wait=0)
-        self.assertFalse(result["ok"])
+    def test_no_generic_auto_entry_remains_for_unimplemented_sites(self):
+        self.assertFalse(hasattr(F, "open_dg_for_site"))
 
 
 class SyncTableTest(unittest.TestCase):

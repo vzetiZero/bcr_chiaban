@@ -91,6 +91,22 @@ class DispatchTests(unittest.TestCase):
         self.assertEqual(snapshot["game"], "baccarat")
         self.assertFalse(snapshot["tool_running"])
 
+    def test_site_entry_methods_use_separate_site_services(self):
+        service = type("SiteServices", (), {})()
+        service.febet_entry = type("FEBETEntry", (), {
+            "open_dg": lambda self, params: {"site": "febet", "params": params},
+        })()
+        service.gk881_entry = type("GK881Entry", (), {
+            "open_dg": lambda self, params: {"site": "gk881", "params": params},
+        })()
+
+        febet, error = engine.dispatch(service, "febet.openDG", {"profile": 1})
+        self.assertIsNone(error)
+        self.assertEqual(febet, {"site": "febet", "params": {"profile": 1}})
+        gk881, error = engine.dispatch(service, "gk881.openDG", {"profile": 2})
+        self.assertIsNone(error)
+        self.assertEqual(gk881, {"site": "gk881", "params": {"profile": 2}})
+
     def test_unknown_method_reports_an_error(self):
         service = make_service()
         result, error = engine.dispatch(service, "khong.co", {})

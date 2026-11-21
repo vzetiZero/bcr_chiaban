@@ -1017,7 +1017,7 @@ async function runDGGroup(count, siteIds) {
       const siteId = selectedSites[index - 1];
       return siteId === 'febet'
         ? profileEngine(index).call('febet.openDG', {}, 360000)
-        : profileEngine(index).call('dg.openLobby', { site_id: siteId }, 360000);
+        : profileEngine(index).call('gk881.openDG', { wait: 120 }, 360000);
     }));
     autoResults.forEach((result, offset) => {
       const index = autoEntryIndices[offset];

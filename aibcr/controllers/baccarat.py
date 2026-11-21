@@ -30,6 +30,8 @@ from aibcr.adapters import febet as FEBET
 from aibcr.adapters import lobby_stream as LS
 from aibcr.adapters import table_bets as TB
 from aibcr.adapters.wm_bet import WMBet
+from aibcr.controllers.sites.febet import FEBETEntryController
+from aibcr.controllers.sites.gk881 import GK881EntryController
 from aibcr.config import *  # noqa: F401,F403
 from aibcr.models.bet_ladder import (BetLadder, DEFAULT_STAKES,
                                      parse_hop_rounds, parse_stakes)
@@ -118,6 +120,8 @@ class BaccaratController:
         self.config = self._load_config()
 
         self.browser = BR.BrowserSession()
+        self.febet_entry = FEBETEntryController(self)
+        self.gk881_entry = GK881EntryController(self)
         self.stream = LS.LobbyStream(self.browser, human_mouse=self.config["human_mouse"],
                                      game="baccarat")
         self.sim = self._build_sim()
@@ -759,26 +763,6 @@ class BaccaratController:
         return {"ok": True, "note": "Đã áp dụng cấu hình profile.",
                 "proxy_enabled": bool(proxy_server), "width": width,
                 "height": height, "scale": percent}
-
-    def febet_open_dg(self, _params=None):
-        # Chrome/profile startup can be delayed by a slow network or proxy.
-        deadline = time.monotonic() + 180
-        while self.browser.driver is None and self.chrome_busy and time.monotonic() < deadline:
-            time.sleep(0.2)
-        if self.browser.driver is None:
-            return {"ok": False, "error": "Chrome profile chưa sẵn sàng sau 180 giây."}
-        with self.browser.lock:
-            return FEBET.open_dream_gaming_baccarat(self.browser.driver)
-
-    def dg_open_lobby(self, params):
-        params = params or {}
-        deadline = time.monotonic() + 180
-        while self.browser.driver is None and self.chrome_busy and time.monotonic() < deadline:
-            time.sleep(0.2)
-        if self.browser.driver is None:
-            return {"ok": False, "error": "Chrome profile chưa sẵn sàng sau 180 giây."}
-        with self.browser.lock:
-            return FEBET.open_dg_for_site(self.browser.driver, params.get("site_id"), wait=120.0)
 
     def febet_current_table(self, params=None):
         params = params or {}
@@ -2736,8 +2720,6 @@ class BaccaratController:
             "chrome.attachExternal": self.chrome_attach_external,
             "site.open": self.site_open,
             "profile.configure": self.profile_configure,
-            "febet.openDG": self.febet_open_dg,
-            "dg.openLobby": self.dg_open_lobby,
             "febet.table": self.febet_current_table,
             "febet.tables": self.febet_lobby_tables,
             "febet.syncTable": self.febet_sync_table,

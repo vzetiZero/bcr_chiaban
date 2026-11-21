@@ -26,6 +26,7 @@ import threading
 
 from aibcr.adapters import browser as BR
 from aibcr.controllers.baccarat import BaccaratController
+from aibcr.service.sites import SITE_ENTRY_SERVICES
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 
@@ -75,6 +76,12 @@ def build_service(game, emit, state_path):
 
 def dispatch(service, method, params):
     """Chuyển lệnh xuống controller (mọi controller đều có ``dispatch``)."""
+    site_service = SITE_ENTRY_SERVICES.get(method)
+    if site_service is not None:
+        try:
+            return site_service(service, params or {}), None
+        except Exception as exc:
+            return None, "L\u1ed7i service v\u00e0o s\u1ea3nh (%s)." % type(exc).__name__
     return service.dispatch(method, params or {})
 
 

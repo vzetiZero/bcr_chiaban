@@ -5,9 +5,9 @@ Electron desktop app for managing 1-8 browser profiles. Each profile can use its
 ## Multi-site Dream Gaming workflow
 
 1. Set the profile count and choose a site separately on each row in the **Profiles** tab.
-2. Press **Run Tool**. The app opens each profile at its configured URL, then enters Dream Gaming using the FEBET-specific flow or the selected site's Live Casino and provider controls.
+2. Press **Run Tool**. Profiles using FEBET or GK881 enter Dream Gaming through separate site controllers and JSON-RPC services. GK881 closes its optional notice, opens the navigation menu, selects **DG Trực Tuyến**, and waits for the popup lobby.
 3. The app waits for the DG lobby, selects a real table ID (`60xxx`), moves every profile to that table, applies the configured bet ladder and group settings, and starts the group coordinator.
-4. If a profile cannot be confirmed in DG or at the shared table, the group stops before chip placement. Non-FEBET site entry uses visible provider/menu labels; a portal with different controls will need its site rule updated.
+4. Other sites currently stay on their configured page until the user enters the DG lobby manually. The app checks those profiles every five seconds and continues the shared table flow when all profiles are ready.
 
 The DG table and bet readers are shared across portal hosts. Each profile keeps its own site session and iframe URL while joining the common DG table.
 
@@ -54,8 +54,11 @@ AI_BCR/
 │  │  ├─ chips.py            mệnh giá chip
 │  │  └─ live_sim.py         vòng đời phiên, đối chiếu chip, ghi lãi/lỗ
 │  ├─ controllers/
-│  │  └─ baccarat.py         BaccaratController - composition root
-│  └─ service/engine.py      transport JSON-RPC stdin/stdout
+│  │  ├─ baccarat.py         BaccaratController - composition root
+│  │  └─ sites/               separate FEBET/GK881 entry controllers
+│  ├─ service/
+│  │  ├─ engine.py          transport JSON-RPC stdin/stdout
+│  │  └─ sites/              separate FEBET/GK881 JSON-RPC routes
 ├─ ui/                       Electron
 │  ├─ main.js                spawn engine, IPC, cửa sổ
 │  ├─ preload.js             contextBridge `window.aibcr`
