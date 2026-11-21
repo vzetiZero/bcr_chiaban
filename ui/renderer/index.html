@@ -46,30 +46,22 @@
           </select>
         </label>
       </div>
-      <div class="action-row">
-        <button id="run-profiles" class="run-button" disabled>
-          <span class="run-icon">▶</span> Chạy Tool
-        </button>
-        <button id="close-profiles" class="close-button" disabled>Đóng tất cả</button>
+      <div class="run-overview">
+        <div class="run-overview-heading">
+          <div><div class="eyebrow">&#272;I&#7872;U PH&#7888;I PHI&#202;N</div><h2 id="run-mode-title">M&#7903; &#273;&#7891;ng th&#7901;i c&#225;c profile</h2></div>
+          <span id="run-mode-badge" class="mode-badge">S&#7860;N S&#192;NG</span>
+        </div>
+        <div class="run-stats">
+          <div class="run-stat"><span>Profile &#273;&#227; ch&#7885;n</span><strong id="run-count-stat">4</strong></div>
+          <div class="run-stat"><span>Website</span><strong id="run-site-stat">Ch&#432;a ch&#7885;n</strong></div>
+          <div class="run-stat"><span>B&#224;n t&#7921; ch&#7885;n</span><strong id="run-table-stat">T&#7921; &#273;&#7897;ng</strong></div>
+        </div>
+        <div class="run-actions">
+          <button id="run-profiles" class="run-button" disabled><span class="run-icon">&#9654;</span> Ch&#7841;y Tool</button>
+          <button id="close-profiles" class="close-button" disabled>&#272;&#243;ng t&#7845;t c&#7843;</button>
+        </div>
+        <div id="notice" class="notice" role="status" aria-live="polite">Ch&#7885;n website v&#224; s&#7889; profile &#273;&#7875; b&#7855;t &#273;&#7847;u.</div>
       </div>
-      <div id="febet-table-row" class="febet-table-row" hidden>
-        <label class="field" for="febet-table-select">
-          <span>Bàn Dream Gaming</span>
-          <select id="febet-table-select">
-            <option value="60101">Baccarat RB01 · 60101</option>
-            <option value="60102" selected>Baccarat RB02 · 60102</option>
-            <option value="60103">Baccarat RB03 · 60103</option>
-            <option value="60104">Baccarat RB04 · 60104</option>
-            <option value="60105">Baccarat RB05 · 60105</option>
-            <option value="60106">Baccarat RB06 · 60106</option>
-            <option value="60107">Baccarat RB07 · 60107</option>
-            <option value="60108">Baccarat RB08 · 60108</option>
-          </select>
-        </label>
-        <button id="scan-dg-tables" class="close-button" type="button">Quét bàn</button>
-        <button id="sync-dg-table" class="close-button" type="button">Đưa profiles vào bàn</button>
-      </div>
-      <div id="notice" class="notice" role="status" aria-live="polite">Chọn website để bắt đầu.</div>
     </section>
     </div>
 

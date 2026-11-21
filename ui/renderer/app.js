@@ -76,8 +76,9 @@ function renderProfiles(count, siteLabel, replies = []) {
 function updateSitePreview() {
   const site = profileSelect.selectedOptions[0];
   runButton.disabled = !site || !site.value;
-  $('#febet-table-row').hidden = !site || site.value !== 'febet';
-  $('#sync-dg-table').disabled = !$('#febet-table-select').value;
+  $('#run-site-stat').textContent = site && site.value ? site.textContent : 'Ch\u01b0a ch\u1ecdn';
+  $('#run-mode-title').textContent = site && site.value === 'febet' ? 'T\u1ef1 ch\u1ecdn b\u00e0n Dream Gaming' : 'M\u1edf \u0111\u1ed3ng th\u1eddi c\u00e1c profile';
+  $('#run-mode-badge').textContent = site && site.value === 'febet' ? 'T\u1ef0 \u0110\u1ed8NG' : 'S\u1eb4N S\u00c0NG';
 }
 
 function populateProxySelect(select, selectedId = '') {
@@ -192,6 +193,10 @@ function renderProxyAssignments(count) {
 }
 
 profileSelect.addEventListener('change', updateSitePreview);
+profileCount.addEventListener('input', () => {
+  const value = Math.max(1, Math.min(8, Math.trunc(Number(profileCount.value) || 1)));
+  $('#run-count-stat').textContent = String(value);
+});
 document.querySelectorAll('[data-tab-target]').forEach((button) => {
   button.addEventListener('click', () => {
     const target = button.dataset.tabTarget;
@@ -290,121 +295,11 @@ $('#proxy-list').addEventListener('click', async (event) => {
   }
 });
 
-function populateFebetTableSelect(result) {
-  const select = $('#febet-table-select');
-  const previous = select.value;
-  const tables = (result.tables || []).filter((table) =>
-    /^60\d{3,}$/.test(String(table.table_id || '')));
-  select.replaceChildren();
-  for (const table of tables) {
-    const option = document.createElement('option');
-    option.value = String(table.table_id);
-    const name = String(table.name || `Bàn ${table.table_id}`);
-    option.textContent = `${name} · ${table.table_id}${table.online ? ` · ${table.online}` : ''}`;
-    select.append(option);
-  }
-  select.disabled = !tables.length;
-  if (!tables.length) {
-    const empty = document.createElement('option');
-    empty.value = '';
-    empty.textContent = 'Chưa tìm thấy bàn thật';
-    select.append(empty);
-  } else if (tables.some((table) => String(table.table_id) === previous)) {
-    select.value = previous;
-  } else {
-    select.selectedIndex = 0;
-  }
-  $('#sync-dg-table').disabled = !tables.length;
-  return tables;
-}
-
-async function scanFebetTables() {
-  const result = await api.listFebetTables();
-  if (!result || !result.ok) {
-    return { ok: false, error: (result && result.error) || 'Không quét được danh sách bàn DG.' };
-  }
-  if (!(result.tables || []).length) {
-    return { ok: false, error: 'Quét Laya không trả về bàn; vẫn có thể dùng mã bàn đã chọn.' };
-  }
-  const tables = populateFebetTableSelect(result);
-  return tables.length ? { ok: true, tables }
-    : { ok: false, error: 'Sảnh DG chưa trả về mã bàn thật.' };
-}
-
-async function syncSelectedFebetTable({ startBetting = false } = {}) {
-  const tableId = $('#febet-table-select').value;
-  if (!/^60\d{3,}$/.test(tableId)) {
-    showNotice('Hãy chọn mã bàn Baccarat DG thuộc dải 60xxx.', true);
-    return false;
-  }
-  showNotice(`Đang đưa tất cả profile vào bàn ${tableId}…`);
-  const sync = await api.syncFebetTableById(tableId);
-  if (!sync || !sync.ok) {
-    showNotice((sync && sync.error) || 'Chưa đồng bộ được bàn.', true);
-    return false;
-  }
-  const failed = (sync.replies || []).filter((reply) => !reply.ok);
-  if (failed.length) {
-    const detail = failed.map((reply) => `Profile ${reply.index}: ${reply.error}`).join(' · ');
-    showNotice(`Bàn ${sync.table_id}: ${failed.length}/${sync.count} profile lỗi. ${detail}`, true);
-    return false;
-  }
-  const notInTable = (sync.replies || []).filter((reply) => reply.in_table !== true);
-  if (notInTable.length) {
-    const detail = notInTable.map((reply) => `Profile ${reply.index}: ${reply.note || 'chưa vào bàn thật'}`).join(' · ');
-    showNotice(`${notInTable.length} profile vẫn ở sảnh, chưa có cửa cược. ${detail}`, true);
-    return false;
-  }
-  showNotice(`Cả ${sync.count} profile đã vào bàn ${sync.table_id}.`);
-  if (!startBetting) {
-    showNotice(`Cả ${sync.count} profile đã vào bàn ${sync.table_id}. Chưa xếp chip.`);
-    return true;
-  }
-  const tableIds = Array.from($('#febet-table-select').options)
-    .map((option) => option.value).filter((value) => /^60\d{3,}$/.test(value));
-  const bets = await api.applyBets(sync.table_id, tableIds);
-  renderBetAssignments(bets);
-  if (!bets || !bets.ok) {
-    showNotice((bets && bets.error) || 'Không áp dụng được chip.', true);
-    return false;
-  }
-  const betFailed = (bets.replies || []).filter((reply) => !reply.ok);
-  showNotice(betFailed.length
-    ? `Đã vào bàn ${sync.table_id}; ${betFailed.length} profile lỗi cấu hình chip.`
-    : `Cả ${sync.count} profile đã sẵn sàng; chờ cùng mở cược để xếp chip hai cửa.`,
-  betFailed.length > 0);
-  return betFailed.length === 0;
-}
-
-$('#scan-dg-tables').addEventListener('click', async (event) => {
-  const button = event.currentTarget;
-  button.disabled = true;
-  showNotice('Đang chờ Laya tải danh sách bàn DG…');
-  try {
-    const result = await scanFebetTables();
-    showNotice(result.ok ? `Đã quét ${result.tables.length} bàn DG.` : result.error, !result.ok);
-  } catch (error) {
-    showNotice(String(error.message || error), true);
-  } finally {
-    button.disabled = false;
-  }
-});
-
-$('#febet-table-select').addEventListener('change', () => {
-  $('#sync-dg-table').disabled = !$('#febet-table-select').value;
-});
-
-$('#sync-dg-table').addEventListener('click', async (event) => {
-  const button = event.currentTarget;
-  button.disabled = true;
-  try { await syncSelectedFebetTable(); }
-  catch (error) { showNotice(String(error.message || error), true); }
-  finally { button.disabled = !$('#febet-table-select').value; }
-});
-
 runButton.addEventListener('click', async () => {
   const count = Math.max(1, Math.min(8, Math.trunc(Number(profileCount.value) || 1)));
   profileCount.value = String(count);
+  $('#run-count-stat').textContent = String(count);
+  $('#run-table-stat').textContent = profileSelect.value === 'febet' ? '\u0110ang qu\u00e9t...' : '\u2014';
   runButton.disabled = true;
   runButton.classList.add('busy');
   showNotice('Đang khởi chạy các profile…');
@@ -418,20 +313,26 @@ runButton.addEventListener('click', async () => {
     $('#close-profiles').disabled = false;
     const failed = result.replies.filter((reply) => !reply.ok).length;
     if (profileSelect.value === 'febet') {
-      showNotice('Đang mở sảnh Dream Gaming trên các profile…');
+      showNotice('\u0110ang m\u1edf s\u1ea3nh Dream Gaming tr\u00ean t\u1ea5t c\u1ea3 profile...');
       const dgResult = await api.openDreamGaming();
       if (!dgResult || !dgResult.ok) {
-        showNotice((dgResult && dgResult.error) || 'Không mở được sảnh Dream Gaming.', true);
+        showNotice((dgResult && dgResult.error) || 'Kh\u00f4ng m\u1edf \u0111\u01b0\u1ee3c s\u1ea3nh Dream Gaming.', true);
         return;
       }
       const dgFailed = dgResult.replies.filter((reply) => !reply.ok).length;
       if (dgFailed) {
-        showNotice(`Đã chạy ${result.count} profile; ${dgFailed} profile chưa vào được sảnh DG.`, true);
+        showNotice(`\u0110\u00e3 m\u1edf ${result.count} profile; ${dgFailed} profile ch\u01b0a t\u1ea3i \u0111\u01b0\u1ee3c s\u1ea3nh DG.`, true);
         return;
       }
-      // Laya renders the lobby as canvas and does not expose stable table nodes.
-      // Use the selected, confirmed DG tableId directly through direct1.html.
-      await syncSelectedFebetTable({ startBetting: true });
+      showNotice('\u0110ang \u0111\u1ee3i Laya t\u1ea3i b\u00e0n, t\u1ef1 ch\u1ecdn b\u00e0n v\u00e0 \u0111\u1ed3ng b\u1ed9 c\u1ea3 nh\u00f3m...');
+      const started = await api.autoRunFebet();
+      if (!started || !started.ok) {
+        showNotice((started && started.error) || 'Ch\u01b0a th\u1ec3 \u0111\u1ed3ng b\u1ed9 nh\u00f3m v\u00e0o b\u00e0n DG.', true);
+        return;
+      }
+      $('#run-table-stat').textContent = `${started.table_name} \u00b7 ${started.table_id}`;
+      renderBetAssignments(started);
+      showNotice(`C\u1ea3 ${started.count} profile \u0111\u00e3 v\u00e0o ${started.table_name} (${started.table_id}); \u0111ang ch\u1edd tr\u1ea1ng th\u00e1i c\u01b0\u1ee3c \u0111\u1ed3ng b\u1ed9.`);
     } else {
       showNotice(failed
         ? `Đã gửi lệnh mở ${result.count} profile; ${failed} profile báo lỗi.`
@@ -573,6 +474,7 @@ api.onGroupHop((status) => {
   const target = $('#bet-notice');
   if (!target || !status || !status.note) return;
   target.textContent = status.note;
+  if (status.table_id) $('#run-table-stat').textContent = status.table_id;
   target.dataset.state = status.error ? 'error' : 'ready';
   showNotice(status.note, Boolean(status.error));
 });

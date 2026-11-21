@@ -710,6 +710,67 @@ ipcMain.handle('febet:open-dg', async (_event) => {
       : { index: indices[offset], ok: false, error: result.reason.message }) };
 });
 
+ipcMain.handle('febet:auto-run', async () => {
+  const indices = Array.from(activeProfileIndices).sort((a, b) => a - b);
+  if (!indices.length) return { ok: false, error: 'Ch\u01b0a c\u00f3 profile n\u00e0o \u0111ang m\u1edf.' };
+  const config = await loadBetConfig();
+  if (indices.length < config.min_tk) {
+    return { ok: false, error: `C\u1ea5u h\u00ecnh y\u00eau c\u1ea7u t\u1ed1i thi\u1ec3u ${config.min_tk} profile; hi\u1ec7n c\u00f3 ${indices.length}.` };
+  }
+  const leader = profileEngine(indices[0]);
+  let scan = null;
+  const deadline = Date.now() + 180000;
+  sendHopStatus({ active: true, note: '\u0110ang \u0111\u1ee3i s\u1ea3nh DG t\u1ea3i xong \u0111\u1ec3 t\u1ef1 ch\u1ecdn b\u00e0n...' });
+  while (Date.now() < deadline) {
+    try {
+      scan = await leader.call('febet.tables', {}, 40000);
+      if (scan?.ok && (scan.tables || []).some((row) => /^60[0-9]{3,}$/.test(String(row.table_id || '')))) break;
+    } catch (error) {
+      scan = { ok: false, error: error.message };
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1200));
+  }
+  const tables = (scan?.tables || []).filter((row) => /^60[0-9]{3,}$/.test(String(row.table_id || '')));
+  if (!tables.length) {
+    const reason = scan?.error || 'H\u1ebft th\u1eddi gian ch\u1edd, ch\u01b0a \u0111\u1ecdc \u0111\u01b0\u1ee3c danh s\u00e1ch b\u00e0n th\u1eadt t\u1eeb s\u1ea3nh DG.';
+    sendHopStatus({ active: false, error: true, note: reason });
+    return { ok: false, error: reason };
+  }
+  // Prefer the busiest table; use the real DG id as a stable tie-breaker.
+  tables.sort((a, b) => (Number(b.online) || 0) - (Number(a.online) || 0)
+    || String(a.table_id).localeCompare(String(b.table_id), undefined, { numeric: true }));
+  const tableId = String(tables[0].table_id);
+  sendHopStatus({ active: true, table_id: tableId,
+    note: `\u0110\u00e3 t\u1ef1 ch\u1ecdn ${tables[0].name || `b\u00e0n ${tableId}`} (${tableId}); \u0111ang \u0111\u1ed3ng b\u1ed9 ${indices.length} profile...` });
+  const syncResults = await Promise.allSettled(indices.map((index) =>
+    profileEngine(index).call('febet.syncTable', { table_id: tableId }, 180000)));
+  const syncReplies = syncResults.map((result, offset) => result.status === 'fulfilled'
+    ? { index: indices[offset], ...result.value }
+    : { index: indices[offset], ok: false, error: result.reason.message });
+  const notReady = syncReplies.filter((reply) => !reply.ok || reply.in_table !== true);
+  if (notReady.length) {
+    const error = `${notReady.length}/${indices.length} profile ch\u01b0a x\u00e1c nh\u1eadn v\u00e0o b\u00e0n ${tableId}; \u0111\u00e3 d\u1eebng tr\u01b0\u1edbc khi x\u1ebfp chip.`;
+    sendHopStatus({ active: false, error: true, table_id: tableId, note: error });
+    return { ok: false, error, table_id: tableId, sync: syncReplies };
+  }
+  const ladderReplies = await configureProfileLadders(indices, config);
+  const failed = ladderReplies.filter((reply) => !reply.ok).length;
+  if (failed) {
+    const error = `${failed}/${indices.length} profile kh\u00f4ng nh\u1eadn \u0111\u01b0\u1ee3c c\u1ea5u h\u00ecnh d\u00e3y c\u01b0\u1ee3c; \u0111\u00e3 d\u1eebng nh\u00f3m.`;
+    sendHopStatus({ active: false, error: true, table_id: tableId, note: error });
+    return { ok: false, error, table_id: tableId, sync: syncReplies, replies: ladderReplies };
+  }
+  const tableIds = [...new Set(tables.map((row) => String(row.table_id)))];
+  startSharedHop(tableId, tableIds, config, indices);
+  startGroupBetting(tableId, indices, config);
+  const result = { ok: true, count: indices.length, table_id: tableId,
+    table_name: tables[0].name || `B\u00e0n ${tableId}`, tables: tableIds,
+    sync: syncReplies, replies: ladderReplies, stake: ladderStake(config), config };
+  sendHopStatus({ active: true, table_id: tableId,
+    note: `C\u1ea3 ${indices.length} profile \u0111\u00e3 v\u00e0o ${result.table_name} (${tableId}); \u0111ang ch\u1edd tr\u1ea1ng th\u00e1i c\u01b0\u1ee3c \u0111\u1ed3ng b\u1ed9.` });
+  return result;
+});
+
 ipcMain.handle('febet:tables', async () => {
   const indices = Array.from(activeProfileIndices).sort((a, b) => a - b);
   if (!indices.length) return { ok: false, error: 'Chưa có profile nào đang mở.' };
