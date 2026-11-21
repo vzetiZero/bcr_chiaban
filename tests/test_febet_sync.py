@@ -79,6 +79,50 @@ class FakeDriver:
         return None
 
 
+class FakeButton:
+    text = "XEM GAME"
+
+    def is_displayed(self):
+        return True
+
+    def is_enabled(self):
+        return True
+
+    def click(self):
+        self.clicked = True
+
+
+class XemGameFrameDriver:
+    def __init__(self):
+        self.window_handles = ["w1"]
+        self.frame = None
+        self.button = FakeButton()
+        self.switch_to = FakeSwitch(self)
+
+    def find_elements(self, _by, selector):
+        if selector == "iframe, frame" and self.frame is None:
+            return ["xem-frame"]
+        if selector == "button" and self.frame == "xem-frame":
+            return [self.button]
+        return []
+
+    def execute_script(self, js, *_args):
+        if "const frames=[...document.querySelectorAll" in js:
+            if self.frame == "xem-frame":
+                return {"url": "https://febet.kiwi/modal", "title": "", "frames": 0,
+                        "labels": [{"text": "XEM GAME"}]}
+            return {"url": LOBBY, "title": "", "frames": 1, "labels": []}
+        return None
+
+
+class XemGameButtonTest(unittest.TestCase):
+    def test_clicks_xem_game_inside_a_site_frame(self):
+        driver = XemGameFrameDriver()
+        self.assertTrue(F._click_xem_game(driver))
+        self.assertTrue(driver.button.clicked)
+        self.assertIsNone(driver.frame)
+
+
 class WidgetOriginTest(unittest.TestCase):
     def test_widgets_excluded(self):
         for origin in ("https://secure.livechatinc.com", "https://www.google.com",

@@ -963,7 +963,9 @@ async function runDGGroup(count, siteIds) {
       const index = febetIndices[offset];
       const reply = result.status === 'fulfilled' ? result.value : { ok: false, error: result.reason.message };
       febetAutoStates.set(index, reply?.ok
-        ? { ready: true, note: 'FEBET đã tự mở sảnh DG; đang xác nhận trạng thái.' }
+        ? { ready: true, note: reply.clicked_image
+          ? `Đã bấm thẻ Dream Gaming${reply.clicked_xem_game ? ' và XEM GAME' : '; đang chờ nút XEM GAME/game tải'}.`
+          : 'Game DG đã mở sẵn trên FEBET; đang xác nhận trạng thái.' }
         : { ready: false, note: `FEBET chưa tự mở được DG (${reply?.error || 'chưa xác nhận'}); có thể vào sảnh thủ công.` });
     });
     sendHopStatus({ active: true, waiting_indices: [...indices],

@@ -317,7 +317,7 @@ def open_dream_gaming_baccarat(driver):
                         "frames": last["frames"],
                         "options": last["options"], "note": "Đã mở DG Baccarat trong iframe riêng."}
         return {"ok": False, "clicked_image": True,
-                "clicked_xem_game": False,
+                "clicked_xem_game": clicked_xem_game,
                 "frames": last.get("frames", []), "options": last.get("options", []),
                 "error": "Đã bấm ảnh DG nhưng chưa thấy nút XEM GAME hoặc iframe game trong 120 giây."}
     except Exception as exc:
@@ -329,15 +329,40 @@ def open_dream_gaming_baccarat(driver):
 
 
 def _click_xem_game(driver):
-    """Click the site's explicit XEM GAME action when its balance modal appears."""
+    """Find and click XEM GAME in the top page or any same profile frame/tab."""
     try:
-        for button in driver.find_elements("css selector", "button"):
-            if not button.is_displayed() or not button.is_enabled():
+        for handle in reversed(driver.window_handles):
+            try:
+                driver.switch_to.window(handle)
+                driver.switch_to.default_content()
+            except Exception:
                 continue
-            label = re.sub(r"\s+", " ", button.text or "").strip().upper()
-            if label == "XEM GAME":
-                button.click()
-                return True
+            for path, info in _frame_contexts(driver):
+                labels = info.get("labels") or []
+                if not any(re.sub(r"\s+", " ", str(item.get("text") or "")).strip().upper()
+                           == "XEM GAME" for item in labels):
+                    continue
+                try:
+                    _enter_path(driver, path)
+                    for button in driver.find_elements("css selector", "button"):
+                        if not button.is_displayed() or not button.is_enabled():
+                            continue
+                        label = re.sub(r"\s+", " ", button.text or "").strip().upper()
+                        if label != "XEM GAME":
+                            continue
+                        driver.execute_script(
+                            "arguments[0].scrollIntoView({block:'center',inline:'center',behavior:'instant'});",
+                            button)
+                        try:
+                            button.click()
+                        except Exception:
+                            driver.execute_script("arguments[0].click();", button)
+                        return True
+                finally:
+                    try:
+                        driver.switch_to.default_content()
+                    except Exception:
+                        pass
     except Exception:
         pass
     return False
