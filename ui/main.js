@@ -951,8 +951,30 @@ async function runDGGroup(count, siteIds) {
       || selectedSites.some((id) => !PROFILE_SITES.some((site) => site.id === id))) {
     return { ok: false, error: 'Mỗi profile cần có một site hợp lệ trước khi vào sảnh DG.' };
   }
+  const febetIndices = indices.filter((_, offset) => selectedSites[offset] === 'febet');
+  const febetAutoStates = new Map();
+  if (febetIndices.length) {
+    const labels = febetIndices.map((index) => `Profile ${index}`).join(', ');
+    sendHopStatus({ active: true, waiting_indices: [...indices],
+      note: `Đang tự vào sảnh DG cho ${labels} qua FEBET; các profile site khác vào sảnh thủ công.` });
+    const autoResults = await Promise.allSettled(febetIndices.map((index) =>
+      profileEngine(index).call('febet.openDG', {}, 360000)));
+    autoResults.forEach((result, offset) => {
+      const index = febetIndices[offset];
+      const reply = result.status === 'fulfilled' ? result.value : { ok: false, error: result.reason.message };
+      febetAutoStates.set(index, reply?.ok
+        ? { ready: true, note: 'FEBET đã tự mở sảnh DG; đang xác nhận trạng thái.' }
+        : { ready: false, note: `FEBET chưa tự mở được DG (${reply?.error || 'chưa xác nhận'}); có thể vào sảnh thủ công.` });
+    });
+    sendHopStatus({ active: true, waiting_indices: [...indices],
+      profile_states: indices.map((index) => ({ index, ready: febetAutoStates.get(index)?.ready || false,
+        note: febetAutoStates.get(index)?.note || 'Profile site này cần vào sảnh DG thủ công.' })),
+      note: 'Đã chạy thao tác vào DG cho profile FEBET. Đang quét các profile mỗi 5 giây để xác nhận và đồng bộ nhóm.' });
+  }
   sendHopStatus({ active: true,
-    note: 'Các site đã mở. Hãy tự vào sảnh DG trên từng profile; ứng dụng sẽ quét trạng thái mỗi 5 giây.',
+    note: febetIndices.length
+      ? 'FEBET đang/đã tự vào DG; hãy tự vào sảnh trên các profile site khác. Ứng dụng quét mỗi 5 giây.'
+      : 'Các site đã mở. Hãy tự vào sảnh DG trên từng profile; ứng dụng sẽ quét trạng thái mỗi 5 giây.',
     waiting_indices: [...indices] });
   let profileStates = [];
   while (indices.every((index) => activeProfileIndices.has(index))) {
@@ -967,7 +989,7 @@ async function runDGGroup(count, siteIds) {
       const ready = Boolean(result?.ok);
       return { index, ready, in_table: result?.in_table === true,
         note: ready ? (result.in_table ? `Đã thấy đang ở bàn ${result.table_id || ''}.` : 'Đã nhận diện sảnh DG.')
-          : `Đang chờ sảnh DG${result?.error ? ` · ${result.error}` : ''}.` };
+          : (febetAutoStates.get(index)?.note || `Đang chờ sảnh DG${result?.error ? ` · ${result.error}` : ''}.`) };
     });
     const waiting = profileStates.filter((item) => !item.ready).map((item) => item.index);
     if (!waiting.length) break;
