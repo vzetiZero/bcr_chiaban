@@ -165,3 +165,11 @@ h1 { margin: 6px 0 4px; color: #f8fafc; font-size: clamp(23px, 3vw, 30px); lette
 
 .profile-site-select { width: 100%; min-width: 0; height: 32px; padding: 0 8px; border: 1px solid rgba(148, 163, 184, .22); border-radius: 6px; background: rgba(9, 13, 22, .8); color: #e2e8f0; font-size: 10px; }
 .profile-site-select:focus { outline: none; border-color: var(--amber); box-shadow: 0 0 0 3px rgba(245, 158, 11, .12); }
+.activity-log-card { min-height: 560px; }
+.danger-button { border-color: rgba(239, 68, 68, .4); color: #fecaca; }
+.activity-log-list { display: flex; flex-direction: column; gap: 7px; max-height: 62vh; overflow: auto; padding: 2px; }
+.activity-log-row { padding: 9px 11px; border: 1px solid rgba(148, 163, 184, .16); border-radius: 7px; background: rgba(30, 41, 59, .58); }
+.activity-log-row.error { border-color: rgba(248, 113, 113, .36); background: rgba(127, 29, 29, .16); }
+.activity-log-meta { display: flex; justify-content: space-between; gap: 12px; color: #93a4b8; font-size: 9px; }
+.activity-log-row.error .activity-log-meta { color: #fca5a5; }
+.activity-log-row p { margin: 5px 0 0; color: #e2e8f0; font: 11px/1.5 Consolas, 'Courier New', monospace; overflow-wrap: anywhere; white-space: pre-wrap; }

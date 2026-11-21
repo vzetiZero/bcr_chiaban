@@ -36,6 +36,7 @@
       <button class="tab-button" type="button" role="tab" aria-selected="false" data-tab-target="profiles">Profiles</button>
       <button class="tab-button" type="button" role="tab" aria-selected="false" data-tab-target="proxies">Proxy</button>
       <button class="tab-button" type="button" role="tab" aria-selected="false" data-tab-target="bets">Cược</button>
+      <button class="tab-button" type="button" role="tab" aria-selected="false" data-tab-target="logs">Log</button>
     </nav>
 
     <div class="tab-panel active" role="tabpanel" data-tab-panel="run">
@@ -203,6 +204,18 @@
         <div id="bet-stake-preview" class="notice" role="status"></div>
         <div id="bet-notice" class="notice" role="status" aria-live="polite"></div>
         <div id="bet-assignments" class="proxy-assignments"></div>
+      </section>
+    </div>
+
+    <div class="tab-panel" role="tabpanel" data-tab-panel="logs">
+      <section class="card activity-log-card">
+        <div class="section-heading">
+          <div><div class="eyebrow">NHẬT KÝ HOẠT ĐỘNG</div><h2>Log trực tiếp</h2></div>
+          <button id="clear-activity-log" class="close-button danger-button" type="button">Xóa nhật ký</button>
+        </div>
+        <p class="notice">Nhật ký được lưu trong tệp JSON cục bộ và tự tải lại khi mở ứng dụng.</p>
+        <div id="activity-log-list" class="activity-log-list" role="log" aria-live="polite"></div>
+        <div id="activity-log-empty" class="empty" hidden>Chưa có nhật ký.</div>
       </section>
     </div>
 

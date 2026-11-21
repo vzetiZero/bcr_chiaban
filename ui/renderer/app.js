@@ -14,6 +14,59 @@ let hidemiumProfiles = [];
 let hidemiumAssignments = {};
 let profileSites = [];
 let profileSiteSelections = {};
+
+let activityLogRows = [];
+
+function renderActivityLog() {
+  const list = $('#activity-log-list');
+  list.replaceChildren();
+  $('#activity-log-empty').hidden = activityLogRows.length > 0;
+  for (const item of activityLogRows) {
+    const row = document.createElement('article');
+    row.className = `activity-log-row ${item.level === 'error' ? 'error' : ''}`;
+    const meta = document.createElement('div');
+    meta.className = 'activity-log-meta';
+    const time = document.createElement('time');
+    const date = new Date(item.time);
+    time.dateTime = Number.isNaN(date.getTime()) ? '' : date.toISOString();
+    time.textContent = Number.isNaN(date.getTime()) ? String(item.time || '')
+      : date.toLocaleString('vi-VN');
+    const source = document.createElement('span');
+    source.textContent = String(item.source || 'app');
+    meta.append(time, source);
+    const text = document.createElement('p');
+    text.textContent = String(item.text || '');
+    row.append(meta, text);
+    list.append(row);
+  }
+  list.scrollTop = list.scrollHeight;
+}
+
+function addActivityLog(item) {
+  if (!item || !item.text) return;
+  activityLogRows.push(item);
+  if (activityLogRows.length > 5000) activityLogRows = activityLogRows.slice(-5000);
+  renderActivityLog();
+}
+
+api.onActivityLogEntry(addActivityLog);
+api.onActivityLogClear(() => {
+  activityLogRows = [];
+  renderActivityLog();
+});
+
+$('#clear-activity-log').addEventListener('click', async (event) => {
+  const button = event.currentTarget;
+  button.disabled = true;
+  try {
+    const result = await api.clearActivityLog();
+    if (!result?.ok) showNotice('Không xóa được nhật ký.', true);
+  } catch (error) {
+    showNotice(`Không xóa được nhật ký: ${error.message || error}`, true);
+  } finally {
+    button.disabled = false;
+  }
+});
 let lastSiteLabel = 'Chưa chạy';
 
 window.addEventListener('error', (event) => showNotice(String(event.message || event.error), true));
@@ -688,6 +741,9 @@ api.onEngineEvent(({ game, event, data }) => {
   try {
     const info = await api.info();
     profileSites = info.profileSites || [];
+    const savedLog = await api.getActivityLog();
+    activityLogRows = (savedLog?.rows || []).slice(-5000);
+    renderActivityLog();
     try { profileSiteSelections = JSON.parse(localStorage.getItem('aibcr.profileSites') || '{}') || {}; }
     catch { profileSiteSelections = {}; }
     const betConfig = await api.getBetConfig();

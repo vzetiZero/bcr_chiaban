@@ -536,7 +536,8 @@ return (() => {
   const denoms = [];
   for (const chip of (view.chipMan?.chipArray || [])) {
     const raw = Number(chip?.chipNum || chip?.value || chip?.amount || 0);
-    if (raw > 0 && scale > 0 && Number.isInteger(raw / scale)) denoms.push(raw / scale);
+    const normalized = scale ? Math.round(raw / scale) : 0;
+    if (raw > 0 && normalized > 0) denoms.push(normalized);
   }
   const stateId = Number(info.stateId ?? info.state ?? view.stateId ?? 0);
   const countdown = Number(info.countDown ?? view.countDown ?? 0);

@@ -24,6 +24,8 @@ contextBridge.exposeInMainWorld('aibcr', {
   syncFebetTableById: (tableId) => ipcRenderer.invoke('febet:sync-table', { tableId }),
   getBetConfig: () => ipcRenderer.invoke('bets:config:get'),
   saveBetConfig: (config) => ipcRenderer.invoke('bets:config:save', { config }),
+  getActivityLog: () => ipcRenderer.invoke('activity-log:get'),
+  clearActivityLog: () => ipcRenderer.invoke('activity-log:clear'),
   applyBets: (tableId, tableIds) => ipcRenderer.invoke('bets:apply', { tableId, tableIds }),
   openExternal: (url) => ipcRenderer.invoke('app:openExternal', url),
   saveText: (name, text) => ipcRenderer.invoke('app:saveText', { name, text }),
@@ -37,5 +39,15 @@ contextBridge.exposeInMainWorld('aibcr', {
     const listener = (_event, payload) => handler(payload);
     ipcRenderer.on('group-hop', listener);
     return () => ipcRenderer.removeListener('group-hop', listener);
+  },
+  onActivityLogEntry: (handler) => {
+    const listener = (_event, payload) => handler(payload);
+    ipcRenderer.on('activity-log:entry', listener);
+    return () => ipcRenderer.removeListener('activity-log:entry', listener);
+  },
+  onActivityLogClear: (handler) => {
+    const listener = () => handler();
+    ipcRenderer.on('activity-log:clear', listener);
+    return () => ipcRenderer.removeListener('activity-log:clear', listener);
   },
 });

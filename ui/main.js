@@ -10,6 +10,34 @@ const { parseProxy, proxyLabel, startProxyBridge, checkProxy } = require('./prox
 const { commonReachableStake } = require('./chip_amounts');
 
 const PROJECT_ROOT = path.resolve(__dirname, '..');
+const ACTIVITY_LOG_LIMIT = 5000;
+let activityLogQueue = Promise.resolve();
+let lastGroupLogText = '';
+
+function activityLogPath() {
+  return path.join(app.getPath('userData'), 'activity-log.json');
+}
+
+function appendActivityLog({ source = 'app', level = 'info', text = '' } = {}) {
+  const safeText = String(text).replace(/((?:token|jwt|authorization|cookie|api[_-]?key)=)[^&\s]+/gi, '$1[redacted]')
+    .slice(0, 2000);
+  if (!safeText) return activityLogQueue;
+  activityLogQueue = activityLogQueue.then(async () => {
+    let rows = [];
+    try {
+      const parsed = JSON.parse(await fs.promises.readFile(activityLogPath(), 'utf8'));
+      if (Array.isArray(parsed)) rows = parsed;
+    } catch { /* nhật ký chưa được tạo */ }
+    const row = { time: new Date().toISOString(), source: String(source).slice(0, 80),
+      level: level === 'error' ? 'error' : 'info', text: safeText };
+    rows.push(row);
+    if (rows.length > ACTIVITY_LOG_LIMIT) rows = rows.slice(-ACTIVITY_LOG_LIMIT);
+    await fs.promises.writeFile(activityLogPath(), JSON.stringify(rows, null, 2), 'utf8');
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('activity-log:entry', row);
+  }).catch((error) => console.warn('Could not save activity log:', error.message || error));
+  return activityLogQueue;
+}
+
 const PYTHON_CANDIDATES = [
   process.env.AIBCR_PYTHON,
   'python',
@@ -454,6 +482,10 @@ class Engine {
   }
 
   emitEvent(event, data) {
+    if (['log', 'opened', 'open_error', 'stopped'].includes(event)) {
+      const text = event === 'log' ? data?.text : `${event}: ${typeof data === 'string' ? data : JSON.stringify(data || {})}`;
+      appendActivityLog({ source: this.game, level: data?.level || (event === 'open_error' ? 'error' : 'info'), text });
+    }
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('engine:event', { game: this.game, event, data });
     }
@@ -510,6 +542,11 @@ function configuredHopRounds(value) {
 }
 
 function sendHopStatus(payload) {
+  const note = String(payload?.note || '').trim();
+  if (note && note !== lastGroupLogText) {
+    lastGroupLogText = note;
+    appendActivityLog({ source: 'điều phối nhóm', level: payload.error ? 'error' : 'info', text: note });
+  }
   if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('group-hop', payload);
 }
 
@@ -591,6 +628,7 @@ async function rotateSharedProfiles() {
 
 function startGroupBetting(tableId, indices, config) {
   if (groupBetTimer) clearInterval(groupBetTimer);
+  lastGroupLogText = '';
   groupBetting = {
     active: true, busy: false, tableId: String(tableId), indices: [...indices],
     config, lastPlaced: null, totalWagered: 0, lastMessage: '',
@@ -733,6 +771,13 @@ async function groupBettingTick() {
     const targetStake = Math.min(...ladderStakes);
     const commonStake = commonReachableStake(targetStake, states);
     if (!commonStake) {
+      const diagnostics = states.map((state, offset) => {
+        const index = groupBetting.indices[offset];
+        if (!state?.ok) return `P${index}: không đọc được trạng thái chip (${state?.error || 'chưa sẵn sàng'})`;
+        return `P${index}: scale=${state.scale ?? '?'}, sàn=${state.min_k ?? '?' }k, trần=${state.max_k || 'không rõ'}k, số dư=${state.balance_k ?? 'không rõ'}k, chip=[${(state.denominations_k || []).join(',')}]`;
+      }).join(' · ');
+      appendActivityLog({ source: 'kiểm tra chip', level: 'error',
+        text: `Không tìm thấy mức chung không vượt ${targetStake}k. ${diagnostics}` });
       stopGroupBetting(`Kh\u00f4ng c\u00f3 m\u1ee9c chip chung h\u1ee3p l\u1ec7 kh\u00f4ng v\u01b0\u1ee3t ${targetStake}k; \u0111\u00e3 d\u1eebng tr\u01b0\u1edbc khi x\u1ebfp chip.`, true);
       return;
     }
@@ -1155,6 +1200,21 @@ async function configureProfileLadders(indices, config) {
   return replies.map((result, offset) => result.status === 'fulfilled' ? result.value
     : { index: indices[offset], ok: false, error: result.reason.message });
 }
+
+ipcMain.handle('activity-log:get', async () => {
+  await activityLogQueue;
+  try {
+    const rows = JSON.parse(await fs.promises.readFile(activityLogPath(), 'utf8'));
+    return { ok: true, rows: Array.isArray(rows) ? rows : [] };
+  } catch { return { ok: true, rows: [] }; }
+});
+
+ipcMain.handle('activity-log:clear', async () => {
+  activityLogQueue = activityLogQueue.then(() => fs.promises.writeFile(activityLogPath(), '[]', 'utf8'));
+  await activityLogQueue;
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('activity-log:clear');
+  return { ok: true };
+});
 
 ipcMain.handle('bets:config:get', async () => ({ ok: true, config: await loadBetConfig() }));
 
