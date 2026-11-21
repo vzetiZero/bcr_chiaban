@@ -642,6 +642,7 @@ function startGroupBetting(tableId, indices, config) {
   groupBetting = {
     active: true, busy: false, tableId: String(tableId), indices: [...indices],
     config, lastPlaced: null, totalWagered: 0, lastMessage: '',
+    skippedRound: '', skippedCount: 0,
   };
   groupBetTimer = setInterval(() => { void groupBettingTick(); }, 450);
   sendHopStatus({ active: true, table_id: String(tableId),
@@ -654,6 +655,18 @@ function groupStatus(note, error = false) {
   sendHopStatus({ active: groupBetting.active, table_id: groupBetting.tableId,
     rounds: sharedHop?.rounds || 0, hops: sharedHop?.hops || 0,
     total_bet: groupBetting.totalWagered, error, note });
+}
+
+// Abandon the current hand only. The session stays active so the next hand is
+// attempted; a hard stop is reserved for structural problems (closed profiles,
+// changed table, mismatched round ids).
+function skipGroupRound(roundId, note) {
+  if (!groupBetting) return;
+  groupBetting.skippedRound = String(roundId || '');
+  groupBetting.skippedCount += 1;
+  groupBetting.lastPlaced = null;
+  appendActivityLog({ source: 'bỏ qua tay', level: 'error', text: note });
+  groupStatus(`${note} Bỏ qua tay này và chờ tay tiếp theo (đã bỏ ${groupBetting.skippedCount} tay).`);
 }
 
 function stopGroupBetting(note, error = true) {
@@ -726,6 +739,11 @@ async function groupBettingTick() {
       return;
     }
     const roundId = String(states[0].round_id);
+    if (groupBetting.skippedRound && groupBetting.skippedRound === roundId) {
+      groupStatus(`Tay ${roundId} đã bỏ qua; chờ ván kế tiếp.`);
+      return;
+    }
+    groupBetting.skippedRound = '';
     if (groupBetting.lastPlaced && groupBetting.lastPlaced.roundId !== roundId
         && !groupBetting.lastPlaced.settled) {
       const prior = groupBetting.lastPlaced;
@@ -788,7 +806,8 @@ async function groupBettingTick() {
       }).join(' · ');
       appendActivityLog({ source: 'kiểm tra chip', level: 'error',
         text: `Không tìm thấy mức chung không vượt ${targetStake}k. ${diagnostics}` });
-      stopGroupBetting(`Kh\u00f4ng c\u00f3 m\u1ee9c chip chung h\u1ee3p l\u1ec7 kh\u00f4ng v\u01b0\u1ee3t ${targetStake}k; \u0111\u00e3 d\u1eebng tr\u01b0\u1edbc khi x\u1ebfp chip.`, true);
+      skipGroupRound(roundId,
+        `Không có mức chip chung hợp lệ không vượt ${targetStake}k.`);
       return;
     }
     const stakes = engineStates.map(() => commonStake);
@@ -807,7 +826,7 @@ async function groupBettingTick() {
         ? `P${groupBetting.indices[i]}: ${reply.amount_k}k ${reply.side}`
         : `P${groupBetting.indices[i]}: ${reply?.error || 'không xếp được chip'}`
           + (Number.isFinite(Number(reply?.staged_k)) ? ` (đã xác nhận ${Number(reply.staged_k)}k)` : '')).join(' · ');
-      stopGroupBetting(`Không xếp đủ chip cho cả nhóm; dừng và không tự thử lại. ${details}`, true);
+      skipGroupRound(roundId, `Không xếp đủ chip cho cả nhóm: ${details}.`);
       return;
     }
     groupBetting.lastPlaced = { roundId, indices: [...groupBetting.indices], sides, stakes,

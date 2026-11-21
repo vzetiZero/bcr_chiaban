@@ -94,3 +94,33 @@ test('large-chip sites are grouped together at the end of the list', () => {
   assert.deepEqual(largeIds, ['vnwtop', 'febet']);
   assert.equal(ids[ids.length - 1].id, 'febet');
 });
+
+const RENDERER = path.join(__dirname, '..', 'ui', 'renderer', 'app.js');
+const HTML = path.join(__dirname, '..', 'ui', 'renderer', 'index.html');
+const renderer = fs.readFileSync(RENDERER, 'utf8');
+const html = fs.readFileSync(HTML, 'utf8');
+const css = fs.readFileSync(path.join(__dirname, '..', 'ui', 'renderer', 'styles.css'), 'utf8');
+
+test('the numeric account-count input is gone', () => {
+  assert.ok(!html.includes('id="profile-count"'), 'count input should be removed');
+  assert.ok(!renderer.includes("$('#profile-count')"), 'renderer should not query the count input');
+});
+
+test('selection is derived from the picked profiles and can be saved', () => {
+  assert.match(html, /id="profile-picker"/);
+  assert.match(html, /id="save-profile-selection"/);
+  assert.match(renderer, /selection\.length/);
+  assert.match(renderer, /PROFILE_SELECTION_KEY/);
+});
+
+test('the Profiles tab always lists every profile slot', () => {
+  assert.match(renderer, /renderProfiles\(MAX_PROFILES/);
+  assert.match(renderer, /const MAX_PROFILES = 8/);
+});
+
+test('a dark/light theme toggle exists and is persisted', () => {
+  assert.match(html, /id="theme-toggle"/);
+  assert.match(renderer, /documentElement\.dataset\.theme/);
+  assert.match(renderer, /THEME_KEY/);
+  assert.match(css, /:root\[data-theme="light"\]/);
+});

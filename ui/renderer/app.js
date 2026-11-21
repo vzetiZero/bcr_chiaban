@@ -1,6 +1,8 @@
 const api = window.aibcr;
 const $ = (selector) => document.querySelector(selector);
-const profileCount = $('#profile-count');
+const MAX_PROFILES = 8;
+const selectedIndicesOrDefault = () => (selectedProfileIndices.length
+  ? selectedProfileIndices : Array.from({ length: MAX_PROFILES }, (_, i) => i + 1));
 const profileList = $('#profile-list');
 const runButton = $('#run-profiles');
 const notice = $('#notice');
@@ -117,7 +119,8 @@ function renderProfiles(count, siteLabel, replies = [], indices = null) {
     const reply = replies[offset] || {};
     const state = reply.ok ? 'opening' : reply.error ? 'error' : (profileStateByIndex.get(index) || 'closed');
     const row = document.createElement('article');
-    row.className = `profile-row ${state}`;
+    const chosen = selectedIndicesOrDefault().includes(index);
+    row.className = `profile-row ${state}${chosen ? ' profile-selected' : ''}`;
     row.innerHTML = `<div class="profile-number">${String(index).padStart(2, '0')}</div>
       <div class="profile-info"><strong>Profile ${index}</strong><span class="profile-detail"></span></div>
       <select class="profile-site-select" data-profile="${index}" aria-label="Site c\u1ee7a Profile ${index}"></select>
@@ -234,7 +237,8 @@ let selectedProfileIndices = [];
 let profileSelectionTouched = false;
 
 function profileCountValue() {
-  return Math.max(1, Math.min(8, Math.trunc(Number(profileCount.value) || 1)));
+  // Default count when nothing has been chosen yet: every slot up to MAX_PROFILES.
+  return MAX_PROFILES;
 }
 
 function readStoredSelection() {
@@ -278,7 +282,34 @@ function syncProfilePicker() {
     : 'Chưa chọn profile nào.';
   host.append(hint);
   $('#run-count-stat').textContent = String(selection.size || 0);
+  const countLabel = $('#selection-count');
+  if (countLabel) {
+    countLabel.textContent = selection.size
+      ? `${selection.size} profile · ${[...selection].sort((a, b) => a - b).map((index) => `P${index}`).join(', ')}`
+      : 'Chưa chọn profile';
+  }
   if (profileSites.length) runButton.disabled = selection.size === 0;
+}
+
+const THEME_KEY = 'aibcr.theme';
+
+function applyTheme(theme) {
+  const next = theme === 'light' ? 'light' : 'dark';
+  document.documentElement.dataset.theme = next;
+  localStorage.setItem(THEME_KEY, next);
+  const toggle = $('#theme-toggle');
+  if (toggle) {
+    toggle.setAttribute('aria-pressed', String(next === 'light'));
+    toggle.title = next === 'light' ? 'Chuyển sang giao diện tối' : 'Chuyển sang giao diện sáng';
+  }
+}
+
+function initTheme() {
+  const saved = localStorage.getItem(THEME_KEY);
+  applyTheme(saved || 'dark');
+  $('#theme-toggle').addEventListener('click', () => {
+    applyTheme(document.documentElement.dataset.theme === 'light' ? 'dark' : 'light');
+  });
 }
 
 $('#profile-picker').addEventListener('change', (event) => {
@@ -342,7 +373,7 @@ async function refreshOmniProfiles() {
     omniAssignments = Object.fromEntries(Object.entries(omniAssignments)
       .filter(([, id]) => omniProfiles.some((profile) => profile.id === id)));
     localStorage.setItem(OMNI_ASSIGNMENTS_KEY, JSON.stringify(omniAssignments));
-    renderOmniAssignments(Math.max(1, Math.min(8, Number(profileCount.value) || 1)));
+    renderOmniAssignments(MAX_PROFILES);
     $('#omni-notice').textContent = `OmniLogin k\u1ebft n\u1ed1i th\u00e0nh c\u00f4ng ? ${omniProfiles.length} profiles.`;
   } catch (error) {
     $('#omni-notice').textContent = String(error.message || error);
@@ -400,7 +431,7 @@ async function refreshHidemiumProfiles() {
     hidemiumAssignments = Object.fromEntries(Object.entries(hidemiumAssignments)
       .filter(([, id]) => hidemiumProfiles.some((profile) => profile.id === id)));
     localStorage.setItem(HIDEMIUM_ASSIGNMENTS_KEY, JSON.stringify(hidemiumAssignments));
-    renderHidemiumAssignments(Math.max(1, Math.min(8, Number(profileCount.value) || 1)));
+    renderHidemiumAssignments(MAX_PROFILES);
     $('#hidemium-notice').textContent = `Hidemium kết nối thành công · ${hidemiumProfiles.length} profiles.`;
   } catch (error) {
     $('#hidemium-notice').textContent = String(error.message || error);
@@ -442,7 +473,7 @@ function renderProxyList() {
     row.querySelector('.proxy-remove').dataset.proxyId = proxy.id;
     list.append(row);
   }
-  renderProxyAssignments(Math.max(1, Math.min(8, Number(profileCount.value) || 1)));
+  renderProxyAssignments(MAX_PROFILES);
 }
 
 function setProxyState(result) {
@@ -477,12 +508,6 @@ $('#profile-source').addEventListener('change', () => {
   localStorage.setItem(PROFILE_SOURCE_KEY, $('#profile-source').value);
   updateSitePreview();
 });
-profileCount.addEventListener('input', () => {
-  const value = Math.max(1, Math.min(8, Math.trunc(Number(profileCount.value) || 1)));
-  $('#run-count-stat').textContent = String(value);
-  $('#header-profile-count').textContent = String(value);
-  syncProfilePicker();
-});
 document.querySelectorAll('[data-tab-target]').forEach((button) => {
   button.addEventListener('click', () => {
     const target = button.dataset.tabTarget;
@@ -496,14 +521,17 @@ document.querySelectorAll('[data-tab-target]').forEach((button) => {
     });
   });
 });
-$('#profile-count').addEventListener('change', () => {
-  const value = Math.max(1, Math.min(8, Number(profileCount.value) || 1));
-  profileCount.value = String(value);
-  renderProxyAssignments(value);
-  renderOmniAssignments(value);
-  renderHidemiumAssignments(value);
-  syncProfilePicker();
-  renderProfiles(activeProfileSelection().length, lastSiteLabel, [], activeProfileSelection());
+$('#save-profile-selection').addEventListener('click', () => {
+  const selection = activeProfileSelection();
+  if (!selection.length) {
+    showNotice('Hãy chọn ít nhất một profile trước khi lưu.', true);
+    return;
+  }
+  profileSelectionTouched = true;
+  localStorage.setItem(PROFILE_SELECTION_KEY, JSON.stringify(selection));
+  renderProfiles(MAX_PROFILES, lastSiteLabel, [], selectedIndicesOrDefault());
+  $('#header-profile-count').textContent = String(selection.length);
+  showNotice(`Đã lưu lựa chọn ${selection.map((index) => `P${index}`).join(', ')}.`);
 });
 
 $('#proxy-assignments').addEventListener('change', async (event) => {
@@ -608,7 +636,7 @@ runButton.addEventListener('click', async () => {
       showNotice(opened?.error || 'Kh\u00f4ng m\u1edf \u0111\u01b0\u1ee3c c\u00e1c profile.', true);
       return;
     }
-    renderProfiles(count, opened.site, opened.replies || [], indices);
+    renderProfiles(MAX_PROFILES, opened.site, opened.replies || [], selectedIndicesOrDefault());
     $('#close-profiles').disabled = false;
     const openFailures = (opened.replies || []).filter((reply) => !reply.ok);
     if (openFailures.length) {
@@ -673,7 +701,7 @@ profileList.addEventListener('click', async (event) => {
   try {
     const result = closing
       ? await api.closeProfile(index)
-      : await api.openProfile(index, Math.max(1, Math.min(8, Number(profileCount.value) || index)),
+      : await api.openProfile(index, MAX_PROFILES,
         collectSettings(1, [index])[0],
         site?.url, $('#profile-source').value, $('#omni-api-url').value.trim(), $('#hidemium-api-url').value.trim());
     if (!result || !result.ok) {
@@ -846,6 +874,8 @@ api.onEngineEvent(({ game, event, data }) => {
   }
 });
 
+initTheme();
+
 (async function boot() {
   try {
     const info = await api.info();
@@ -866,10 +896,10 @@ api.onEngineEvent(({ game, event, data }) => {
     $('#hidemium-api-url').value = localStorage.getItem(HIDEMIUM_API_KEY) || 'http://127.0.0.1:5555';
     try { omniAssignments = JSON.parse(localStorage.getItem(OMNI_ASSIGNMENTS_KEY) || '{}') || {}; } catch { omniAssignments = {}; }
     try { hidemiumAssignments = JSON.parse(localStorage.getItem(HIDEMIUM_ASSIGNMENTS_KEY) || '{}') || {}; } catch { hidemiumAssignments = {}; }
-    renderOmniAssignments(Math.max(1, Math.min(8, Number(profileCount.value) || 1)));
-    renderHidemiumAssignments(Math.max(1, Math.min(8, Number(profileCount.value) || 1)));
+    renderOmniAssignments(MAX_PROFILES);
+    renderHidemiumAssignments(MAX_PROFILES);
     syncProfilePicker();
-    renderProfiles(activeProfileSelection().length, lastSiteLabel, [], activeProfileSelection());
+    renderProfiles(MAX_PROFILES, lastSiteLabel, [], selectedIndicesOrDefault());
     updateSitePreview();
     showNotice('');
   } catch (error) {

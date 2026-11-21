@@ -12,6 +12,12 @@
   <header class="titlebar">
     <div class="brand"><span class="brand-mark">P</span><span>PROFILE MANAGER</span></div>
     <div class="drag"></div>
+    <div class="titlebar-actions">
+      <button id="theme-toggle" class="theme-toggle" type="button" title="Chuyển giao diện sáng/tối" aria-label="Chuyển giao diện sáng/tối">
+        <span class="theme-icon theme-icon-dark" aria-hidden="true">&#9790;</span>
+        <span class="theme-icon theme-icon-light" aria-hidden="true">&#9728;</span>
+      </button>
+    </div>
     <div class="window-controls">
       <button data-win="minimize" title="Thu nhỏ">&#8211;</button>
       <button data-win="maximize" title="Phóng to">&#9723;</button>
@@ -42,13 +48,15 @@
     <div class="tab-panel active" role="tabpanel" data-tab-panel="run">
     <section class="manager card">
       <div class="form-grid">
-        <label class="field">
-          <span>Số lượng tài khoản</span>
-          <input id="profile-count" type="number" min="1" max="8" step="1" value="4" />
-        </label>
         <div class="field">
-          <span>Chọn profile cụ thể</span>
-          <div id="profile-picker" class="profile-picker" role="group" aria-label="Chọn profile cụ thể"></div>
+          <span>Profile sẽ chạy</span>
+          <div class="selection-summary">
+            <div id="profile-picker" class="profile-picker" role="group" aria-label="Chọn profile cụ thể"></div>
+            <div class="selection-actions">
+              <strong id="selection-count">4 profile</strong>
+              <button id="save-profile-selection" class="close-button" type="button">Lưu lựa chọn</button>
+            </div>
+          </div>
         </div>
         <label class="field profile-source-field">
           <span>Nguồn profile</span>
