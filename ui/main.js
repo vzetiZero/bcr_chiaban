@@ -25,6 +25,68 @@ const PROFILE_SITES = [
   { id: 'bum123', label: 'BUM123', url: 'https://www.bum123.com/aff/10459' },
 ];
 
+const DEFAULT_BET_CONFIG = Object.freeze({
+  stakes: [260, 280, 300, 240, 220, 280, 320, 340, 380, 400, 360, 420,
+    440, 480, 500, 420, 340, 380, 440, 280, 400, 360, 300, 340, 280,
+    400, 360, 300, 280],
+  min_t: 20,
+  max_t: 10000,
+  min_tk: 3,
+  total_bet: 5000,
+  hop_min: '2',
+  hop_max: 5,
+  split: 'odd-p',
+});
+
+function betConfigPath() {
+  return path.join(app.getPath('userData'), 'bet-config.json');
+}
+
+function normalizeBetConfig(value = {}) {
+  const rawStakes = Array.isArray(value.stakes) ? value.stakes
+    : String(value.stakes || '').split(/[\s,-]+/);
+  const stakes = rawStakes.map((item) => Math.trunc(Number(item)))
+    .filter((item) => Number.isFinite(item) && item > 0 && item <= 10000000);
+  const min_t = Math.max(10, Math.min(10000, Math.trunc(Number(value.min_t) || 20)));
+  const max_t = Math.max(min_t, Math.min(10000, Math.trunc(Number(value.max_t) || 10000)));
+  const min_tk = Math.max(2, Math.min(15, Math.trunc(Number(value.min_tk) || 3)));
+  const total_bet = Math.max(1, Math.min(1000000000,
+    Math.trunc(Number(value.total_bet) || 5000)));
+  const hopText = String(value.hop_min ?? '2').trim();
+  const hopParts = hopText.split(/[\s,-]+/).filter(Boolean);
+  const hop_min = hopParts.length && hopParts.every((item) => /^\d+$/.test(item)
+    && Number(item) > 0) ? hopText.slice(0, 120) : '2';
+  const hop_max = Math.max(1, Math.min(48, Math.trunc(Number(value.hop_max) || 5)));
+  return {
+    stakes: stakes.length ? stakes : [...DEFAULT_BET_CONFIG.stakes],
+    min_t,
+    max_t,
+    min_tk,
+    total_bet,
+    hop_min,
+    hop_max,
+    split: value.split === 'odd-b' ? 'odd-b' : 'odd-p',
+  };
+}
+
+async function loadBetConfig() {
+  try {
+    const value = JSON.parse(await fs.promises.readFile(betConfigPath(), 'utf8'));
+    return normalizeBetConfig(value);
+  } catch {
+    return normalizeBetConfig();
+  }
+}
+
+async function saveBetConfig(value) {
+  const config = normalizeBetConfig(value);
+  const target = betConfigPath();
+  await fs.promises.mkdir(path.dirname(target), { recursive: true });
+  await fs.promises.writeFile(target, JSON.stringify(config, null, 2),
+    { encoding: 'utf8', mode: 0o600 });
+  return config;
+}
+
 function proxyStorePath() {
   return path.join(app.getPath('userData'), 'proxy-vault.json');
 }
@@ -258,6 +320,7 @@ class Engine {
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('engine:event', { game: this.game, event, data });
     }
+    if (event === 'state') observeSharedHop(this.profileIndex, data);
   }
 
   call(method, params = {}, timeout = 30000) {
@@ -298,6 +361,124 @@ class Engine {
 const engines = { baccarat: new Engine('baccarat', 1) };
 const activeProxyBridges = new Map();
 const activeProfileIndices = new Set();
+let sharedHop = null;
+
+function configuredHopRounds(value) {
+  const rounds = String(value || '2').trim().split(/[\s,-]+/)
+    .map((part) => Number(part)).filter((number) => Number.isInteger(number) && number > 0);
+  return rounds.length ? rounds : [2];
+}
+
+function sendHopStatus(payload) {
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('group-hop', payload);
+}
+
+function startSharedHop(tableId, tableIds, config, indices) {
+  const options = Array.from(new Set((tableIds || []).map(String)
+    .filter((id) => /^60\d{3,}$/.test(id))));
+  if (!options.includes(String(tableId))) options.unshift(String(tableId));
+  sharedHop = {
+    active: true,
+    tableId: String(tableId),
+    tableIds: options,
+    indices: [...indices],
+    config: { total_bet: config.total_bet },
+    schedule: configuredHopRounds(config.hop_min),
+    maxHops: config.hop_max,
+    rounds: 0,
+    hops: 0,
+    totalWagered: 0,
+    since: Date.now() / 1000,
+    pending: new Map(),
+    counted: new Set(),
+    targetNotified: false,
+    busy: false,
+  };
+  sendHopStatus({ active: true, table_id: sharedHop.tableId, rounds: 0, hops: 0,
+    note: 'Đang theo dõi số ván chung để xoay cả nhóm cùng bàn.' });
+}
+
+async function rotateSharedProfiles() {
+  if (!sharedHop || !sharedHop.active || sharedHop.busy) return;
+  if (sharedHop.hops >= sharedHop.maxHops) {
+    sharedHop.active = false;
+    sendHopStatus({ active: false, hops: sharedHop.hops,
+      note: `Đã đạt giới hạn ${sharedHop.maxHops} lượt đổi bàn.` });
+    return;
+  }
+  const currentIndex = sharedHop.tableIds.indexOf(sharedHop.tableId);
+  if (sharedHop.tableIds.length < 2 || currentIndex < 0) {
+    sharedHop.active = false;
+    sendHopStatus({ active: false, error: true,
+      note: 'Không có mã bàn kế tiếp để xoay nhóm.' });
+    return;
+  }
+  const target = sharedHop.tableIds[(currentIndex + 1) % sharedHop.tableIds.length];
+  const indices = Array.from(activeProfileIndices).sort((a, b) => a - b);
+  if (indices.length !== sharedHop.indices.length
+      || indices.some((index, offset) => index !== sharedHop.indices[offset])) {
+    sharedHop.active = false;
+    sendHopStatus({ active: false, error: true,
+      note: 'Danh sách profile đã thay đổi; đã dừng xoay để tránh tách nhóm.' });
+    return;
+  }
+  sharedHop.busy = true;
+  sendHopStatus({ active: true, table_id: target, hops: sharedHop.hops,
+    note: `Đủ ${sharedHop.rounds} ván; đang chuyển cả nhóm sang bàn ${target}…` });
+  const results = await Promise.allSettled(indices.map((index) =>
+    profileEngine(index).call('febet.syncTable', { table_id: target }, 180000)));
+  const replies = results.map((result, offset) => result.status === 'fulfilled'
+    ? result.value : { index: indices[offset], ok: false, error: result.reason.message });
+  const successful = replies.length === indices.length
+    && replies.every((reply) => reply && reply.ok && reply.in_table === true);
+  sharedHop.busy = false;
+  if (!successful) {
+    sharedHop.active = false;
+    sendHopStatus({ active: false, error: true, table_id: target,
+      note: 'Không xác nhận được tất cả profile ở bàn mới; đã dừng xoay nhóm.' });
+    return;
+  }
+  sharedHop.tableId = target;
+  sharedHop.hops += 1;
+  sharedHop.rounds = 0;
+  sharedHop.since = Date.now() / 1000;
+  sharedHop.pending.clear();
+  sharedHop.counted.clear();
+  sendHopStatus({ active: true, table_id: target, hops: sharedHop.hops,
+    note: `Cả ${indices.length} profile đã cùng vào bàn ${target}.` });
+}
+
+function observeSharedHop(profileIndex, state) {
+  if (!sharedHop || !sharedHop.active || sharedHop.busy
+      || !sharedHop.indices.includes(profileIndex) || !state || !Array.isArray(state.history)) return;
+  for (const entry of state.history) {
+    if (!entry || Number(entry.time) < sharedHop.since || !entry.hand
+        || !['B', 'P', 'T'].includes(String(entry.result || '').toUpperCase())) continue;
+    const signature = `${entry.table || ''}|${entry.hand}|${String(entry.result).toUpperCase()}`;
+    if (sharedHop.counted.has(signature)) continue;
+    if (!sharedHop.pending.has(signature)) sharedHop.pending.set(signature, new Map());
+    sharedHop.pending.get(signature).set(profileIndex, entry);
+    const confirmations = sharedHop.pending.get(signature);
+    if (sharedHop.indices.some((index) => !confirmations.has(index))) continue;
+    sharedHop.counted.add(signature);
+    sharedHop.rounds += 1;
+    for (const result of confirmations.values()) {
+      sharedHop.totalWagered += Math.max(0, Number(result.stake) || 0);
+    }
+    if (!sharedHop.targetNotified && sharedHop.config.total_bet > 0
+        && sharedHop.totalWagered >= sharedHop.config.total_bet) {
+      sharedHop.targetNotified = true;
+      sendHopStatus({ active: true, table_id: sharedHop.tableId, hops: sharedHop.hops,
+        total_bet: sharedHop.totalWagered, target_bet: sharedHop.config.total_bet,
+        note: `Đã đạt mục tiêu doanh số cược ${sharedHop.totalWagered}/${sharedHop.config.total_bet}.` });
+    }
+    const threshold = sharedHop.schedule[sharedHop.hops % sharedHop.schedule.length];
+    sendHopStatus({ active: true, table_id: sharedHop.tableId, rounds: sharedHop.rounds,
+      hops: sharedHop.hops, total_bet: sharedHop.totalWagered, target_bet: sharedHop.config?.total_bet,
+      note: `Đã xác nhận ${sharedHop.rounds}/${threshold} ván chung.` });
+    if (sharedHop.rounds >= threshold) void rotateSharedProfiles();
+  }
+}
 
 function profileEngine(index) {
   return engines[index === 1 ? 'baccarat' : `baccarat-profile-${index}`];
@@ -440,28 +621,56 @@ ipcMain.handle('febet:sync-table', async (_event, { tableId }) => {
       : { index: indices[offset], ok: false, error: result.reason.message }) };
 });
 
-// Cấu hình cược: cùng số chip mỗi tay, hai nhóm profile đặt hai cửa đối lập (P/B).
-// stake tính theo đơn vị sảnh (WM: 1 đv = 1.000đ); đơn vị chip 10 hoặc 10k.
-ipcMain.handle('bets:apply', async (_event, { amount, unit, split }) => {
+function ladderStake(config) {
+  const first = config.stakes[0] || config.min_t;
+  return Math.max(config.min_t, Math.min(config.max_t, first));
+}
+
+async function configureProfileLadders(indices, config) {
+  const oddSide = config.split === 'odd-b' ? 'B' : 'P';
+  const evenSide = oddSide === 'P' ? 'B' : 'P';
+  const replies = await Promise.allSettled(indices.map((index) => {
+    const side = index % 2 === 1 ? oddSide : evenSide;
+    return profileEngine(index).call('bet.ladder.configure', {
+      ...config,
+      side,
+    }, 30000).then((reply) => ({ index, side, ...reply }));
+  }));
+  return replies.map((result, offset) => result.status === 'fulfilled' ? result.value
+    : { index: indices[offset], ok: false, error: result.reason.message });
+}
+
+ipcMain.handle('bets:config:get', async () => ({ ok: true, config: await loadBetConfig() }));
+
+ipcMain.handle('bets:config:save', async (_event, { config: value }) => {
+  const config = await saveBetConfig(value || {});
+  const indices = Array.from(activeProfileIndices).sort((a, b) => a - b);
+  if (indices.length < config.min_tk) {
+    return { ok: true, saved: true, applied: false, config,
+      note: `Đã lưu cấu hình; cần ít nhất ${config.min_tk} profile đang mở để áp dụng dãy cược.` };
+  }
+  const replies = await configureProfileLadders(indices, config);
+  const failed = replies.filter((reply) => !reply.ok).length;
+  return { ok: failed === 0, saved: true, applied: true, config, count: indices.length,
+    replies, note: failed ? `${failed} profile chưa nhận được cấu hình dãy cược.`
+      : `Đã lưu và áp dụng dãy cược cho ${indices.length} profile.` };
+});
+
+// Configure opposite sides and the shared stake ladder for all open profiles.
+ipcMain.handle('bets:apply', async (_event, { tableId, tableIds } = {}) => {
   const indices = Array.from(activeProfileIndices).sort((a, b) => a - b);
   if (!indices.length) return { ok: false, error: 'Chưa có profile nào đang mở.' };
-  const count = Math.trunc(Number(amount));
-  const multiplier = Number(unit) === 10000 ? 10000 : 10;
-  if (!Number.isInteger(count) || count < 1 || count > 100000) {
-    return { ok: false, error: 'Số chip phải từ 1 đến 100.000.' };
+  const config = await loadBetConfig();
+  if (indices.length < config.min_tk) {
+    return { ok: false, error: `Cấu hình yêu cầu tối thiểu ${config.min_tk} profile; hiện có ${indices.length}.` };
   }
-  const stake = count * multiplier;
-  if (stake > 1000000) return { ok: false, error: 'Tổng mỗi tay vượt 1.000.000 đơn vị sảnh.' };
-  const oddSide = split === 'odd-b' ? 'B' : 'P';
-  const evenSide = oddSide === 'P' ? 'B' : 'P';
-  const results = await Promise.allSettled(indices.map((index) => {
-    const side = index % 2 === 1 ? oddSide : evenSide;
-    return profileEngine(index).call('bet.config', { side, stake }, 30000)
-      .then((reply) => ({ index, side, stake, ...reply }));
-  }));
-  return { ok: true, count: indices.length, stake, replies: results.map((result, offset) =>
-    result.status === 'fulfilled' ? result.value
-      : { index: indices[offset], ok: false, error: result.reason.message }) };
+  const replies = await configureProfileLadders(indices, config);
+  const failed = replies.filter((reply) => !reply.ok).length;
+  if (failed === 0 && /^60\d{3,}$/.test(String(tableId || ''))) {
+    startSharedHop(tableId, tableIds, config, indices);
+  }
+  return { ok: failed === 0, count: indices.length, stake: ladderStake(config),
+    config, replies, error: failed ? `${failed} profile không nhận được cấu hình dãy cược.` : '' };
 });
 
 ipcMain.handle('profile:close', async (_event, { index }) => {

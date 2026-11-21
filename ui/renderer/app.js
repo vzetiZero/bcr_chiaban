@@ -355,9 +355,10 @@ async function syncSelectedFebetTable() {
     showNotice(`${notInTable.length} profile vẫn ở sảnh, chưa có cửa cược. ${detail}`, true);
     return false;
   }
-  showNotice(`Cả ${sync.count} profile đã vào bàn ${sync.table_id}; đang áp dụng chip hai cửa…`);
-  const { amount, unit } = betStake();
-  const bets = await api.applyBets(amount, unit, $('#bet-split').value);
+  showNotice(`Cả ${sync.count} profile đã vào bàn ${sync.table_id}; đang áp dụng dãy cược hai cửa…`);
+  const tableIds = Array.from($('#febet-table-select').options)
+    .map((option) => option.value).filter((value) => /^60\d{3,}$/.test(value));
+  const bets = await api.applyBets(sync.table_id, tableIds);
   renderBetAssignments(bets);
   if (!bets || !bets.ok) {
     showNotice((bets && bets.error) || 'Không áp dụng được chip.', true);
@@ -366,7 +367,7 @@ async function syncSelectedFebetTable() {
   const betFailed = (bets.replies || []).filter((reply) => !reply.ok);
   showNotice(betFailed.length
     ? `Đã vào bàn ${sync.table_id}; ${betFailed.length} profile lỗi cấu hình chip.`
-    : `Hoàn tất: cả ${sync.count} profile ở bàn ${sync.table_id}, chip đã chia hai cửa đối lập.`,
+    : `Hoàn tất: cả ${sync.count} profile ở bàn ${sync.table_id}; đã gán dãy cược cho hai cửa đối lập.`,
   betFailed.length > 0);
   return betFailed.length === 0;
 }
@@ -487,24 +488,87 @@ profileList.addEventListener('click', async (event) => {
   }
 });
 
-function betStake() {
-  const amount = Math.max(1, Math.trunc(Number($('#bet-amount').value) || 1));
-  const unit = Number($('#bet-unit').value) === 10000 ? 10000 : 10;
-  return { amount, unit, stake: amount * unit };
+const LADDER_PRESETS = {
+  '3tk': '260 280 300 240 220 280 320 340 380 400 360 420 440 480 500 420 340 380 440 280 400 360 300 340 280 400 360 300 280',
+  '45tk': '500 600 620 540 680 540 580 640 500 480 600 580 700 680 640 520 480 500 600 620 540 680 540 620 540 680 540 580',
+  '67tk': '600 640 700 620 720 680 760 660 800 580 620 660 600 620 720 800 740 640 620 580 700 640 800',
+  basic: '200 300 240 220 280 320 340 380 400 360 420 440 480 500',
+};
+
+function readBetConfig() {
+  const stakes = $('#bet-ladder-stakes').value.trim().split(/[\s,-]+/)
+    .map((value) => Math.trunc(Number(value))).filter((value) => Number.isInteger(value) && value > 0);
+  return {
+    stakes,
+    min_t: Number($('#bet-min-stake').value),
+    max_t: Number($('#bet-max-stake').value),
+    min_tk: Number($('#bet-min-profiles').value),
+    total_bet: Number($('#bet-total-target').value),
+    hop_min: $('#bet-hop-rounds').value.trim(),
+    hop_max: Number($('#bet-hop-limit').value),
+    split: $('#bet-split').value,
+  };
 }
 
 function updateBetPreview() {
-  const { amount, unit, stake } = betStake();
-  const unitLabel = unit === 10000 ? '10k' : '10';
-  $('#bet-stake-preview').textContent =
-    `Mỗi tay: ${amount} chip × ${unitLabel} = ${stake.toLocaleString('vi-VN')} đơn vị sảnh`
-    + ` (thang WM: 1 đv = 1.000đ → ${(stake * 1000).toLocaleString('vi-VN')}đ).`
-    + ' Hai nhóm profile đặt cùng số tiền này ở hai cửa đối lập.';
+  const config = readBetConfig();
+  const first = config.stakes[0] || config.min_t || 0;
+  const initial = Math.max(config.min_t || 1, Math.min(config.max_t || first, first));
+  $('#bet-stake-preview').textContent = config.stakes.length
+    ? `Dãy ${config.stakes.length} mức · mức đầu ${initial.toLocaleString('vi-VN')}k · thắng về mức đầu, thua tiến một mức, hòa giữ nguyên.`
+    : 'Nhập ít nhất một mức cược hợp lệ.';
 }
 
-$('#bet-amount').addEventListener('input', updateBetPreview);
-$('#bet-unit').addEventListener('change', updateBetPreview);
+function fillBetConfig(config) {
+  $('#bet-ladder-stakes').value = (config.stakes || []).join(' ');
+  $('#bet-min-stake').value = config.min_t ?? 20;
+  $('#bet-max-stake').value = config.max_t ?? 10000;
+  $('#bet-min-profiles').value = config.min_tk ?? 3;
+  $('#bet-total-target').value = config.total_bet ?? 5000;
+  $('#bet-hop-rounds').value = config.hop_min ?? '2';
+  $('#bet-hop-limit').value = config.hop_max ?? 5;
+  $('#bet-split').value = config.split === 'odd-b' ? 'odd-b' : 'odd-p';
+  const match = Object.entries(LADDER_PRESETS).find(([, sequence]) =>
+    sequence === $('#bet-ladder-stakes').value);
+  $('#bet-ladder-preset').value = match ? match[0] : 'custom';
+  updateBetPreview();
+}
+
+$('#bet-ladder-preset').addEventListener('change', (event) => {
+  const preset = LADDER_PRESETS[event.currentTarget.value];
+  if (preset) $('#bet-ladder-stakes').value = preset;
+  updateBetPreview();
+});
+$('#bet-ladder-stakes').addEventListener('input', () => {
+  $('#bet-ladder-preset').value = 'custom';
+  updateBetPreview();
+});
+document.querySelectorAll('#bet-min-stake, #bet-max-stake, #bet-min-profiles, #bet-total-target, #bet-hop-rounds, #bet-hop-limit, #bet-split')
+  .forEach((input) => input.addEventListener('input', updateBetPreview));
+$('#save-bet-config').addEventListener('click', async (event) => {
+  const button = event.currentTarget;
+  button.disabled = true;
+  $('#bet-notice').textContent = 'Đang lưu và áp dụng dãy cược…';
+  try {
+    const result = await api.saveBetConfig(readBetConfig());
+    $('#bet-notice').textContent = result.note || (result.ok ? 'Đã lưu cấu hình.' : result.error);
+    $('#bet-notice').dataset.state = result.ok ? 'ready' : 'error';
+  } catch (error) {
+    $('#bet-notice').textContent = String(error.message || error);
+    $('#bet-notice').dataset.state = 'error';
+  } finally {
+    button.disabled = false;
+  }
+});
 updateBetPreview();
+
+api.onGroupHop((status) => {
+  const target = $('#bet-notice');
+  if (!target || !status || !status.note) return;
+  target.textContent = status.note;
+  target.dataset.state = status.error ? 'error' : 'ready';
+  showNotice(status.note, Boolean(status.error));
+});
 
 function renderBetAssignments(result) {
   const list = $('#bet-assignments');
@@ -555,6 +619,8 @@ api.onEngineEvent(({ game, event, data }) => {
       profileSelect.append(option);
     }
     profileSelect.disabled = false;
+    const betConfig = await api.getBetConfig();
+    if (betConfig && betConfig.ok) fillBetConfig(betConfig.config || {});
     setProxyState(await api.listProxies());
     renderProfiles(Math.max(1, Math.min(8, Number(profileCount.value) || 1)), lastSiteLabel);
     updateSitePreview();

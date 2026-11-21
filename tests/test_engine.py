@@ -58,6 +58,19 @@ def make_service(config=None, letters=None, now=None, source="evo-ws"):
 
 
 class DispatchTests(unittest.TestCase):
+    def test_bet_ladder_config_is_clamped_and_persisted(self):
+        service = make_service()
+        reply = service.bet_ladder_config_set({
+            "stakes": "5 30 60", "min_t": 20, "max_t": 50,
+            "min_tk": 4, "total_bet": 1200, "hop_min": "3 4 2",
+            "hop_max": 2, "side": "B",
+        })
+        self.assertTrue(reply["ok"])
+        self.assertEqual(reply["stake"], 20)
+        self.assertEqual(service.config["min_tk"], 4)
+        self.assertEqual(service.config["hop_rounds"], [3, 4, 2])
+        self.assertEqual(service.config["hop_max"], 2)
+
     def test_ping_and_state_are_answered(self):
         service = make_service()
         result, error = engine.dispatch(service, "ping", {})

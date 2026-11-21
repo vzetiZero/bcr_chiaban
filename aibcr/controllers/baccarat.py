@@ -31,6 +31,8 @@ from aibcr.adapters import lobby_stream as LS
 from aibcr.adapters import table_bets as TB
 from aibcr.adapters.wm_bet import WMBet
 from aibcr.config import *  # noqa: F401,F403
+from aibcr.models.bet_ladder import (BetLadder, DEFAULT_STAKES,
+                                     parse_hop_rounds, parse_stakes)
 from aibcr.live.reader import LiveReader
 from aibcr.live.session import LiveSession
 from aibcr.live.wm_reader import WMReader, find_wm_page, find_wm_table
@@ -53,7 +55,16 @@ DEFAULT_CONFIG = {
     # Lệnh cược mặc định; cửa luôn do người dùng chọn trực tiếp.
     "bet_side": "P",            # P | B | T; wagering never follows AI output
     # 10 đơn vị = 10.000đ (WM in khay chip theo nghìn đồng, 1 đv = 1.000đ).
-    "bet_stake": 10.0,          # số đơn vị cố định cho mỗi tay
+    "bet_stake": float(DEFAULT_STAKES[0]),
+    "stakes": list(DEFAULT_STAKES),
+    "min_t": 20,
+    "max_t": 10000,
+    "min_tk": 3,
+    "total_bet": 5000,
+    "hop_min": "2",
+    "hop_rounds": [2],
+    "hop_max": 5,
+    "ladder_step": 0,
     "start_url": BR.START_URL,
     "chrome_window": {"width": 900, "height": 1200, "percent": 60, "fullscreen": False},
     # AI live (site Petalive): off | local | api. Key AI CHỈ đọc từ env BCR_AI_KEY.
@@ -124,7 +135,10 @@ class BaccaratController:
         self.live_hand = 0
         # API key nhập từ UI: CHỈ RAM. Không đưa vào self.config, state file hay snapshot.
         self.ai_key_override = ""
-        self.bet_config = {"side": self.config["bet_side"], "stake": self.config["bet_stake"]}
+        self.bet_ladder = BetLadder(self.config["stakes"], self.config["min_t"],
+                                    self.config["max_t"], self.config["ladder_step"])
+        self.bet_config = {"side": self.config["bet_side"],
+                           "stake": self.config["bet_stake"]}
 
         # cờ bận cho các thao tác web (giống controller Tk)
         self.chrome_busy = False
@@ -223,6 +237,17 @@ class BaccaratController:
         config["bet_side"] = side if side in ("P", "B", "T") else "P"
         config["bet_stake"] = min(1000000.0, max(1.0, _as_float(
             config.get("bet_stake"), DEFAULT_CONFIG["bet_stake"])))
+        config["stakes"] = parse_stakes(config.get("stakes"))
+        config["min_t"] = min(10000, max(1, _as_int(config.get("min_t"), 20)))
+        config["max_t"] = min(10000, max(config["min_t"],
+                                         _as_int(config.get("max_t"), 10000)))
+        config["min_tk"] = min(15, max(2, _as_int(config.get("min_tk"), 3)))
+        config["total_bet"] = max(1, _as_int(config.get("total_bet"), 5000))
+        config["hop_min"] = str(config.get("hop_min") or "2").strip()[:120] or "2"
+        config["hop_rounds"] = parse_hop_rounds(config["hop_min"])
+        config["hop_max"] = min(48, max(1, _as_int(config.get("hop_max"), 5)))
+        config["ladder_step"] = min(len(config["stakes"]) - 1, max(
+            0, _as_int(config.get("ladder_step"), 0)))
         config["tables_to_play"] = max(1, _as_int(config.get("tables_to_play"), 1))
         mode = str(config.get("ai_mode") or "off").strip().lower()
         config["ai_mode"] = mode if mode in ("off", "local", "api") else "off"
@@ -414,6 +439,25 @@ class BaccaratController:
                 "stake": min(1000000.0, max(1.0, stake)),
                 "reason": "Lệnh do người dùng chọn"}
 
+    def _process_sim(self, row):
+        """Process one road update and advance this account's ladder on settled bets."""
+        start = len(self.sim.log)
+        changed = self.sim.process(row)
+        if not changed:
+            return False
+        for entry in self.sim.log[start:]:
+            outcome = str(entry.get("outcome") or "").lower()
+            if outcome not in ("win", "loss", "push"):
+                continue
+            stake = self.bet_ladder.on_result(outcome)
+            self.config["ladder_step"] = self.bet_ladder.step
+            self.config["bet_stake"] = stake
+            self.bet_config["stake"] = stake
+            self.log("Dãy cược: %s · mức %d/%d · %s đv." % (
+                outcome.upper(), self.bet_ladder.step + 1, len(self.bet_ladder.stakes),
+                M.fmt_money(stake)), "info")
+        return True
+
     def _plan(self):
         """Current wager plan based on the explicit user choice."""
         order = self._resolve_order()
@@ -512,6 +556,13 @@ class BaccaratController:
                     "side": self.bet_config["side"],
                     "stake": _finite(self.bet_config["stake"]),
                     "pending": dict(sim.pending) if sim.pending else None,
+                },
+                "bet_ladder": {
+                    "step": self.bet_ladder.step,
+                    "steps": len(self.bet_ladder.stakes),
+                    "stake": self.bet_ladder.current_stake,
+                    "min": self.bet_ladder.min_stake,
+                    "max": self.bet_ladder.max_stake,
                 },
                 "money": money,
                 "chips": {
@@ -1109,8 +1160,9 @@ class BaccaratController:
                 rows.append(table)
         self._ingest(rows)
         with self.lock:
-            if self.sim.table_key:
-                self.sim.process(self.tables.get(self.sim.table_key))
+            changed = self._process_sim(self.tables.get(self.sim.table_key)) if self.sim.table_key else False
+        if changed:
+            self._save_state()
         return self.snapshot()
 
     def scan_now(self):
@@ -2013,7 +2065,7 @@ class BaccaratController:
         else:
             self.connection_text = "Chưa thấy bàn Baccarat."
         with self.lock:
-            changed = self.sim.process(self.tables.get(self.sim.table_key))
+            changed = self._process_sim(self.tables.get(self.sim.table_key))
         if changed:
             self._save_state()
             if self.sim.cycle_done:
@@ -2380,7 +2432,7 @@ class BaccaratController:
             row["source"] = "live-ws"
             row["read_error"] = ""
             row["conflict"] = False
-            changed = self.sim.process(row)
+            changed = self._process_sim(row)
         if changed:
             self._save_state()
         return bool(changed)
@@ -2509,6 +2561,40 @@ class BaccaratController:
                 "note": "Lệnh tay kế: %s · %s đv (= %sđ)." % (
                     side, M.fmt_money(stake), M.fmt_money(stake * 1000))}
 
+    def bet_ladder_config_set(self, params):
+        """Save ladder and participation/turnover/table-cycle limits."""
+        params = params or {}
+        with self.lock:
+            config = dict(self.config)
+            config["stakes"] = parse_stakes(params.get("stakes", config["stakes"]))
+            for key in ("min_t", "max_t", "min_tk", "total_bet", "hop_max"):
+                if key in params:
+                    config[key] = params[key]
+            if "hop_min" in params:
+                config["hop_min"] = params["hop_min"]
+            config["ladder_step"] = 0
+            normalized = self._normalize_config(config)
+            side = str(params.get("side", self.bet_config["side"])).strip().upper()
+            if side not in ("P", "B", "T"):
+                return {"ok": False, "error": "Cửa cược phải là P, B hoặc T."}
+            self.config = normalized
+            self.bet_ladder.configure(normalized["stakes"], normalized["min_t"],
+                                      normalized["max_t"], step=0)
+            stake = self.bet_ladder.current_stake
+            self.bet_config = {"side": side, "stake": stake}
+            self.config["bet_side"] = side
+            self.config["bet_stake"] = stake
+        self._save_state()
+        self._push_state()
+        return {"ok": True, "side": side, "stake": stake,
+                "step": self.bet_ladder.step,
+                "stakes": list(self.bet_ladder.stakes),
+                "min_tk": self.config["min_tk"],
+                "total_bet": self.config["total_bet"],
+                "hop_min": self.config["hop_min"],
+                "hop_max": self.config["hop_max"],
+                "note": "Đã lưu dãy cược và cấu hình cho profile."}
+
     def bet_place(self):
         """Nút “Tự đặt cược”: chốt lệnh rồi bấm chip thật (có gate chờ ván mới)."""
         with self.lock:
@@ -2583,6 +2669,7 @@ class BaccaratController:
             "ai.check": self.ai_check,
             "ai.key.set": self.ai_key_set,
             "bet.config": self.bet_config_set,
+            "bet.ladder.configure": self.bet_ladder_config_set,
             "bet.place": lambda p: self.bet_place(),
         }
         handler = table.get(method)

@@ -16,7 +16,9 @@ contextBridge.exposeInMainWorld('aibcr', {
   openDreamGaming: () => ipcRenderer.invoke('febet:open-dg'),
   listFebetTables: () => ipcRenderer.invoke('febet:tables'),
   syncFebetTableById: (tableId) => ipcRenderer.invoke('febet:sync-table', { tableId }),
-  applyBets: (amount, unit, split) => ipcRenderer.invoke('bets:apply', { amount, unit, split }),
+  getBetConfig: () => ipcRenderer.invoke('bets:config:get'),
+  saveBetConfig: (config) => ipcRenderer.invoke('bets:config:save', { config }),
+  applyBets: (tableId, tableIds) => ipcRenderer.invoke('bets:apply', { tableId, tableIds }),
   openExternal: (url) => ipcRenderer.invoke('app:openExternal', url),
   saveText: (name, text) => ipcRenderer.invoke('app:saveText', { name, text }),
   windowControl: (action) => ipcRenderer.send('window:control', action),
@@ -24,5 +26,10 @@ contextBridge.exposeInMainWorld('aibcr', {
     const listener = (_event, payload) => handler(payload);
     ipcRenderer.on('engine:event', listener);
     return () => ipcRenderer.removeListener('engine:event', listener);
+  },
+  onGroupHop: (handler) => {
+    const listener = (_event, payload) => handler(payload);
+    ipcRenderer.on('group-hop', listener);
+    return () => ipcRenderer.removeListener('group-hop', listener);
   },
 });
