@@ -795,7 +795,8 @@ async function groupBettingTick() {
     if (!replies.every((reply) => reply?.ok && reply.staged)) {
       const details = replies.map((reply, i) => reply?.ok
         ? `P${groupBetting.indices[i]}: ${reply.amount_k}k ${reply.side}`
-        : `P${groupBetting.indices[i]}: ${reply?.error || 'không xếp được chip'}`).join(' · ');
+        : `P${groupBetting.indices[i]}: ${reply?.error || 'không xếp được chip'}`
+          + (Number.isFinite(Number(reply?.staged_k)) ? ` (đã xác nhận ${Number(reply.staged_k)}k)` : '')).join(' · ');
       stopGroupBetting(`Không xếp đủ chip cho cả nhóm; dừng và không tự thử lại. ${details}`, true);
       return;
     }

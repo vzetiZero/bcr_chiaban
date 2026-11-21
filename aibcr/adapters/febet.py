@@ -695,10 +695,19 @@ const autoConfirm = Boolean(arguments[3]);
     const before = readTmp(side);
     if (!invokeOnce(spot,[spot]))
       return {ok:false,staged_k:stagedRaw/scale,error:'Không kích hoạt được ô cược; dừng, không click lại.'};
-    await sleep(120);
-    const after = readTmp(side);
-    if (after - before !== denom * scale)
-      return {ok:false,staged_k:stagedRaw/scale,error:'Số chip trên ô không tăng đúng mệnh giá; dừng để tránh cược lệch.'};
+    const expectedDelta = denom * scale;
+    const verifyDeadline = Date.now() + 2000;
+    let after = readTmp(side);
+    while (after - before !== expectedDelta && Date.now() < verifyDeadline) {
+      await sleep(100);
+      after = readTmp(side);
+    }
+    if (after - before !== expectedDelta) {
+      const detail = `cần +${denom}k; đọc được +${((after-before)/scale).toFixed(3)}k `
+        + `(ô ${ (before/scale).toFixed(3)}→${(after/scale).toFixed(3)}k, scale=${scale})`;
+      return {ok:false,staged_k:stagedRaw/scale,
+        error:`Số chip trên ô không tăng đúng mệnh giá sau khi chờ cập nhật; đã dừng, không bấm lại (${detail}).`};
+    }
     stagedRaw += denom * scale;
   }
   if (stagedRaw !== amountK * scale)
