@@ -362,11 +362,20 @@ def _dg_frame(driver, wait=15.0):
                     driver.switch_to.window(handle)
                 except Exception:
                     continue
+                top_laya = False
                 for path, info in _frame_contexts(driver):
                     location = str(info.get("url") or "")
                     if "ddnewpc" in location.lower():
                         driver.switch_to.default_content()
                         return path, location
+                    # A lobby rendered in the page body (no ddnewpc frame), e.g.
+                    # GK881 mobile's /Account/LoginToSupplier hand-off page.
+                    # An explicit ddnewpc frame anywhere wins over this fallback.
+                    if path == () and _has_top_laya(driver):
+                        top_laya = True
+                if top_laya:
+                    driver.switch_to.default_content()
+                    return (), driver.current_url or ""
                 driver.switch_to.default_content()
         except Exception:
             pass
@@ -713,13 +722,45 @@ return (() => {
 """
 
 
+# Some sites (GK881 mobile) render the DG lobby directly in the page that hands
+# the player over — ``/Account/LoginToSupplier?SupplierType=DG`` — instead of an
+# ``ddnewpc`` iframe. The lobby is then a Laya stage in the top document, so the
+# frame walkers below would never see it.
+_TOP_LAYA_JS = r"""
+try {
+  if (typeof Laya === 'undefined' || !Laya.stage) return {laya: false};
+  return {laya: true, stageKids: Laya.stage.numChildren || 0,
+          width: Laya.stage.width || 0, height: Laya.stage.height || 0};
+} catch (error) { return {laya: false}; }
+"""
+
+
+def _has_top_laya(driver):
+    """True when the current document itself hosts a Laya stage."""
+    try:
+        data = driver.execute_script(_TOP_LAYA_JS) or {}
+    except Exception:
+        return False
+    # A stage with no children is still loading; treat it as ready only when it
+    # has drawn something, otherwise the caller keeps waiting.
+    return bool(data.get("laya")) and int(data.get("stageKids") or 0) > 0
+
+
 def _dg_window(driver):
-    """Handle của tab DG riêng — vài account mở game ở tab mới thay vì iframe."""
+    """Handle của tab DG riêng.
+
+    Ba biến thể đã gặp: game mở ở tab ``ddnewpc`` riêng; game mở ngay trong tab
+    của site; và GK881 mobile render sảnh Laya **trực tiếp** trong trang
+    ``/Account/LoginToSupplier`` (không có iframe ``ddnewpc``).
+    """
     for handle in reversed(driver.window_handles):
         try:
             driver.switch_to.window(handle)
             driver.switch_to.default_content()
-            if "ddnewpc" in (driver.current_url or "").lower():
+            url = (driver.current_url or "").lower()
+            if "ddnewpc" in url:
+                return handle
+            if _has_top_laya(driver):
                 return handle
         except Exception:
             continue
@@ -730,17 +771,91 @@ def _dg_context(driver, wait=15.0):
     """Đặt driver vào đúng document DG (tab riêng hoặc iframe của site bất kỳ)."""
     deadline = time.monotonic() + max(0.0, wait)
     while True:
-        if _dg_window(driver) is not None:
+        window = _dg_window(driver)
+        if window is not None:
             location = driver.current_url or ""
-            return {"mode": "tab", "location": location}
+            # Distinguish a real ddnewpc tab from a page that hosts the lobby in
+            # its own body (GK881 mobile hand-off page).
+            mode = "tab" if "ddnewpc" in location.lower() else "top"
+            return {"mode": mode, "location": location}
         else:
             path, location = _dg_frame(driver, wait=0)
+            if path == ():
+                # Lobby lives in the top document itself.
+                driver.switch_to.default_content()
+                return {"mode": "top", "location": location}
             if path is not None:
                 _enter_path(driver, path)
                 return {"mode": "iframe", "path": path, "location": location}
+            # No ddnewpc frame: the lobby may be a Laya stage in this document.
+            if _has_top_laya(driver):
+                return {"mode": "top", "location": driver.current_url or ""}
         if time.monotonic() >= deadline:
             return None
         time.sleep(0.5)
+
+
+# Click a table card inside a Laya lobby (GK881 mobile renders the lobby in the
+# page body, so there is no direct1.html URL to rewrite). The node is found by
+# its rendered label or by the table id, then the nearest click handler runs.
+_LAYA_ENTER_JS = r"""
+const wanted = String(arguments[0] || '');
+const wantedName = String(arguments[1] || '').toLowerCase();
+if (typeof Laya === 'undefined' || !Laya.stage) return {ok: false, reason: 'no-laya'};
+const nodes = [];
+const walk = (node, depth) => {
+  if (!node || depth > 40 || nodes.length > 4000) return;
+  nodes.push(node);
+  for (let i = 0; i < (node.numChildren || 0); i++) walk(node.getChildAt(i), depth + 1);
+};
+walk(Laya.stage, 0);
+const labelOf = (node) => {
+  for (const key of ['text', '_text', 'label', '_label']) {
+    try { const value = node[key];
+      if (typeof value === 'string' && value.trim()) return value.trim(); } catch (error) {}
+  }
+  return '';
+};
+const clickable = (node) => {
+  let cur = node;
+  let hops = 0;
+  while (cur && hops < 8) {
+    try {
+      if (cur.clickHandler && typeof cur.clickHandler.run === 'function') return cur;
+      if (typeof cur.event === 'function') return cur;
+    } catch (error) {}
+    cur = cur.parent; hops += 1;
+  }
+  return null;
+};
+const match = nodes.find((node) => {
+  const label = labelOf(node);
+  if (!label) return false;
+  if (wantedName && label.toLowerCase().includes(wantedName)) return true;
+  return wanted ? label.includes(wanted) : false;
+});
+if (!match) return {ok: false, reason: 'no-card', scanned: nodes.length};
+const target = clickable(match);
+if (!target) return {ok: false, reason: 'no-handler'};
+try {
+  if (target.clickHandler && typeof target.clickHandler.run === 'function') {
+    target.clickHandler.run();
+  } else {
+    target.event('mousedown'); target.event('mouseup'); target.event('click');
+  }
+  return {ok: true, label: labelOf(match)};
+} catch (error) {
+  return {ok: false, reason: 'throw'};
+}
+"""
+
+
+def _laya_enter_table(driver, table_id, name=""):
+    """Tap a table card inside a Laya lobby rendered in the page body."""
+    try:
+        return driver.execute_script(_LAYA_ENTER_JS, str(table_id), str(name or "")) or {}
+    except Exception:
+        return {"ok": False, "reason": "script-error"}
 
 
 def _loader_url(location, src, table_id):
@@ -910,7 +1025,20 @@ def sync_table(driver, table_id, wait=30.0, settle=120.0):
             return {"ok": True, "table_id": table_id, "already": True,
                     "in_table": bool(state.get("in_table")),
                     "note": "Profile đã ở sẵn bàn %s, giữ nguyên phiên game." % table_id}
-        if ctx["mode"] == "tab":
+        if ctx["mode"] == "top":
+            # Lobby lives in the page body; there is no direct1.html to rewrite.
+            # Tap the table card in the Laya lobby instead.
+            name = ""
+            for row in (lobby_tables(driver, wait=2.0).get("tables") or []):
+                if str(row.get("table_id")) == table_id:
+                    name = str(row.get("name") or "")
+                    break
+            entered = _laya_enter_table(driver, table_id, name)
+            if not entered.get("ok"):
+                return {"ok": False,
+                        "error": "Sảnh DG trên giao diện điện thoại không đổi bàn tự động được "
+                                 "(%s); hãy chọn bàn trên màn hình." % (entered.get("reason") or "không rõ")}
+        elif ctx["mode"] == "tab":
             new_url = _loader_url(ctx["location"], "", table_id)
             driver.execute_script("location.href = %s;" % json.dumps(new_url))
         else:

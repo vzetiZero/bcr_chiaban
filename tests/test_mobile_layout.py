@@ -175,3 +175,136 @@ class PhoneFrameTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class TopLevelLobbyTest(unittest.TestCase):
+    """GK881 mobile renders the DG lobby in the page body of
+    /Account/LoginToSupplier?SupplierType=DG (no ``ddnewpc`` iframe), so the
+    frame-only walkers used to report "Laya chưa tải xong" for a lobby that was
+    plainly visible on screen."""
+
+    class Switch:
+        def __init__(self, driver):
+            self.driver = driver
+
+        def window(self, handle):
+            self.driver.handle = handle
+
+        def default_content(self):
+            self.driver.frame = None
+
+        def frame(self, element):
+            self.driver.frame = element
+
+    def _driver(self, mounted=True, stage_kids=1):
+        from aibcr.adapters import febet as F
+
+        class Driver:
+            def __init__(self):
+                self.handle = "tab1"
+                self.window_handles = ["tab1"]
+                self.frame = None
+                self.switch_to = TopLevelLobbyTest.Switch(self)
+                self.current_url = (
+                    "https://m.gk881.vip/Account/LoginToSupplier?SupplierType=DG")
+                self.mounted = mounted
+                self.stage_kids = stage_kids if mounted else 0
+
+            @property
+            def current_window_handle(self):
+                return self.handle
+
+            def find_elements(self, by, selector):
+                return []
+
+            def execute_script(self, script, *args):
+                if "stageKids" in script and "typeof Laya === 'undefined'" in script:
+                    return {"laya": self.mounted, "stageKids": self.stage_kids}
+                if "const frames=[...document.querySelectorAll('iframe,frame')]" in script:
+                    return {"url": self.current_url, "title": "", "frames": 0, "labels": []}
+                if "tableInfo || n._tableInfo" in script:
+                    if not self.mounted:
+                        return {"ready": False, "tables": []}
+                    return {"ready": True, "tables": [
+                        {"table_id": "60101", "name": "RB01", "online": 303}]}
+                if "typeof Laya" in script and "tableInfo" not in script:
+                    if not self.mounted:
+                        return {"ready": False, "lobby": False, "in_table": False,
+                                "label": "", "url_table": ""}
+                    return {"ready": True, "lobby": True, "in_table": False,
+                            "label": "", "url_table": "60101"}
+                return None
+
+        return Driver()
+
+    def test_has_top_laya_requires_a_drawn_stage(self):
+        from aibcr.adapters import febet as F
+        self.assertTrue(F._has_top_laya(self._driver()))
+        self.assertFalse(F._has_top_laya(self._driver(mounted=False)))
+        self.assertFalse(F._has_top_laya(self._driver(stage_kids=0)))
+
+    def test_dg_window_finds_the_page_hosting_the_lobby(self):
+        from aibcr.adapters import febet as F
+        self.assertEqual(F._dg_window(self._driver()), "tab1")
+
+    def test_dg_frame_reports_the_top_document(self):
+        from aibcr.adapters import febet as F
+        path, location = F._dg_frame(self._driver(), wait=1.0)
+        self.assertEqual(path, ())
+        self.assertIn("LoginToSupplier", location)
+
+    def test_dg_context_labels_the_top_mode(self):
+        from aibcr.adapters import febet as F
+        context = F._dg_context(self._driver(), wait=1.0)
+        self.assertEqual(context["mode"], "top")
+
+    def test_lobby_tables_reads_the_page_body(self):
+        from aibcr.adapters import febet as F
+        result = F.lobby_tables(self._driver(), wait=2.0)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["tables"][0]["table_id"], "60101")
+
+    def test_unmounted_lobby_still_reports_a_clear_error(self):
+        from aibcr.adapters import febet as F
+        result = F.lobby_tables(self._driver(mounted=False), wait=1.0)
+        self.assertFalse(result["ok"])
+        self.assertIn("Laya", result["error"])
+
+    def test_ddnewpc_frame_still_wins_over_the_top_fallback(self):
+        from aibcr.adapters import febet as F
+
+        class IframeDriver(self._driver().__class__):
+            def find_elements(self, by, selector):
+                return ["dg-frame"] if self.frame is None else []
+
+            def execute_script(self, script, *args):
+                if "const frames=[...document.querySelectorAll('iframe,frame')]" in script:
+                    if self.frame is None:
+                        return {"url": self.current_url, "title": "", "frames": 1, "labels": []}
+                    return {"url": "https://x/ddnewpc/index.html?tableId=60101",
+                            "title": "", "frames": 0, "labels": []}
+                return super().execute_script(script, *args)
+
+        driver = IframeDriver()
+        driver.current_url = "https://febet.kiwi/live-casino/baccarat"
+        path, location = F._dg_frame(driver, wait=1.0)
+        self.assertEqual(path, (0,))
+        self.assertIn("ddnewpc", location)
+
+    def test_sync_table_taps_the_laya_card_in_top_mode(self):
+        from aibcr.adapters import febet as F
+        driver = self._driver()
+        calls = []
+        original = driver.execute_script
+
+        def script(source, *args):
+            if "const wanted = String(arguments[0] || '')" in source:
+                calls.append(args)
+                return {"ok": True, "label": "RB01"}
+            return original(source, *args)
+
+        driver.execute_script = script
+        result = F.sync_table(driver, "60101", wait=2.0, settle=1.0)
+        self.assertTrue(calls, "the Laya card was not tapped")
+        self.assertEqual(calls[0][0], "60101")
+        # settle window may not confirm; either way the tap happened.
+        self.assertIn("ok", result)
