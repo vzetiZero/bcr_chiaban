@@ -228,10 +228,12 @@ def promote_lobby_to_tab(driver, source_handle):
             continue
     try:
         driver.switch_to.window(source_handle)
-        driver.get(lobby_url)
+        driver.switch_to.default_content()
     except Exception:
         return False
-    return True
+    # CDP navigation keeps an OmniLogin/Hidemium session alive; ``get`` would
+    # rebind the target and make the manager close Chrome.
+    return DG.navigate_top(driver, lobby_url)
 
 
 def open_dg(driver, wait=150.0, log=None):

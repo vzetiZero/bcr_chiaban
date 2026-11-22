@@ -27,6 +27,29 @@ def _activate_lobby_tab(driver, target_handle):
     driver.switch_to.default_content()
 
 
+def _promote_lobby(driver, report, wait=6.0, settle=25.0, prefer_handle=None):
+    """Move the DG lobby out of the site iframe and into the tab URL.
+
+    The mobile build keeps the lobby inside an iframe whose host is the DG
+    origin, so the frame's real URL can be loaded as the page. That removes the
+    site DOM and lets the shared table sync rewrite ``direct1.html`` so every
+    profile joins the same table. Only the host is logged.
+    """
+    if not (hasattr(driver, "execute_cdp_cmd") or hasattr(driver, "get")):
+        return {"ok": False, "promoted": False,
+                "error": "Trình duyệt không hỗ trợ điều hướng tab."}
+    promoted = DG.promote_lobby_to_tab(
+        driver, site_hosts=("gk881.vip",), wait=wait, settle=settle,
+        prefer_handle=prefer_handle)
+    if promoted.get("ok"):
+        report("Đã thay URL trang bằng sảnh DG (%s)."
+               % (promoted.get("host") or "DG"))
+    else:
+        report("Chưa tách được iframe sảnh DG sang tab chính: %s"
+               % (promoted.get("error") or "không rõ"), "warning")
+    return promoted
+
+
 # GK881 hands the player to Dream Gaming through a transient page instead of the
 # lobby itself: ``/Account/LoginToSupplier?SupplierType=DG`` (mobile and desktop
 # hosts alike) and ``/Lobby/Navigation``. Those pages have no Casino menu, so the
@@ -325,9 +348,17 @@ def open_dg(driver, wait=120.0, log=None):
         if target_handle:
             report("Đã nhận diện sảnh DG đang mở; chuyển sang tab sảnh.")
             _activate_lobby_tab(driver, target_handle)
+        promoted = _promote_lobby(driver, report, wait=4.0,
+                                  settle=min(30.0, remain(30.0)),
+                                  prefer_handle=target_handle)
+        if promoted.get("ok"):
+            refreshed = DG.lobby_tables(driver, wait=min(20.0, remain(20.0)))
+            if refreshed.get("ok") or not initial.get("tables"):
+                initial = refreshed
         report("Sảnh DG sẵn sàng; tìm thấy %s bàn." % len(initial.get("tables", [])))
         return {"ok": True, "already_open": True, "site_id": "gk881",
                 "lobby_ready": True, "tables": initial.get("tables", []),
+                "promoted": bool(promoted.get("ok")),
                 "note": "Đã mở sảnh DG trên profile này."}
 
     source_handle = None
@@ -341,9 +372,18 @@ def open_dg(driver, wait=120.0, log=None):
             ready = DG.lobby_tables(driver, wait=remain())
             if ready.get("ok"):
                 _activate_lobby_tab(driver, existing_handle)
-                report("Sảnh DG đã tải; tìm thấy %s bàn." % len(ready.get("tables", [])))
+                promoted = _promote_lobby(driver, report, wait=min(6.0, remain(6.0)),
+                                          settle=min(30.0, remain(30.0)),
+                                          prefer_handle=existing_handle)
+                tables = ready.get("tables", [])
+                if promoted.get("ok"):
+                    refreshed = DG.lobby_tables(driver, wait=min(20.0, remain(20.0)))
+                    if refreshed.get("ok"):
+                        tables = refreshed.get("tables") or tables
+                report("Sảnh DG đã tải; tìm thấy %s bàn." % len(tables))
                 return {"ok": True, "already_open": True, "site_id": "gk881",
-                        "lobby_ready": True, "tables": ready.get("tables", []),
+                        "lobby_ready": True, "tables": tables,
+                        "promoted": bool(promoted.get("ok")),
                         "note": "Đã nhận diện popup DG GK881 đang mở."}
             report("Popup có iframe DG nhưng Laya chưa báo sảnh sẵn sàng.", "warning")
             return {"ok": False, "site_id": "gk881",
@@ -412,9 +452,26 @@ def open_dg(driver, wait=120.0, log=None):
                 report("Sảnh DG mobile chưa sẵn sàng: %s" % error, "error")
                 return {"ok": False, "site_id": "gk881", "error": error}
             tables = lobby.get("tables") or []
+            # The lobby is still inside the site page here. Load the DG document
+            # as the tab URL so the site DOM is gone and the table can be synced
+            # through the DG loader (same table for every profile).
+            promoted = _promote_lobby(driver, report, wait=min(6.0, remain(6.0)),
+                                      settle=min(30.0, remain(30.0)),
+                                      prefer_handle=source_handle)
+            if promoted.get("ok"):
+                refreshed = DG.lobby_tables(driver, wait=min(20.0, remain(20.0)))
+                if refreshed.get("ok"):
+                    tables = refreshed.get("tables") or tables
+                else:
+                    report("Sảnh DG trên tab chính chưa đọc được bàn: %s"
+                           % (refreshed.get("error") or "chưa rõ"), "warning")
+            target_handle = DG._dg_window(driver) or DG._lobby_handle(driver)
+            if target_handle:
+                _activate_lobby_tab(driver, target_handle)
             report("Sảnh DG mobile sẵn sàng; tìm thấy %s bàn." % len(tables))
             return {"ok": True, "site_id": "gk881", "already_open": False,
                     "lobby_ready": True, "tables": tables, "layout": "mobile",
+                    "promoted": bool(promoted.get("ok")),
                     "note": "Đã mở sảnh DG từ giao diện điện thoại GK881."}
 
         # If the tab is already on GK881's DG hand-off page there is no Casino
@@ -428,9 +485,18 @@ def open_dg(driver, wait=120.0, log=None):
             if ready.get("ok"):
                 target_handle = DG._lobby_handle(driver) or DG._dg_window(driver) or source_handle
                 _activate_lobby_tab(driver, target_handle)
-                report("Sảnh DG đã sẵn sàng; tìm thấy %s bàn." % len(ready.get("tables", [])))
+                promoted = _promote_lobby(driver, report, wait=min(6.0, remain(6.0)),
+                                          settle=min(30.0, remain(30.0)),
+                                          prefer_handle=target_handle)
+                tables = ready.get("tables", [])
+                if promoted.get("ok"):
+                    refreshed = DG.lobby_tables(driver, wait=min(20.0, remain(20.0)))
+                    if refreshed.get("ok"):
+                        tables = refreshed.get("tables") or tables
+                report("Sảnh DG đã sẵn sàng; tìm thấy %s bàn." % len(tables))
                 return {"ok": True, "already_open": True, "site_id": "gk881",
-                        "lobby_ready": True, "tables": ready.get("tables", []),
+                        "lobby_ready": True, "tables": tables,
+                        "promoted": bool(promoted.get("ok")),
                         "note": "Đã nhận diện sảnh DG đang mở từ trang chuyển tiếp GK881."}
             error = ready.get("error") or "Sảnh DG chưa tải xong."
             report("Trang chuyển tiếp DG chưa có sảnh: %s" % error, "warning")
@@ -554,9 +620,18 @@ def open_dg(driver, wait=120.0, log=None):
                     "error": ready.get("error") or "Sảnh DG của GK881 chưa tải xong."}
 
         _activate_lobby_tab(driver, target_handle)
-        report("Sảnh DG đã sẵn sàng; tìm thấy %s bàn." % len(ready.get("tables", [])))
+        promoted = _promote_lobby(driver, report, wait=min(6.0, remain(6.0)),
+                                  settle=min(30.0, remain(30.0)),
+                                  prefer_handle=target_handle)
+        tables = ready.get("tables", [])
+        if promoted.get("ok"):
+            refreshed = DG.lobby_tables(driver, wait=min(20.0, remain(20.0)))
+            if refreshed.get("ok"):
+                tables = refreshed.get("tables") or tables
+        report("Sảnh DG đã sẵn sàng; tìm thấy %s bàn." % len(tables))
         return {"ok": True, "site_id": "gk881", "already_open": False,
-                "lobby_ready": True, "tables": ready.get("tables", []),
+                "lobby_ready": True, "tables": tables,
+                "promoted": bool(promoted.get("ok")),
                 "note": "Đã mở sảnh DG từ GK881 và chuyển tab DG thành tab đang dùng."}
     except Exception as exc:
         report("Dừng tại bước '%s' (%s)." % (stage, type(exc).__name__), "error")

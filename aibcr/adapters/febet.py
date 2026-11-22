@@ -806,6 +806,178 @@ def _dg_context(driver, wait=15.0):
         time.sleep(0.5)
 
 
+def _frame_host(url):
+    try:
+        return (urlsplit(url or "").hostname or "").lower()
+    except ValueError:
+        return ""
+
+
+def _is_site_host(host, site_hosts):
+    for site in site_hosts or ():
+        name = str(site or "").strip().lower()
+        if name and (host == name or host.endswith("." + name)):
+            return True
+    return False
+
+
+def game_frame(driver, site_hosts=(), wait=6.0, handles=None):
+    """Find the iframe that hosts the Dream Gaming document.
+
+    Mobile GK881 embeds the lobby in an iframe whose host is not the site host,
+    so the frame is identified by its own document URL: a ``ddnewpc`` document
+    wins, otherwise any non-site, non-widget frame that already runs a Laya
+    stage. Returns ``{"handle", "path", "url"}`` or ``None``. The URL carries a
+    session token, so callers must never log or return it.
+    """
+    if driver is None:
+        return None
+    try:
+        if handles is None:
+            handles = list(reversed(list(driver.window_handles)))
+    except Exception:
+        return None
+    deadline = time.monotonic() + max(0.0, float(wait))
+    while True:
+        for handle in handles:
+            try:
+                driver.switch_to.window(handle)
+                driver.switch_to.default_content()
+            except Exception:
+                continue
+            fallback = None
+            try:
+                contexts = list(_frame_contexts(driver))
+            except Exception:
+                contexts = []
+            for path, info in contexts:
+                url = str(info.get("url") or "")
+                host = _frame_host(url)
+                if not host:
+                    continue
+                if "ddnewpc" in url.lower():
+                    try:
+                        driver.switch_to.default_content()
+                    except Exception:
+                        pass
+                    return {"handle": handle, "path": path, "url": url}
+                if (fallback is None and not _is_site_host(host, site_hosts)
+                        and not _is_widget_origin(url)):
+                    fallback = (path, url)
+            if fallback is not None:
+                path, url = fallback
+                try:
+                    _enter_path(driver, path)
+                    if _has_top_laya(driver):
+                        driver.switch_to.default_content()
+                        return {"handle": handle, "path": path, "url": url}
+                except Exception:
+                    pass
+            try:
+                driver.switch_to.default_content()
+            except Exception:
+                pass
+        if time.monotonic() >= deadline:
+            return None
+        time.sleep(0.4)
+
+
+def navigate_top(driver, url):
+    """Navigate the active tab to ``url`` without tearing down a managed session.
+
+    ``driver.get`` rebinds the WebDriver target; on an OmniLogin/Hidemium profile
+    that makes the manager kill Chrome and every later call fails with
+    InvalidSessionIdException. ``Page.navigate`` over CDP keeps the session
+    alive, so it is tried first and ``get`` is only a last resort.
+    """
+    if driver is None or not url:
+        return False
+    if hasattr(driver, "execute_cdp_cmd"):
+        try:
+            driver.execute_cdp_cmd("Page.navigate", {"url": url})
+            return True
+        except Exception:
+            pass
+    try:
+        driver.get(url)
+        return True
+    except Exception:
+        return False
+
+
+def promote_lobby_to_tab(driver, site_hosts=(), wait=6.0, settle=20.0,
+                         prefer_handle=None):
+    """Replace the site page URL with the DG lobby document.
+
+    The lobby normally lives inside a site iframe; navigating the tab to the
+    frame's real URL removes the site DOM (popups, promo layers) and turns the
+    lobby into the page itself. ``sync_table`` can then rewrite ``direct1.html``
+    so every profile joins the same table. Only the host is reported, never the
+    tokenised URL.
+    """
+    result = {"ok": False, "promoted": False, "mode": "", "host": "",
+              "error": ""}
+    if driver is None:
+        result["error"] = "Chưa mở Chrome."
+        return result
+    if not (hasattr(driver, "execute_cdp_cmd") or hasattr(driver, "get")):
+        result["error"] = "Trình duyệt này không hỗ trợ điều hướng tab."
+        return result
+    try:
+        ctx = _dg_context(driver, wait=2.0)
+    except Exception:
+        ctx = None
+    if ctx and ctx.get("mode") == "tab":
+        result.update(ok=True, promoted=True, mode="tab",
+                      host=_frame_host(ctx.get("location")),
+                      note="Sảnh DG đã ở tab chính.")
+        return result
+    handles = None
+    if prefer_handle:
+        try:
+            handles = [prefer_handle] + [handle for handle in
+                                         reversed(list(driver.window_handles))
+                                         if handle != prefer_handle]
+        except Exception:
+            handles = None
+    found = game_frame(driver, site_hosts=site_hosts, wait=wait, handles=handles)
+    if not found:
+        result["error"] = "Chưa thấy iframe sảnh DG để tách sang tab chính."
+        return result
+    try:
+        driver.switch_to.window(found["handle"])
+        driver.switch_to.default_content()
+    except Exception:
+        pass
+    if not navigate_top(driver, found["url"]):
+        result.update(host=_frame_host(found["url"]),
+                      error="Không điều hướng được tab chính tới sảnh DG.")
+        return result
+    deadline = time.monotonic() + max(1.0, float(settle))
+    while time.monotonic() < deadline:
+        try:
+            driver.switch_to.default_content()
+        except Exception:
+            pass
+        try:
+            current = driver.current_url or ""
+        except Exception:
+            current = ""
+        try:
+            laya = _has_top_laya(driver)
+        except Exception:
+            laya = False
+        if "ddnewpc" in current.lower() or laya:
+            result.update(ok=True, promoted=True, mode="tab",
+                          host=_frame_host(current) or _frame_host(found["url"]),
+                          note="Đã thay URL trang bằng sảnh DG.")
+            return result
+        time.sleep(0.5)
+    result.update(host=_frame_host(found["url"]),
+                  error="Đã điều hướng nhưng sảnh DG chưa tải xong trên tab chính.")
+    return result
+
+
 # Click a table card inside a Laya lobby (GK881 mobile renders the lobby in the
 # page body, so there is no direct1.html URL to rewrite). The node is found by
 # its rendered label or by the table id, then the nearest click handler runs.
@@ -1036,6 +1208,16 @@ def sync_table(driver, table_id, wait=30.0, settle=120.0):
             return {"ok": True, "table_id": table_id, "already": True,
                     "in_table": bool(state.get("in_table")),
                     "note": "Profile đã ở sẵn bàn %s, giữ nguyên phiên game." % table_id}
+        if ctx["mode"] == "top":
+            # The mobile hand-off page draws the lobby in its own body. If the
+            # game still lives in a frame, promote it to the tab URL first so
+            # the table can be selected with the DG loader instead of tapping a
+            # card that may not be rendered on the phone layout.
+            promoted = promote_lobby_to_tab(
+                driver, wait=1.5, settle=min(30.0, max(6.0, float(settle))))
+            if promoted.get("ok"):
+                ctx = _dg_context(driver, wait=2.0) or ctx
+                state = driver.execute_script(_DG_STATE_JS) or {}
         if ctx["mode"] == "top":
             # Lobby lives in the page body; there is no direct1.html to rewrite.
             # Tap the table card in the Laya lobby instead.

@@ -11,6 +11,28 @@ Electron desktop app for managing 1-8 browser profiles. Each profile can use its
 
 The DG table and bet readers are shared across portal hosts. Each profile keeps its own site session and iframe URL while joining the common DG table.
 
+### GK881 mobile (`https://m.gk881.vip/`, Chrome Android / OmniLogin)
+
+The phone build is a different Angular app, so `gk881.openDG` runs its own four-step flow:
+
+1. **Vào sảnh** — close the mobile overlays ("TÔI BIẾT RỒI", "Đóng", "×"), open the
+   `Casino` category (`.category-item`), then tap the **DG Trực Tuyến** card.
+2. **Lấy URL iframe sảnh** — walk every frame and prefer the `ddnewpc` document; if
+   the lobby lives inside a site iframe, read the frame's real `location.href`.
+3. **Thay URL trang** — navigate the profile tab to that URL with
+   `Page.navigate` over CDP (never `driver.get`, which makes OmniLogin/Hidemium
+   tear the session down). The window then shows only the DG lobby, with no site
+   DOM or promo overlays left.
+4. **Nạp bàn + đồng bộ** — re-read the Laya table list from the page, pick a table
+   (the busiest one by default), then every profile rewrites
+   `direct1.html?tableId=<id>` so all of them join the same table.
+
+`gk881.openDG` returns `promoted: true/false` so the UI/activity log shows whether
+the iframe URL replaced the page URL. If the site draws Laya directly in its own
+body (no separate iframe), steps 2–3 are skipped and the flow falls back to tapping
+the table card inside the Laya lobby. The same promotion helper
+(`febet.promote_lobby_to_tab`) is used by E3951 and VNWTop.
+
 > **BẮT BUỘC — push GitHub sau MỖI lần cập nhật hoặc sửa đổi**
 >
 > Remote: `https://github.com/vzetiZero/bcr_chiaban.git` (nhánh `main`).
@@ -301,6 +323,7 @@ python -m unittest discover -s tests -t . -q      # toàn bộ test Python
 python -m unittest tests.test_engine -v           # engine JSON-RPC + vào bàn + lệnh cược
 python -m unittest tests.test_enter_valid_flow -v # harness pipeline chọn bàn (Chrome giả)
 python -m unittest tests.test_live_ai -v          # AI, key RAM, bet.place, chặn override
+python -m unittest tests.test_lobby_promote -v    # tách iframe sảnh DG ra URL trang (GK881 mobile)
 python -m unittest tests.test_architecture -v     # ranh giới tầng MVC, không LONG-LONG
 node tests/test_reader.cjs                        # test logic đọc bàn (node --test)
 ```
