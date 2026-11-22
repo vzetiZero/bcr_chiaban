@@ -27,6 +27,23 @@ def _activate_lobby_tab(driver, target_handle):
     driver.switch_to.default_content()
 
 
+# GK881 hands the player to Dream Gaming through a transient page instead of the
+# lobby itself: ``/Account/LoginToSupplier?SupplierType=DG`` (mobile and desktop
+# hosts alike) and ``/Lobby/Navigation``. Those pages have no Casino menu, so the
+# navigation flow must wait for the DG document rather than click a menu.
+_DG_ENTRY_MARKERS = (
+    "/account/logintosupplier",
+    "/lobby/navigation",
+    "suppliertype=dg",
+)
+
+
+def _is_dg_entry_url(url):
+    """True when the tab sits on a GK881 DG hand-off page, not the home page."""
+    text = str(url or "").lower()
+    return any(marker in text for marker in _DG_ENTRY_MARKERS)
+
+
 def _safe_location(driver):
     """Return only host/path; never put query strings or session tokens in logs."""
     try:
@@ -186,6 +203,26 @@ def open_dg(driver, wait=120.0, log=None):
         driver.switch_to.window(source_handle)
         driver.switch_to.default_content()
         report("Đang thao tác trên %s." % _safe_location(driver))
+
+        # If the tab is already on GK881's DG hand-off page there is no Casino
+        # menu to click: the DG document is still loading behind the redirect.
+        # Wait for it, otherwise the flow reports a TimeoutException on a page
+        # that never had that menu.
+        if _is_dg_entry_url(driver.current_url or ""):
+            stage = "chờ sảnh DG từ trang chuyển tiếp"
+            report("Đang ở trang chuyển tiếp DG; chờ sảnh tải thay vì bấm menu Casino.")
+            ready = DG.lobby_tables(driver, wait=remain())
+            if ready.get("ok"):
+                target_handle = DG._lobby_handle(driver) or DG._dg_window(driver) or source_handle
+                _activate_lobby_tab(driver, target_handle)
+                report("Sảnh DG đã sẵn sàng; tìm thấy %s bàn." % len(ready.get("tables", [])))
+                return {"ok": True, "already_open": True, "site_id": "gk881",
+                        "lobby_ready": True, "tables": ready.get("tables", []),
+                        "note": "Đã nhận diện sảnh DG đang mở từ trang chuyển tiếp GK881."}
+            error = ready.get("error") or "Sảnh DG chưa tải xong."
+            report("Trang chuyển tiếp DG chưa có sảnh: %s" % error, "warning")
+            return {"ok": False, "site_id": "gk881",
+                    "error": "GK881 đang ở trang chuyển tiếp DG nhưng sảnh chưa tải xong: %s" % error}
 
         # The balance/announcement modal is optional.
         stage = "đóng thông báo nếu có"
