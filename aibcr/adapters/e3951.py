@@ -370,8 +370,33 @@ def promote_lobby_to_tab(driver):
         return False
     try:
         driver.switch_to.default_content()
-        driver.get(location)
     except Exception:
+        return False
+    # ``driver.get`` replaces the page target the WebDriver session is bound to.
+    # On an OmniLogin-managed browser that tears the session down and every later
+    # call fails with InvalidSessionIdException, so the top-level navigation goes
+    # through CDP (which does not depend on the session's target) and the page is
+    # probed afterwards; a broken session means "keep using the iframe".
+    probe = ("return (() => ({url: location.href,"
+             " laya: typeof Laya !== 'undefined' && !!Laya.stage}))()")
+    try:
+        import websocket
+
+        from aibcr.adapters import browser as BR
+        page = BR.validated_endpoint and None  # keep import graph explicit
+        session = getattr(driver, "_aibcr_session", None)
+        navigated = False
+        if session is not None:
+            navigated, _note = session.navigate(location)
+        if not navigated:
+            driver.get(location)
+    except Exception:
+        return False
+    try:
+        driver.execute_script(probe)
+    except Exception:
+        # Session died during the navigation: report failure so the caller keeps
+        # the working iframe context instead of ending up with a dead driver.
         return False
     return True
 

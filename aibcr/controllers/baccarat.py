@@ -83,6 +83,8 @@ DEFAULT_CONFIG = {
     "live_decks": 8,
     "live_trials": 20000,
     "live_markov_weight": 0.15,
+    # Vòng tự săn bàn dừng sau N lượt quét không thành công để không treo UI vô hạn.
+    "cycle_max_attempts": CYCLE_MAX_ATTEMPTS,
 }
 
 
@@ -2004,14 +2006,24 @@ class BaccaratController:
             return False
         if exclude_key:
             self.cycle_table_key = exclude_key
+        # Đã hết lượt thử rồi thì dừng vòng săn, không lặp vô hạn.
+        max_attempts = int(self.config.get("cycle_max_attempts", CYCLE_MAX_ATTEMPTS) or CYCLE_MAX_ATTEMPTS)
+        if self.cycle_attempts >= max_attempts:
+            self.cycle_waiting = False
+            self.cycle_retry_at = 0.0
+            self.cycle_table_key = None
+            self.sweep_note = ("Đã quét %d lượt mà không tìm được bàn; dừng tự săn. "
+                               "Mở sảnh và chọn bàn thủ công, hoặc bấm lại “TÌM BÀN”." % self.cycle_attempts)
+            self.log(self.sweep_note, "error")
+            return False
         hunting = not getattr(self.sim, "take_profit_done", False)
         first_attempt = hunting and self.cycle_attempts == 0
         self.cycle_attempts += 1
         wait = 0 if first_attempt else CYCLE_RETRY_SECONDS
         self.cycle_retry_at = time.time() + wait
         self.sweep_note = ("%s · quét lại ngay…" % reason if first_attempt else
-                          "%s · tự quét lại sau %d giây (đã thử %d lượt)." % (
-                              reason, CYCLE_RETRY_SECONDS, self.cycle_attempts))
+                          "%s · tự quét lại sau %d giây (đã thử %d/%d lượt)." % (
+                              reason, CYCLE_RETRY_SECONDS, self.cycle_attempts, max_attempts))
         return True
 
     def _ingest(self, rows, now=None):

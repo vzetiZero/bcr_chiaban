@@ -89,6 +89,44 @@ target.click();
 return {ok: true};
 """
 
+# Mobile provider grid: a list of <li> cards, each with an <img> and a label
+# <span> like "DG Trực Tuyến". No provider/vendor class exists, so the card is
+# found by its label text (or a DG-looking image name) and the whole card tapped.
+_MOBILE_DG_CARD_JS = r"""
+const vis = (node) => {
+  try {
+    const rect = node.getBoundingClientRect();
+    const style = window.getComputedStyle(node);
+    return rect.width > 0 && rect.height > 0
+      && style.visibility !== 'hidden' && style.display !== 'none';
+  } catch (error) { return false; }
+};
+const norm = (value) => String(value || '').replace(/\s+/g, ' ').trim().toLowerCase();
+const isDgText = (text) => {
+  const value = norm(text);
+  return value === 'dg' || value === 'dg trực tuyến' || value === 'dg truc tuyen'
+    || value.startsWith('dg ') || value.startsWith('dream gaming')
+    || value.startsWith('dreamgaming');
+};
+const cards = [...document.querySelectorAll(
+  'li, [class*=provider], [class*=vendor], [class*=game-item], [class*=item]')]
+  .filter((node) => vis(node) && node.querySelector('img'));
+const labelMatch = cards.find((node) =>
+  [...node.querySelectorAll('span, div, p')].some((label) =>
+    label.children.length === 0 && isDgText(label.textContent)))
+  || cards.find((node) => isDgText(node.textContent));
+const imageMatch = cards.find((node) => [...node.querySelectorAll('img')].some((img) =>
+  /dg[-_]|dream/i.test((img.getAttribute('src') || '') + ' ' + (img.alt || ''))));
+const target = labelMatch || imageMatch;
+if (!target) return {ok: false, count: cards.length};
+target.scrollIntoView({block: 'center', inline: 'center'});
+try { target.click(); } catch (error) {}
+const inner = target.querySelector('span, div, img');
+if (inner) { try { inner.click(); } catch (error) {} }
+return {ok: true, label: norm(target.textContent).slice(0, 30)};
+"""
+
+
 _MOBILE_STATE_JS = r"""
 const vis = (node) => {
   try {
@@ -112,10 +150,20 @@ return {
 
 
 def _is_mobile_layout(driver):
-    """True when the page is the mobile build (no Angular ``ng-click`` menu)."""
+    """True when the browser is presenting the mobile build.
+
+    The decisive signal is the mobile user-agent: only the phone build lacks the
+    Angular ``ng-click`` menu, and page markup changes between lobby screens
+    (``/Lobby/RecommendGame`` has no ``.category-item``), so DOM probing alone
+    misclassified those pages as desktop and the desktop flow then timed out.
+    """
     try:
         data = driver.execute_script(r"""
+          const ua = navigator.userAgent || '';
+          const touch = navigator.maxTouchPoints || 0;
           return {
+            mobileUa: /Android|Mobile|iPhone|iPad/i.test(ua),
+            touch,
             ng: document.querySelectorAll('li[ng-click*="entrance"]').length,
             categories: document.querySelectorAll('.category-item').length,
             hub: /link truy cập/i.test(document.body.innerText || ''),
@@ -123,6 +171,10 @@ def _is_mobile_layout(driver):
         """) or {}
     except Exception:
         return False
+    if data.get("mobileUa"):
+        return True
+    if int(data.get("touch") or 0) > 0 and not data.get("ng"):
+        return True
     return bool(data.get("categories")) or bool(data.get("hub"))
 
 
@@ -325,28 +377,7 @@ def open_dg(driver, wait=120.0, log=None):
             dg_deadline = min(deadline, time.monotonic() + remain(45.0))
             tapped = {}
             while time.monotonic() < dg_deadline:
-                tapped = driver.execute_script(r"""
-                  const vis = (node) => {
-                    try {
-                      const rect = node.getBoundingClientRect();
-                      const style = window.getComputedStyle(node);
-                      return rect.width > 0 && rect.height > 0
-                        && style.visibility !== 'hidden' && style.display !== 'none';
-                    } catch (error) { return false; }
-                  };
-                  const norm = (value) => String(value || '')
-                    .replace(/\s+/g, ' ').trim().toLowerCase();
-                  const cards = [...document.querySelectorAll(
-                    '[class*=provider],[class*=vendor],[class*=game-item],[class*=category-item]')]
-                    .filter(vis);
-                  const dg = cards.find((node) => /dream\s*gaming|^dg$/i.test(norm(node.textContent))
-                    || [...node.querySelectorAll('img')].some((img) =>
-                      /DG-|dream/i.test((img.getAttribute('src') || '') + (img.alt || ''))));
-                  if (!dg) return {ok: false, count: cards.length};
-                  dg.scrollIntoView({block: 'center'});
-                  dg.click();
-                  return {ok: true};
-                """) or {}
+                tapped = driver.execute_script(_MOBILE_DG_CARD_JS) or {}
                 if tapped.get("ok"):
                     report("Đã chạm thẻ DreamGaming trên mobile.")
                     break

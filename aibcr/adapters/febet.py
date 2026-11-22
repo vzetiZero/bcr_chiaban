@@ -362,20 +362,27 @@ def _dg_frame(driver, wait=15.0):
                     driver.switch_to.window(handle)
                 except Exception:
                     continue
-                top_laya = False
+                fallback = None
                 for path, info in _frame_contexts(driver):
                     location = str(info.get("url") or "")
                     if "ddnewpc" in location.lower():
                         driver.switch_to.default_content()
                         return path, location
-                    # A lobby rendered in the page body (no ddnewpc frame), e.g.
-                    # GK881 mobile's /Account/LoginToSupplier hand-off page.
-                    # An explicit ddnewpc frame anywhere wins over this fallback.
-                    if path == () and _has_top_laya(driver):
-                        top_laya = True
-                if top_laya:
-                    driver.switch_to.default_content()
-                    return (), driver.current_url or ""
+                    # A lobby rendered without the ddnewpc marker: GK881 mobile
+                    # embeds DG in an iframe whose URL stays on the hand-off page,
+                    # and some builds draw the stage in the page body. Either way
+                    # a Laya stage is the proof, so look inside this frame.
+                    if fallback is None:
+                        try:
+                            _enter_path(driver, path)
+                            if _has_top_laya(driver):
+                                fallback = (path, location)
+                        except Exception:
+                            pass
+                if fallback is not None:
+                    path, location = fallback
+                    _enter_path(driver, path)
+                    return path, location
                 driver.switch_to.default_content()
         except Exception:
             pass
@@ -463,9 +470,11 @@ return (() => {
   };
   const screenFloor = findFloor(view.tableInfoMan);
   const floorRaw = screenFloor >= 80 ? screenFloor : rawMin;
-  const scale = floorRaw >= 1000 ? 1000 : floorRaw > 0 ? 1
-    : currency === 'VND' || Number(player.balance || 0) >= 100000 ? 1000
-    : maxRawChip >= 1000 ? 1000 : maxRawChip > 0 ? 1 : 0;
+  // Tất cả số tiền DG (giới hạn bàn, số dư, mệnh giá chip) đều tính bằng VND;
+  // commonReachableStake làm việc theo đơn vị "k" (1k = 1000 VND) nên scale phải
+  // luôn là 1000. Không được để scale = 1 (min_k bị nhãn 1000×, denominations_k
+  // vẫn là số nguyên VND lớn) hay = 0 (min_k = 0, danh sách mệnh giá rỗng).
+  const scale = 1000;
   const values = (obj, names) => {
     for (const name of names) if (obj && Number(obj[name]) > 0) return Number(obj[name]);
     return 0;
@@ -577,9 +586,10 @@ const autoConfirm = Boolean(arguments[3]);
   };
   const screenFloor = findFloor(view.tableInfoMan);
   const floorRaw = screenFloor >= 80 ? screenFloor : rawMin;
-  const scale = floorRaw >= 1000 ? 1000 : floorRaw > 0 ? 1
-    : currency === 'VND' || Number(player.balance || 0) >= 100000 ? 1000
-    : maxRawChip >= 1000 ? 1000 : maxRawChip > 0 ? 1 : 0;
+  // Tất cả số tiền DG (giới hạn bàn, số dư, mệnh giá chip) đều tính bằng VND;
+  // commonReachableStake làm việc theo đơn vị "k" (1k = 1000 VND) nên scale phải
+  // luôn là 1000. Không được để scale = 1 hay = 0.
+  const scale = 1000;
   if (!scale) return {ok:false,error:'Không xác định được đơn vị tiền của bàn DG; đã dừng để tránh đặt sai số tiền.'};
   if (Number(info.stateId ?? info.state ?? view.stateId ?? 0) !== 1
       || Number(info.countDown ?? view.countDown ?? 0) < 5)
@@ -786,7 +796,8 @@ def _dg_context(driver, wait=15.0):
                 return {"mode": "top", "location": location}
             if path is not None:
                 _enter_path(driver, path)
-                return {"mode": "iframe", "path": path, "location": location}
+                mode = "iframe" if "ddnewpc" in (location or "").lower() else "laya-frame"
+                return {"mode": mode, "path": path, "location": location}
             # No ddnewpc frame: the lobby may be a Laya stage in this document.
             if _has_top_laya(driver):
                 return {"mode": "top", "location": driver.current_url or ""}
