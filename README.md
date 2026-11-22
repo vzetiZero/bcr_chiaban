@@ -1,4 +1,4 @@
-# AI_BCR Desktop
+# ChiaBanBCR Desktop
 
 Electron desktop app for managing 1-8 browser profiles. Each profile can use its own supported casino site and browser provider (app-managed Chrome or OmniLogin).
 
@@ -30,7 +30,7 @@ The DG table and bet readers are shared across portal hosts. Each profile keeps 
 ## Cấu trúc
 
 ```
-AI_BCR/
+ChiaBanBCR/
 ├─ aibcr/                    backend Python (MVC)
 │  ├─ config.py              hằng số chung (nhịp quét, gate đặt chip, CDP…)
 │  ├─ adapters/              Chrome/Selenium/CDP: đọc DOM, bấm chuột, đặt chip

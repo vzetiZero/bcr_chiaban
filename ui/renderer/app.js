@@ -976,10 +976,191 @@ api.onEngineEvent(({ game, event, data }) => {
 initTheme();
 window.aibcrAlarm?.init?.();
 
+// ---------- Site configuration (CRUD) ----------
+let siteRows = [];
+let editingSiteId = null;
+
+function siteChipClass(chips) {
+  return chips === 'large' ? 'large' : 'small';
+}
+
+function siteChipLabel(chips) {
+  return chips === 'large' ? 'Chip 100k' : 'Chip 10';
+}
+
+function renderSiteConfig(sites) {
+  siteRows = Array.isArray(sites) ? sites : siteRows;
+  const host = $('#site-config-list');
+  if (!host) return;
+  host.replaceChildren();
+  if (!siteRows.length) {
+    const empty = document.createElement('p');
+    empty.className = 'empty';
+    empty.textContent = 'Chưa có site nào. Bấm “Thêm site” để tạo.';
+    host.append(empty);
+    return;
+  }
+  for (const site of siteRows) {
+    const row = document.createElement('div');
+    row.className = 'site-config-row';
+    const info = document.createElement('div');
+    info.className = 'site-config-info';
+
+    const title = document.createElement('div');
+    title.className = 'site-config-title';
+    const name = document.createElement('strong');
+    name.textContent = site.label || site.id;
+    const idTag = document.createElement('span');
+    idTag.className = 'site-config-id';
+    idTag.textContent = site.id;
+    const chip = document.createElement('span');
+    chip.className = `site-config-chip ${siteChipClass(site.chips)}`;
+    chip.textContent = siteChipLabel(site.chips);
+    const badge = document.createElement('span');
+    badge.className = site.automation ? 'site-config-auto' : 'site-config-manual';
+    badge.textContent = site.automation ? 'Tự vào DG' : 'Thủ công';
+    title.append(name, idTag, chip, badge);
+
+    const url = document.createElement('span');
+    url.className = 'site-config-url';
+    url.textContent = site.url;
+    url.title = site.url;
+    info.append(title, url);
+
+    const buttons = document.createElement('div');
+    buttons.className = 'site-config-buttons';
+    const edit = document.createElement('button');
+    edit.type = 'button';
+    edit.textContent = 'Sửa';
+    edit.addEventListener('click', () => openSiteForm(site));
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.className = 'danger';
+    remove.textContent = 'Xoá';
+    remove.addEventListener('click', () => deleteSite(site));
+    buttons.append(edit, remove);
+
+    row.append(info, buttons);
+    host.append(row);
+  }
+}
+
+function setSiteFormNote(message, isError = false) {
+  const note = $('#site-form-note');
+  if (!note) return;
+  note.textContent = message || '';
+  note.dataset.state = isError ? 'error' : 'ready';
+}
+
+function openSiteForm(site = null) {
+  const form = $('#site-form');
+  if (!form) return;
+  editingSiteId = site?.id || null;
+  form.hidden = false;
+  $('#site-form-id').value = site?.id || '';
+  $('#site-form-id').disabled = Boolean(site);
+  $('#site-form-label').value = site?.label || '';
+  $('#site-form-chips').value = site?.chips === 'large' ? 'large' : 'small';
+  $('#site-form-url').value = site?.url || '';
+  setSiteFormNote(site ? `Đang sửa: ${site.id}` : 'Nhập thông tin site mới.');
+  $('#site-form-label').focus();
+}
+
+function closeSiteForm() {
+  const form = $('#site-form');
+  if (form) form.hidden = true;
+  editingSiteId = null;
+  setSiteFormNote('');
+}
+
+async function refreshSiteRows() {
+  const info = await api.info().catch(() => null);
+  if (info?.profileSites) {
+    profileSites = info.profileSites;
+    renderSiteConfig(profileSites);
+  }
+}
+
+async function saveSiteFromForm(event) {
+  event.preventDefault();
+  const payload = {
+    id: $('#site-form-id').value.trim().toLowerCase(),
+    label: $('#site-form-label').value.trim(),
+    chips: $('#site-form-chips').value,
+    url: $('#site-form-url').value.trim(),
+  };
+  const result = editingSiteId
+    ? await api.updateSite({ ...payload, id: editingSiteId, originalId: editingSiteId, label: payload.label, url: payload.url, chips: payload.chips })
+    : await api.createSite(payload);
+  if (!result?.ok) {
+    setSiteFormNote(result?.error || 'Không lưu được site.', true);
+    return;
+  }
+  profileSites = result.sites || profileSites;
+  renderSiteConfig(profileSites);
+  closeSiteForm();
+  syncProfileSiteOptions();
+  renderProfiles(MAX_PROFILES, lastSiteLabel, [], selectedIndicesOrDefault());
+  showNotice(editingSiteId ? 'Đã cập nhật site.' : 'Đã thêm site mới.');
+}
+
+async function deleteSite(site) {
+  if (!window.confirm(`Xoá site "${site.label || site.id}"?`)) return;
+  const result = await api.deleteSite(site.id);
+  if (!result?.ok) {
+    showNotice(result?.error || 'Không xoá được site.', true);
+    return;
+  }
+  profileSites = result.sites || [];
+  renderSiteConfig(profileSites);
+  syncProfileSiteOptions();
+  renderProfiles(MAX_PROFILES, lastSiteLabel, [], selectedIndicesOrDefault());
+  showNotice(`Đã xoá site ${site.id}.`);
+}
+
+// Keep every per-profile site dropdown in step with the editable list.
+function syncProfileSiteOptions() {
+  for (const select of document.querySelectorAll('.profile-site-select')) {
+    const previous = select.value;
+    select.replaceChildren();
+    for (const site of profileSites) {
+      const option = document.createElement('option');
+      option.value = site.id;
+      option.textContent = site.display || site.label;
+      select.append(option);
+    }
+    if (profileSites.some((site) => site.id === previous)) {
+      select.value = previous;
+    } else if (profileSites[0]) {
+      select.value = profileSites[0].id;
+      profileSiteSelections[String(select.dataset.profile)] = profileSites[0].id;
+    }
+  }
+}
+
+$('#site-add')?.addEventListener('click', () => openSiteForm(null));
+$('#site-form-cancel')?.addEventListener('click', closeSiteForm);
+$('#site-form')?.addEventListener('submit', saveSiteFromForm);
+$('#site-reset')?.addEventListener('click', async () => {
+  if (!window.confirm('Khôi phục danh sách site mặc định? Các thay đổi sẽ mất.')) return;
+  const result = await api.resetSites();
+  if (!result?.ok) {
+    showNotice(result?.error || 'Không khôi phục được.', true);
+    return;
+  }
+  profileSites = result.sites || [];
+  renderSiteConfig(profileSites);
+  syncProfileSiteOptions();
+  renderProfiles(MAX_PROFILES, lastSiteLabel, [], selectedIndicesOrDefault());
+  showNotice(result.note || 'Đã khôi phục site mặc định.');
+});
+
+
 (async function boot() {
   try {
     const info = await api.info();
     profileSites = info.profileSites || [];
+    renderSiteConfig(profileSites);
     const savedLog = await api.getActivityLog();
     activityLogRows = (savedLog?.rows || []).slice(-5000);
     renderActivityLog();

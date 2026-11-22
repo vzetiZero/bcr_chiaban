@@ -2,7 +2,7 @@
   "name": "aibcr-desktop",
   "version": "2.0.0",
   "private": true,
-  "description": "AI_BCR Desktop — giao diện Electron cho tool Baccarat",
+  "description": "ChiaBanBCR Desktop — giao diện Electron cho tool Baccarat",
   "main": "main.js",
   "scripts": {
     "start": "electron .",

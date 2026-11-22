@@ -1,4 +1,4 @@
-# AGENTS.md — AI_BCR
+# AGENTS.md — ChiaBanBCR
 
 ## Bắt buộc: tự push GitHub sau mỗi lần thay đổi
 
@@ -9,7 +9,7 @@ GitHub, không cần hỏi lại.**
 powershell -ExecutionPolicy Bypass -File .\push_update.ps1 "mô tả thay đổi"
 ```
 
-- Remote: `https://github.com/vzetiZero/AI_BCR.git`, nhánh `main`.
+- Remote: `https://github.com/vzetiZero/bcr_chiaban.git`, nhánh `main`.
 - Script chạy `git add -A` (tôn trọng `.gitignore`), commit rồi `git push origin main`.
 - Phải chạy test trước khi push:
 

@@ -86,7 +86,8 @@ test('registration publishes the display label for the UI', () => {
 });
 
 test('large-chip sites are grouped together at the end of the list', () => {
-  const block = source.slice(source.indexOf('const PROFILE_SITES'), source.indexOf('const SITE_CHIP_LABELS'));
+  const block = source.slice(source.indexOf('const DEFAULT_SITES'),
+    source.indexOf('const SITE_ID_RE'));
   const ids = [...block.matchAll(/\{ id: '([^']+)', label: [^}]*chips: '(\w+)'/g)]
     .map((match) => ({ id: match[1], chips: match[2] }));
   assert.ok(ids.length >= 6, 'expected at least six sites');

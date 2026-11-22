@@ -215,7 +215,7 @@ class ElectronWiringTests(unittest.TestCase):
 
 
 class NoHorseRacingLeftoversTests(unittest.TestCase):
-    """Đua ngựa và LONG-LONG không còn trong AI_BCR."""
+    """Đua ngựa và LONG-LONG không còn trong ChiaBanBCR."""
 
     PATTERNS = (
         r"\bimport race\b", r"\bfrom aibcr\.models import race\b", r"\brace\.",

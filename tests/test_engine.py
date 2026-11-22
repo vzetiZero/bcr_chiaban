@@ -2,7 +2,7 @@
 """Kiểm thử engine JSON của Electron (aibcr/service/engine.py).
 
 Không cần Chrome: bàn/Chrome được thay bằng đối tượng giả. Mục tiêu là khoá lại hợp
-đồng giữa UI Electron và tiến trình Python của AI_BCR:
+đồng giữa UI Electron và tiến trình Python của ChiaBanBCR:
 
     - chỉ có một dịch vụ Baccarat, dispatch đúng method, method lạ báo lỗi
     - nút “VÀO BÀN HỢP LỆ” tìm + mở + xác nhận bàn nhưng KHÔNG đặt cược

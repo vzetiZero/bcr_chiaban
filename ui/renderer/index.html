@@ -5,7 +5,7 @@
   <meta http-equiv="Content-Security-Policy"
         content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:;" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>AI BCR</title>
+  <title>ChiaBanBCR</title>
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
@@ -28,7 +28,7 @@
   <main class="page">
     <section class="app-heading">
       <div class="app-heading-copy">
-        <h1>AI BCR</h1>
+        <h1>ChiaBanBCR</h1>
       </div>
       <div class="app-heading-status">
         <div class="alarm-box" id="alarm-sound-box">
@@ -55,6 +55,7 @@
       <button class="tab-button" type="button" role="tab" aria-selected="false" data-tab-target="proxies">Proxy</button>
       <button class="tab-button" type="button" role="tab" aria-selected="false" data-tab-target="bets">Cược</button>
       <button class="tab-button" type="button" role="tab" aria-selected="false" data-tab-target="logs">Log</button>
+      <button class="tab-button" type="button" role="tab" aria-selected="false" data-tab-target="config">C&#7845;u h&#236;nh</button>
     </nav>
 
     <div class="tab-panel active" role="tabpanel" data-tab-panel="run">
@@ -230,6 +231,38 @@
         <div id="bet-notice" class="notice" role="status" aria-live="polite"></div>
         <div id="bet-assignments" class="proxy-assignments"></div>
       </section>
+    </div>
+
+    <div class="tab-panel" role="tabpanel" data-tab-panel="config">
+    <section class="manager card">
+      <div class="manager-heading">
+        <div><div class="eyebrow">DANH S&#193;CH SITE</div><h2>Qu&#7843;n l&#253; trang v&#224; &#273;&#432;&#7901;ng d&#7841;n</h2></div>
+        <div class="site-config-actions">
+          <button id="site-add" class="close-button" type="button">+ Th&#234;m site</button>
+          <button id="site-reset" class="close-button" type="button">Kh&#244;i ph&#7909;c m&#7863;c &#273;&#7883;nh</button>
+        </div>
+      </div>
+      <p class="site-config-note">S&#7917;a &#273;&#432;&#7901;ng d&#7841;n khi site &#273;&#7893;i link. M&#227; site d&#249;ng cho logic v&#224;o s&#7843;nh DG; site ch&#432;a c&#243; adapter s&#7869; &#273;&#432;&#7907;c m&#7903; &#273;&#7875; v&#224;o s&#7843;nh th&#7911; c&#244;ng.</p>
+      <div id="site-config-list" class="site-config-list"></div>
+      <form id="site-form" class="site-form" hidden>
+        <div class="site-form-grid">
+          <label class="setting-field"><span>M&#227; site</span><input id="site-form-id" type="text" maxlength="24" placeholder="vd: abc123" autocomplete="off" /></label>
+          <label class="setting-field"><span>T&#234;n hi&#7875;n th&#7883;</span><input id="site-form-label" type="text" maxlength="40" placeholder="vd: ABC123" autocomplete="off" /></label>
+          <label class="setting-field"><span>Nh&#243;m chip</span>
+            <select id="site-form-chips">
+              <option value="small">Chip 10</option>
+              <option value="large">Chip 100k</option>
+            </select>
+          </label>
+          <label class="setting-field site-form-url"><span>&#272;&#432;&#7901;ng d&#7851;n</span><input id="site-form-url" type="url" placeholder="https://..." autocomplete="off" /></label>
+        </div>
+        <div class="site-form-actions">
+          <button id="site-form-save" class="run-button" type="submit">L&#432;u site</button>
+          <button id="site-form-cancel" class="close-button" type="button">Hu&#7927;</button>
+          <span id="site-form-note" class="notice" role="status"></span>
+        </div>
+      </form>
+    </section>
     </div>
 
     <div class="tab-panel" role="tabpanel" data-tab-panel="logs">

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Bộ kiểm thử của AI_BCR: kiến trúc, engine JSON-RPC, lọc bàn, adapter."""
+"""Bộ kiểm thử của ChiaBanBCR: kiến trúc, engine JSON-RPC, lọc bàn, adapter."""
 
 import pathlib
 import sys

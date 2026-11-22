@@ -45,14 +45,73 @@ const PYTHON_CANDIDATES = [
   path.join(process.env.LOCALAPPDATA || '', 'Programs', 'Python', 'Python313', 'python.exe'),
 ].filter(Boolean);
 
-const PROFILE_SITES = [
-  { id: 'e3951', label: 'E3951', url: 'https://www.e3951.com/seamless?gameType=LIVE', chips: 'small' },
-  { id: 'gk881', label: 'GK881', url: 'https://m.gk881.vip/', chips: 'small' },
-  { id: '888ae66', label: '888AE66', url: 'https://www.888ae66.com/', chips: 'small' },
-  { id: 'bum123', label: 'BUM123', url: 'https://www.bum123.com/aff/10459', chips: 'small' },
-  { id: 'vnwtop', label: 'VNWTop', url: 'https://vnwtop.com/', chips: 'large' },
-  { id: 'febet', label: 'FEBET Baccarat', url: 'https://febet.kiwi/live-casino/baccarat?a=c76811abcadb64fed7d82b32d7e79f3c&utm_campaign=social&utm_source=aphonso&utm_medium=sale&utm_term=bee&utm_content=KANGIN&event=', chips: 'large' },
-];
+// Sites shipped with the app. These are seeds for the editable store below;
+// the user can change links, add sites or remove them from the Config tab.
+const DEFAULT_SITES = Object.freeze([
+  { id: 'e3951', label: 'E3951', url: 'https://www.e3951.com/seamless?gameType=LIVE', chips: 'small', auto: true },
+  { id: 'gk881', label: 'GK881', url: 'https://m.gk881.vip/', chips: 'small', auto: true },
+  { id: '888ae66', label: '888AE66', url: 'https://www.888ae66.com/', chips: 'small', auto: false },
+  { id: 'bum123', label: 'BUM123', url: 'https://www.bum123.com/aff/10459', chips: 'small', auto: false },
+  { id: 'vnwtop', label: 'VNWTop', url: 'https://vnwtop.com/', chips: 'large', auto: true },
+  { id: 'febet', label: 'FEBET Baccarat', url: 'https://febet.kiwi/live-casino/baccarat?a=c76811abcadb64fed7d82b32d7e79f3c&utm_campaign=social&utm_source=aphonso&utm_medium=sale&utm_term=bee&utm_content=KANGIN&event=', chips: 'large', auto: true },
+]);
+
+const SITE_ID_RE = /^[a-z0-9][a-z0-9_-]{1,23}$/;
+const SITE_CHIPS = new Set(['small', 'large']);
+let sitesCache = null;
+
+function sitesConfigPath() {
+  return path.join(app.getPath('userData'), 'sites-config.json');
+}
+
+function normalizeSite(raw) {
+  const id = String(raw?.id || '').trim().toLowerCase();
+  const label = String(raw?.label || '').trim().slice(0, 40);
+  const url = String(raw?.url || '').trim();
+  const chips = SITE_CHIPS.has(raw?.chips) ? raw.chips : 'small';
+  return { id, label, url, chips, auto: Boolean(raw?.auto) };
+}
+
+function validateSite(site, existing, { allowSameId = null } = {}) {
+  if (!SITE_ID_RE.test(site.id)) {
+    return 'Mã site phải là 2-24 ký tự a-z, 0-9, gạch ngang hoặc gạch dưới.';
+  }
+  if (!site.label) return 'Tên hiển thị không được để trống.';
+  let parsed;
+  try { parsed = new URL(site.url); } catch { return 'Đường dẫn không hợp lệ.'; }
+  if (parsed.protocol !== 'https:') return 'Đường dẫn phải bắt đầu bằng https://.';
+  if (existing.some((item) => item.id === site.id && item.id !== allowSameId)) {
+    return `Mã site "${site.id}" đã tồn tại.`;
+  }
+  return '';
+}
+
+function readSitesFromDisk() {
+  try {
+    const value = JSON.parse(fs.readFileSync(sitesConfigPath(), 'utf8'));
+    if (Array.isArray(value?.sites) && value.sites.length) {
+      return value.sites.map(normalizeSite).filter((site) => site.id && site.url);
+    }
+  } catch {
+    // Missing or corrupt store: fall back to the shipped defaults.
+  }
+  return DEFAULT_SITES.map((site) => ({ ...site }));
+}
+
+// The live list used by profile opening, validation and the UI.
+function sitesConfig() {
+  if (!sitesCache) sitesCache = readSitesFromDisk();
+  return sitesCache;
+}
+
+async function saveSitesConfig(sites) {
+  const target = sitesConfigPath();
+  await fs.promises.mkdir(path.dirname(target), { recursive: true });
+  await fs.promises.writeFile(target, JSON.stringify({ version: 1, sites }, null, 2),
+    { encoding: 'utf8' });
+  sitesCache = sites;
+  return sites;
+}
 
 const SITE_CHIP_LABELS = Object.freeze({
   small: 'Chip 10',
@@ -961,7 +1020,7 @@ ipcMain.handle('profile:open', async (_event, { index, count, profile, url, sour
     return { ok: false, error: 'Profile không hợp lệ.' };
   }
   if (!['local', 'omni', 'hidemium'].includes(source)) return { ok: false, error: 'Nguồn profile không hợp lệ.' };
-  if (!PROFILE_SITES.some((site) => site.url === url)) {
+  if (!sitesConfig().some((site) => site.url === url)) {
     return { ok: false, error: 'Hãy chọn một website hợp lệ trước khi mở profile.' };
   }
   const row = profile || {};
@@ -1090,12 +1149,17 @@ async function runDGGroup(count, siteIds, requestedIndices = null) {
   const selectedSites = Array.isArray(siteIds) ? siteIds.map((id) => String(id || ''))
     : indicesToUse.map(() => 'febet');
   if (selectedSites.length !== indicesToUse.length
-      || selectedSites.some((id) => !PROFILE_SITES.some((site) => site.id === id))) {
+      || selectedSites.some((id) => !sites.some((site) => site.id === id))) {
     return { ok: false, error: 'Mỗi profile cần có một site hợp lệ trước khi vào sảnh DG.' };
   }
+  const sites = sitesConfig();
   const siteFor = (index) => selectedSites[indicesToUse.indexOf(index)];
-  const autoEntryIndices = indicesToUse.filter((index) =>
-    ['febet', 'gk881', 'e3951', 'vnwtop'].includes(siteFor(index)));
+  const siteMeta = (index) => sites.find((site) => site.id === siteFor(index));
+  const autoEntryIndices = indicesToUse.filter((index) => {
+    const meta = siteMeta(index);
+    // Only sites with a registered entry adapter can be automated.
+    return meta?.auto && ['febet', 'gk881', 'e3951', 'vnwtop'].includes(meta.id);
+  });
   const autoEntryStates = new Map();
   const runSiteEntry = (index) => {
     const siteId = siteFor(index);
@@ -1108,7 +1172,7 @@ async function runDGGroup(count, siteIds, requestedIndices = null) {
     results.forEach((result, offset) => {
       const index = entryIndices[offset];
       const siteId = siteFor(index);
-      const siteLabel = PROFILE_SITES.find((site) => site.id === siteId)?.label || siteId;
+      const siteLabel = sites.find((site) => site.id === siteId)?.label || siteId;
       const reply = result.status === 'fulfilled' ? result.value : { ok: false, error: result.reason.message };
       autoEntryStates.set(index, reply?.ok
         ? { ready: true, note: reply.note || `\u0110\u00e3 chuy\u1ec3n Profile ${index} (${siteLabel}) v\u00e0o s\u1ea3nh DG.` }
@@ -1116,7 +1180,7 @@ async function runDGGroup(count, siteIds, requestedIndices = null) {
     });
   };
   if (autoEntryIndices.length) {
-    const labels = autoEntryIndices.map((index) => `Profile ${index} (${PROFILE_SITES.find((site) => site.id === siteFor(index))?.label || siteFor(index)})`).join(', ');
+    const labels = autoEntryIndices.map((index) => `Profile ${index} (${siteMeta(index)?.label || siteFor(index)})`).join(', ');
     sendHopStatus({ active: true, waiting_indices: [...indices],
       note: `\u0110ang t\u1ef1 v\u00e0o s\u1ea3nh DG cho ${labels}; c\u00e1c profile site kh\u00e1c v\u00e0o s\u1ea3nh th\u1ee7 c\u00f4ng.` });
     const autoResults = await Promise.allSettled(autoEntryIndices.map(runSiteEntry));
@@ -1530,7 +1594,7 @@ ipcMain.handle('profiles:open', async (_event, { count, siteId, siteIds, indices
   if (!total) return { ok: false, error: 'Hãy chọn ít nhất một profile để mở.' };
   const selectedSiteIds = Array.isArray(siteIds) ? siteIds : Array(total).fill(siteId);
   const sites = Array.from({ length: total }, (_, offset) =>
-    PROFILE_SITES.find((item) => item.id === selectedSiteIds[offset]));
+    sitesConfig().find((item) => item.id === selectedSiteIds[offset]));
   if (sites.some((item) => !item)) {
     return { ok: false, error: 'Hãy chọn một site hợp lệ riêng cho từng profile.' };
   }
@@ -1843,13 +1907,64 @@ ipcMain.handle('hidemium:profiles', async (_event, { apiUrl }) => {
   }
 });
 
+function publicSites() {
+  return sitesConfig().map(({ id, label, url, chips, auto }) => ({
+    id, label, url, chips, auto,
+    display: siteOptionLabel({ label, chips }),
+    // True only when the backend actually has an entry adapter for this id.
+    automation: ['febet', 'gk881', 'e3951', 'vnwtop'].includes(id),
+  }));
+}
+
 ipcMain.handle('app:info', () => ({
   version: app.getVersion(),
   root: PROJECT_ROOT,
   engines: Object.keys(engines),
-  profileSites: PROFILE_SITES.map(({ id, label, url, chips }) => ({
-    id, label, url, chips, display: siteOptionLabel({ label, chips }) })),
+  profileSites: publicSites(),
 }));
+
+ipcMain.handle('sites:list', () => ({ ok: true, sites: publicSites() }));
+
+ipcMain.handle('sites:create', async (_event, { site } = {}) => {
+  const sites = sitesConfig();
+  const next = normalizeSite(site);
+  const error = validateSite(next, sites);
+  if (error) return { ok: false, error };
+  if (!sites.some((item) => item.id === next.id)) {
+    await saveSitesConfig([...sites, next]);
+  }
+  return { ok: true, sites: publicSites() };
+});
+
+ipcMain.handle('sites:update', async (_event, { site } = {}) => {
+  const sites = sitesConfig();
+  const originalId = String(site?.originalId || site?.id || '').trim().toLowerCase();
+  const index = sites.findIndex((item) => item.id === originalId);
+  if (index < 0) return { ok: false, error: 'Không tìm thấy site cần sửa.' };
+  const next = normalizeSite(site);
+  // Allow keeping the same id, or renaming to a free one.
+  const error = validateSite(next, sites, { allowSameId: originalId });
+  if (error) return { ok: false, error };
+  const updated = sites.slice();
+  updated[index] = next;
+  await saveSitesConfig(updated);
+  return { ok: true, sites: publicSites() };
+});
+
+ipcMain.handle('sites:delete', async (_event, { id } = {}) => {
+  const sites = sitesConfig();
+  const target = String(id || '').trim().toLowerCase();
+  const remaining = sites.filter((item) => item.id !== target);
+  if (remaining.length === sites.length) return { ok: false, error: 'Không tìm thấy site cần xoá.' };
+  if (!remaining.length) return { ok: false, error: 'Phải giữ lại ít nhất một site.' };
+  await saveSitesConfig(remaining);
+  return { ok: true, sites: publicSites() };
+});
+
+ipcMain.handle('sites:reset', async () => {
+  const sites = await saveSitesConfig(DEFAULT_SITES.map((item) => ({ ...item })));
+  return { ok: true, sites: publicSites(), note: `Đã khôi phục ${sites.length} site mặc định.` };
+});
 
 ipcMain.handle('app:openExternal', (_event, url) => shell.openExternal(url));
 

@@ -320,3 +320,36 @@ h1 { margin: 6px 0 4px; color: var(--text-strong); font-size: clamp(23px, 3vw, 3
 :root[data-theme="light"] .alarm-volume { color: #334155; }
 :root[data-theme="light"] .alarm-volume strong { color: #b45309; }
 :root[data-theme="light"] .alarm-test { color: #1f2937; }
+
+.manager-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; flex-wrap: wrap; }
+.site-config-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.site-config-note { margin: 8px 0 14px; color: var(--muted); font-size: 11px; line-height: 1.55; }
+.site-config-list { display: flex; flex-direction: column; gap: 8px; }
+.site-config-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--row-bg); }
+.site-config-row:hover { background: var(--row-bg-hover); }
+.site-config-info { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.site-config-title { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+.site-config-title strong { color: var(--text); font-size: 12px; }
+.site-config-id { padding: 1px 6px; border-radius: 4px; background: var(--stat-bg); color: var(--muted); font-size: 9px; font-weight: 700; }
+.site-config-chip { padding: 1px 6px; border-radius: 4px; font-size: 9px; font-weight: 800; }
+.site-config-chip.small { background: rgba(56, 189, 248, .18); color: #7dd3fc; }
+.site-config-chip.large { background: rgba(245, 158, 11, .2); color: #fcd34d; }
+.site-config-auto { padding: 1px 6px; border-radius: 4px; background: rgba(16, 185, 129, .18); color: #6ee7b7; font-size: 9px; font-weight: 800; }
+.site-config-manual { padding: 1px 6px; border-radius: 4px; background: rgba(148, 163, 184, .2); color: var(--muted); font-size: 9px; font-weight: 800; }
+.site-config-url { overflow: hidden; color: var(--muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.site-config-buttons { display: flex; gap: 6px; }
+.site-config-buttons button { padding: 5px 10px; border: 1px solid rgba(148, 163, 184, .28); border-radius: 6px; background: var(--input-bg); color: var(--text-soft); font: inherit; font-size: 10px; font-weight: 700; cursor: pointer; }
+.site-config-buttons button:hover { border-color: var(--amber); color: var(--amber); }
+.site-config-buttons .danger:hover { border-color: var(--danger); color: var(--danger); }
+.site-form { margin-top: 16px; padding: 14px; border: 1px solid rgba(245, 158, 11, .35); border-radius: 9px; background: var(--soft-panel); }
+.site-form-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 11px; }
+.site-form-url { grid-column: span 3; }
+.site-form-actions { display: flex; align-items: center; gap: 9px; margin-top: 12px; flex-wrap: wrap; }
+.site-form-actions .run-button { min-height: 36px; padding: 0 16px; width: auto; }
+.site-form-actions .notice { min-height: 16px; margin: 0; }
+.site-form-actions .notice[data-state="error"] { color: var(--danger); }
+
+:root[data-theme="light"] .site-config-chip.small { background: rgba(2, 132, 199, .14); color: #0369a1; }
+:root[data-theme="light"] .site-config-chip.large { background: rgba(180, 83, 9, .16); color: #92400e; }
+:root[data-theme="light"] .site-config-auto { background: rgba(5, 150, 105, .16); color: #047857; }
+:root[data-theme="light"] .site-config-manual { background: rgba(100, 116, 139, .16); color: #475569; }
