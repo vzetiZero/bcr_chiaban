@@ -1146,13 +1146,13 @@ async function runDGGroup(count, siteIds, requestedIndices = null) {
   if (indicesToUse.length < config.min_tk) {
     return { ok: false, error: `C\u1ea5u h\u00ecnh y\u00eau c\u1ea7u t\u1ed1i thi\u1ec3u ${config.min_tk} profile; hi\u1ec7n c\u00f3 ${indicesToUse.length}.` };
   }
+  const sites = sitesConfig();
   const selectedSites = Array.isArray(siteIds) ? siteIds.map((id) => String(id || ''))
-    : indicesToUse.map(() => 'febet');
+    : indicesToUse.map(() => sites[0]?.id || 'febet');
   if (selectedSites.length !== indicesToUse.length
       || selectedSites.some((id) => !sites.some((site) => site.id === id))) {
     return { ok: false, error: 'Mỗi profile cần có một site hợp lệ trước khi vào sảnh DG.' };
   }
-  const sites = sitesConfig();
   const siteFor = (index) => selectedSites[indicesToUse.indexOf(index)];
   const siteMeta = (index) => sites.find((site) => site.id === siteFor(index));
   const autoEntryIndices = indicesToUse.filter((index) => {

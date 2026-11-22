@@ -92,3 +92,22 @@ test('app branding is ChiaBanBCR, not AI BCR', () => {
   assert.doesNotMatch(html, /AI BCR/);
   assert.doesNotMatch(main, /AI_BCR Desktop/);
 });
+
+test('sites is declared before use inside runDGGroup (no TDZ)', () => {
+  const start = main.indexOf('async function runDGGroup(');
+  assert.ok(start >= 0, 'runDGGroup not found');
+  const end = main.indexOf('\n}\n', start);
+  const body = main.slice(start, end);
+  const decl = body.indexOf('const sites = sitesConfig();');
+  assert.ok(decl >= 0, 'sites declaration missing');
+  // Any earlier use of bare `sites` would throw ReferenceError at runtime.
+  const before = body.slice(0, decl);
+  assert.ok(!/\bsites\.(some|find|map|filter|length)/.test(before),
+    'sites used before its declaration -> temporal dead zone');
+});
+
+test('runDGGroup defaults to the first configured site, not a hardcoded id', () => {
+  const start = main.indexOf('async function runDGGroup(');
+  const body = main.slice(start, start + 4000);
+  assert.match(body, /sites\[0\]\?\.id/);
+});
