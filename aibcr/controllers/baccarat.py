@@ -30,6 +30,7 @@ from aibcr.adapters import febet as FEBET
 from aibcr.adapters import lobby_stream as LS
 from aibcr.adapters import table_bets as TB
 from aibcr.adapters.wm_bet import WMBet
+from aibcr.models import fingerprint as FP
 from aibcr.controllers.sites.e3951 import E3951EntryController
 from aibcr.controllers.sites.febet import FEBETEntryController
 from aibcr.controllers.sites.gk881 import GK881EntryController
@@ -56,6 +57,8 @@ DEFAULT_CONFIG = {
     "auto_hunt": True,
     "auto_recover": True,
     "tables_to_play": 1,
+    # Dấu vết thiết bị Android riêng của profile; sinh tự động ở lần cấu hình đầu.
+    "fingerprint": None,
     # Lệnh cược mặc định; cửa luôn do người dùng chọn trực tiếp.
     "bet_side": "P",            # P | B | T; wagering never follows AI output
     # 10 đơn vị = 10.000đ (WM in khay chip theo nghìn đồng, 1 đv = 1.000đ).
@@ -122,6 +125,9 @@ class BaccaratController:
         self.config = self._load_config()
 
         self.browser = BR.BrowserSession()
+        # Keep the persisted device identity across app restarts.
+        if isinstance(self.config.get("fingerprint"), dict):
+            self.browser.fingerprint = self.config["fingerprint"]
         self.febet_entry = FEBETEntryController(self)
         self.gk881_entry = GK881EntryController(self)
         self.e3951_entry = E3951EntryController(self)
@@ -766,11 +772,64 @@ class BaccaratController:
         self.config["start_url"] = url
         self.config["chrome_window"] = {"width": width, "height": height,
                                         "percent": percent, "fullscreen": False}
+        fingerprint = self._resolve_fingerprint(params)
+        self.browser.fingerprint = fingerprint
         self._save_state()
         self._push_state()
         return {"ok": True, "note": "Đã áp dụng cấu hình profile.",
                 "proxy_enabled": bool(proxy_server), "width": width,
-                "height": height, "scale": percent}
+                "height": height, "scale": percent,
+                "device": FP.describe(fingerprint),
+                "fingerprint": {key: fingerprint.get(key) for key in
+                                ("device", "android", "user_agent")}}
+
+    def _resolve_fingerprint(self, params=None):
+        """Return this profile's Android identity, generating one on first use.
+
+        A profile keeps its identity between launches; ``regenerate_fingerprint``
+        draws a new device, and an explicit ``fingerprint`` payload overrides it.
+        """
+        params = params or {}
+        supplied = params.get("fingerprint")
+        if isinstance(supplied, dict) and supplied.get("user_agent"):
+            self.config["fingerprint"] = supplied
+            return supplied
+        current = self.config.get("fingerprint")
+        major = "157"
+        try:
+            detected = (BR.chrome_version() or "").split(".")[0]
+            if detected.isdigit():
+                major = detected
+        except Exception:
+            pass
+        if params.get("regenerate_fingerprint"):
+            fresh = FP.regenerate(current, chrome_major=major)
+            self.config["fingerprint"] = fresh
+            return fresh
+        if not isinstance(current, dict) or not current.get("user_agent"):
+            fresh = FP.generate(chrome_major=major)
+            self.config["fingerprint"] = fresh
+            return fresh
+        return current
+
+    def fingerprint_info(self, params=None):
+        """Current device identity plus a regenerated one on request."""
+        params = params or {}
+        fingerprint = self._resolve_fingerprint(params)
+        self.browser.fingerprint = fingerprint
+        self._save_state()
+        return {"ok": True, "device": FP.describe(fingerprint),
+                "fingerprint": {key: fingerprint.get(key) for key in
+                                ("device", "android", "user_agent", "cores",
+                                 "memory", "webgl_renderer", "canvas_seed")}}
+
+    def fingerprint_regenerate(self, params=None):
+        params = dict(params or {})
+        params["regenerate_fingerprint"] = True
+        result = self.fingerprint_info(params)
+        if result.get("ok"):
+            self._push_state()
+        return result
 
     def febet_current_table(self, params=None):
         params = params or {}
@@ -2728,6 +2787,8 @@ class BaccaratController:
             "chrome.attachExternal": self.chrome_attach_external,
             "site.open": self.site_open,
             "profile.configure": self.profile_configure,
+            "fingerprint.info": self.fingerprint_info,
+            "fingerprint.regenerate": self.fingerprint_regenerate,
             "febet.table": self.febet_current_table,
             "febet.tables": self.febet_lobby_tables,
             "febet.syncTable": self.febet_sync_table,

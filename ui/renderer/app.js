@@ -126,7 +126,8 @@ function renderProfiles(count, siteLabel, replies = [], indices = null) {
     row.innerHTML = `<div class="profile-number">${String(index).padStart(2, '0')}</div>
       <div class="profile-info"><strong>Profile ${index}</strong><span class="profile-detail"></span></div>
       <select class="profile-site-select" data-profile="${index}" aria-label="Site c\u1ee7a Profile ${index}"></select>
-      <span class="profile-state"></span><button class="profile-toggle" data-profile="${index}">M\u1edf</button>`;
+      <span class="profile-state"></span><button class="profile-toggle" data-profile="${index}">M\u1edf</button>
+      <button class="profile-fingerprint" data-profile="${index}" title="\u0110\u1ed5i d\u1ea5u v\u1ebft thi\u1ebft b\u1ecb Android">D\u1ea5u v\u1ebft</button>`;
     const siteSelect = row.querySelector('.profile-site-select');
     for (const site of profileSites) {
       const option = document.createElement('option');
@@ -141,7 +142,8 @@ function renderProfiles(count, siteLabel, replies = [], indices = null) {
       siteSelect.value = selectedSite;
       profileSiteSelections[String(index)] = selectedSite;
     }
-    const detail = reply.note || reply.error || '';
+    const detail = [reply.note || reply.error || '', reply.device || '']
+      .filter(Boolean).join(' \u00b7 ');
     const proxy = reply.proxy ? ` \u00b7 ${reply.proxy}` : '';
     const size = reply.width && reply.height ? ` \u00b7 ${reply.width}\u00d7${reply.height} \u00b7 ${reply.scale}%` : '';
     row.querySelector('.profile-detail').textContent = `${detail}${proxy}${size}`;
@@ -787,6 +789,31 @@ $('#close-profiles').addEventListener('click', async () => {
 });
 
 profileList.addEventListener('click', async (event) => {
+  const fingerprintButton = event.target.closest('.profile-fingerprint');
+  if (fingerprintButton) {
+    const fingerprintIndex = Number(fingerprintButton.dataset.profile);
+    fingerprintButton.disabled = true;
+    try {
+      const result = await api.regenerateProfileFingerprint(fingerprintIndex);
+      if (!result?.ok) {
+        showNotice(result?.error || 'Không đổi được dấu vết thiết bị.', true);
+        return;
+      }
+      const row = fingerprintButton.closest('.profile-row');
+      const detailNode = row?.querySelector('.profile-detail');
+      if (detailNode && result.device) {
+        const parts = detailNode.textContent.split(' \u00b7 ');
+        const base = parts.filter((part) => !/Android|Ch\u01b0a c\u00f3 d\u1ea5u v\u1ebft/.test(part));
+        detailNode.textContent = [...base, result.device].filter(Boolean).join(' \u00b7 ');
+      }
+      showNotice(`Profile ${fingerprintIndex}: ${result.device}. Mở lại Chrome để áp dụng.`);
+    } catch (error) {
+      showNotice('Không đổi được dấu vết thiết bị.', true);
+    } finally {
+      fingerprintButton.disabled = false;
+    }
+    return;
+  }
   const button = event.target.closest('.profile-toggle');
   if (!button) return;
   const index = Number(button.dataset.profile);

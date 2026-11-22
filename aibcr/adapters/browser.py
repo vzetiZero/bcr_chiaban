@@ -347,7 +347,7 @@ def normalize_window(size=None, scale=None, fullscreen=None):
     }
 
 
-def build_flags(pos=None, cdp=False, window=None):
+def build_flags(pos=None, cdp=False, window=None, fingerprint=None):
     window = normalize_window() if window is None else window
     flags = [
         "--user-data-dir=%s" % PROFILE_DIR,
@@ -366,6 +366,10 @@ def build_flags(pos=None, cdp=False, window=None):
         flags.append("--proxy-server=%s" % PROXY_SERVER)
     if pos and not window["fullscreen"]:
         flags.append("--window-position=%d,%d" % pos)
+    # A per-profile Android identity: the flag sets the UA before any page loads,
+    # while canvas/WebGL/navigator details are injected over CDP after launch.
+    if isinstance(fingerprint, dict) and fingerprint.get("user_agent"):
+        flags.append("--user-agent=%s" % fingerprint["user_agent"])
     return flags
 
 
@@ -405,6 +409,8 @@ class BrowserSession:
         self._alive_ok = False
         self.external_browser = False
         self._external_service = None
+        # Dấu vết thiết bị Android của profile (user-agent, màn hình, canvas).
+        self.fingerprint = None
 
     @property
     def connected(self):
@@ -633,6 +639,9 @@ class BrowserSession:
                 self.external_browser = True
                 self._selected_handle = driver.current_window_handle
                 version = driver.capabilities.get("browserVersion") or "Chrome"
+                # Managed profiles (OmniLogin/Hidemium) still get the Android
+                # identity applied over CDP; no relaunch is needed.
+                self._apply_fingerprint(driver, major=version.split(".")[0])
                 self._driver_info = "%s \u00b7 OmniLogin CDP %d" % (version, port)
                 self.mode = "omnilogin"
                 self.note = "\u0110\u00e3 g\u1eafn Chrome profile OmniLogin; profile do OmniLogin qu\u1ea3n l\u00fd."
@@ -826,7 +835,7 @@ class BrowserSession:
         opts = Options()
         opts.binary_location = chrome
         opts.page_load_strategy = "eager"
-        for flag in build_flags(pos, cdp, window):
+        for flag in build_flags(pos, cdp, window, self.fingerprint):
             opts.add_argument(flag)
         service = Service(DRIVER_PATH) if kind == "local" else Service()
         driver = None
@@ -838,6 +847,9 @@ class BrowserSession:
             driver.set_page_load_timeout(PAGE_LOAD_TIMEOUT)
             driver.set_script_timeout(SCRIPT_TIMEOUT)
             driver.implicitly_wait(0)
+            # Inject the device fingerprint before the first navigation so every
+            # document (including iframes the casino opens later) sees it.
+            self._apply_fingerprint(driver)
             driver.get(url)  # Điều hướng duy nhất; các bước tiếp theo đều do người dùng.
             handle = driver.current_window_handle
             caps = driver.capabilities
@@ -857,6 +869,19 @@ class BrowserSession:
         self.driver = driver
         self._selected_handle = handle
         self._driver_info = info
+
+    def _apply_fingerprint(self, driver, major=None):
+        """Apply the Android device fingerprint over CDP; never raises."""
+        if driver is None or not isinstance(self.fingerprint, dict):
+            return []
+        try:
+            from aibcr.adapters import device_profile
+        except Exception:
+            return []
+        try:
+            return device_profile.apply_to_driver(driver, self.fingerprint, major)
+        except Exception:
+            return []
 
     def alive(self):
         with self.lock:

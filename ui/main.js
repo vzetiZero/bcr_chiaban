@@ -1505,6 +1505,18 @@ ipcMain.handle('bets:start-open', async (_event, { config: submittedConfig } = {
     replies: ladderReplies, stake: ladderStake(config) };
 });
 
+ipcMain.handle('profile:fingerprint', async (_event, { index } = {}) => {
+  const engine = profileEngine(Math.trunc(Number(index)));
+  if (!engine) return { ok: false, error: 'Hãy mở profile trước khi xem dấu vết thiết bị.' };
+  return engine.call('fingerprint.info', {}, 20000);
+});
+
+ipcMain.handle('profile:regenerateFingerprint', async (_event, { index } = {}) => {
+  const engine = profileEngine(Math.trunc(Number(index)));
+  if (!engine) return { ok: false, error: 'Hãy mở profile trước khi đổi dấu vết thiết bị.' };
+  return engine.call('fingerprint.regenerate', {}, 30000);
+});
+
 ipcMain.handle('profile:close', async (_event, { index }) => {
   const profileIndex = Math.trunc(Number(index));
   if (!Number.isInteger(profileIndex) || profileIndex < 1 || profileIndex > 8) {
@@ -1763,6 +1775,7 @@ ipcMain.handle('profiles:open', async (_event, { count, siteId, siteIds, indices
       activeProfileIndices.add(profileIndex);
     }
     return { ...reply, index: profileIndex, site: sites[index].label,
+      device: configured[index]?.value?.device || '',
       proxy: source === 'omni' || source === 'hidemium' ? `Proxy theo cấu hình ${source === 'omni' ? 'OmniLogin' : 'Hidemium'}` : settings[index].proxyLabel,
       width: settings[index].width, height: settings[index].height, scale: settings[index].scale,
       ...(source === 'omni' ? { omni_profile_id: omniRows[index] } : {}),
