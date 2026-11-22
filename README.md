@@ -93,7 +93,7 @@ Cấu hình Chrome: cổng CDP **9222**, profile `chrome_profile/`, file phiên
 ## Backend Baccarat legacy
 
 Các mục dưới đây mô tả controller Baccarat và JSON-RPC cũ. Chúng không xuất hiện trong
-giao diện Profile Manager hiện tại.
+giao diện hiện tại.
 
 Tab **Bàn chơi** có một nút thao tác bàn: **VÀO BÀN HỢP LỆ**
 (`table.enterValid`). Các nút cũ (Gắn Chrome / Nhận tab sảnh / Quét sảnh / Đọc lại
@@ -268,13 +268,13 @@ nhà cung cấp. Không dán giá trị key vào README, test, log hay issue.
 
 ## Backend wagering
 
-The current Profile Manager has no wager controls or money/statistics display. Legacy backend
+The current interface has no wager controls or money/statistics display. Legacy backend
 methods accept only explicit `P`, `B`, or `T` selections; predictions cannot choose a wager.
 
 ## Quản lý profile trên giao diện
 
-Trong trang Profile Manager, nhập số lượng tài khoản (1–8), chọn một trong sáu website rồi
-bấm **Chạy đồng thời**. Các cửa sổ Chrome mở cùng URL và được xếp theo lưới. Chọn **Đóng
+Trong trang quản lý, chọn các profile cần chạy (P1–P8), chọn website cho từng profile rồi
+bấm **Chạy Tool**. Các cửa sổ Chrome mở cùng URL và được xếp theo lưới. Chọn **Đóng
 profiles** để đóng các cửa sổ trong nhóm đang chạy. Đăng nhập từng profile lần đầu ngay
 trong cửa sổ Chrome; phiên đăng nhập được Chrome lưu riêng theo profile.
 
