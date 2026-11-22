@@ -196,14 +196,16 @@ def apply_to_driver(driver, fingerprint, chrome_major=None):
         attempt("ua", "Network.setUserAgentOverride", override)
 
     screen = fingerprint.get("screen") or {}
-    if screen.get("width") and screen.get("height"):
+    viewport = fingerprint.get("viewport") or screen
+    if viewport.get("width") and viewport.get("height"):
         attempt("metrics", "Emulation.setDeviceMetricsOverride", {
-            "width": int(screen["width"]),
-            "height": int(screen["height"]),
-            "deviceScaleFactor": float(screen.get("dpr") or 1),
+            "width": int(viewport["width"]),
+            "height": int(viewport["height"]),
+            # Cap the ratio: 3.5 makes every glyph huge inside a desktop window.
+            "deviceScaleFactor": min(3.0, float(screen.get("dpr") or 1)),
             "mobile": bool(fingerprint.get("mobile_layout", True)),
-            "screenWidth": int(screen["width"]),
-            "screenHeight": int(screen["height"]),
+            "screenWidth": int(screen.get("width") or viewport["width"]),
+            "screenHeight": int(screen.get("height") or viewport["height"]),
             "screenOrientation": {"type": "portraitPrimary", "angle": 0},
         })
         attempt("touch", "Emulation.setTouchEmulationEnabled",
@@ -213,3 +215,39 @@ def apply_to_driver(driver, fingerprint, chrome_major=None):
     if script:
         attempt("script", "Page.addScriptToEvaluateOnNewDocument", {"source": script})
     return applied
+
+# Chrome draws its own tab strip and address bar above the page. These are the
+# approximate outer-window extras on Windows at 100% display scaling.
+CHROME_UI_HEIGHT = 90
+CHROME_UI_WIDTH = 16
+
+
+def mobile_window(fingerprint, preferred_width=430):
+    """Outer window size that makes a phone layout fill the whole frame.
+
+    The emulated viewport must equal the page area, otherwise the right side of
+    the window stays blank. ``preferred_width`` keeps the window readable while
+    preserving the device aspect ratio.
+    """
+    screen = (fingerprint or {}).get("screen") or {}
+    width = float(screen.get("width") or 393)
+    height = float(screen.get("height") or 873)
+    if width <= 0 or height <= 0:
+        width, height = 393.0, 873.0
+    ratio = height / width
+    page_width = int(max(360, min(520, preferred_width)))
+    page_height = int(round(page_width * ratio))
+    return {
+        "width": page_width + CHROME_UI_WIDTH,
+        "height": page_height + CHROME_UI_HEIGHT,
+        "viewport": {"width": page_width, "height": page_height},
+    }
+
+
+def with_viewport(fingerprint, viewport):
+    """Copy of ``fingerprint`` whose metrics target ``viewport``."""
+    if not isinstance(fingerprint, dict):
+        return fingerprint
+    copy = dict(fingerprint)
+    copy["viewport"] = {"width": int(viewport["width"]), "height": int(viewport["height"])}
+    return copy

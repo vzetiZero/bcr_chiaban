@@ -44,6 +44,102 @@ def _is_dg_entry_url(url):
     return any(marker in text for marker in _DG_ENTRY_MARKERS)
 
 
+# The mobile build (``m.gk881.vip`` with a phone user-agent) is a different
+# Angular app: navigation is a ``.category-item`` strip, popups use plain
+# buttons ("TÔI BIẾT RỒI", "Đóng", "×") and there are no ``ng-click`` attributes.
+_MOBILE_CLOSE_JS = r"""
+const vis = (node) => {
+  try {
+    const rect = node.getBoundingClientRect();
+    const style = window.getComputedStyle(node);
+    return rect.width > 0 && rect.height > 0
+      && style.visibility !== 'hidden' && style.display !== 'none';
+  } catch (error) { return false; }
+};
+const wanted = ['tôi biết rồi', 'đóng', '×', 'x', 'đồng ý'];
+const closed = [];
+for (const button of document.querySelectorAll('button, [class*=close], .btn')) {
+  if (!vis(button)) continue;
+  const rect = button.getBoundingClientRect();
+  if (rect.width > 200 || rect.height > 200) continue;
+  const text = (button.textContent || '').replace(/\s+/g, ' ').trim().toLowerCase();
+  if (!wanted.includes(text)) continue;
+  try { button.click(); closed.push(text); } catch (error) {}
+}
+return {closed};
+"""
+
+_MOBILE_CATEGORY_JS = r"""
+const vis = (node) => {
+  try {
+    const rect = node.getBoundingClientRect();
+    const style = window.getComputedStyle(node);
+    return rect.width > 0 && rect.height > 0
+      && style.visibility !== 'hidden' && style.display !== 'none';
+  } catch (error) { return false; }
+};
+const norm = (value) => String(value || '').replace(/\s+/g, ' ').trim().toLowerCase();
+const wanted = norm(arguments[0]);
+const items = [...document.querySelectorAll('.category-item, [class*=category-item]')];
+const labels = items.map((node) => norm(node.textContent)).filter(Boolean);
+const target = items.find((node) => vis(node) && norm(node.textContent).includes(wanted));
+if (!target) return {ok: false, labels: labels.slice(0, 20)};
+target.scrollIntoView({block: 'center', inline: 'center'});
+target.click();
+return {ok: true};
+"""
+
+_MOBILE_STATE_JS = r"""
+const vis = (node) => {
+  try {
+    const rect = node.getBoundingClientRect();
+    const style = window.getComputedStyle(node);
+    return rect.width > 0 && rect.height > 0
+      && style.visibility !== 'hidden' && style.display !== 'none';
+  } catch (error) { return false; }
+};
+const norm = (value) => String(value || '').replace(/\s+/g, ' ').trim().toLowerCase();
+return {
+  isHub: /link truy cập/i.test(document.body.innerText || ''),
+  categories: [...document.querySelectorAll('.category-item')]
+    .filter(vis).map((node) => norm(node.textContent)).slice(0, 20),
+  providers: [...document.querySelectorAll('[class*=provider],[class*=vendor],[class*=game-item]')]
+    .filter(vis).map((node) => norm(node.textContent).slice(0, 24)).slice(0, 15),
+  dgText: [...document.querySelectorAll('*')].some((node) =>
+    vis(node) && node.children.length === 0 && /dream\s*gaming/i.test(norm(node.textContent))),
+};
+"""
+
+
+def _is_mobile_layout(driver):
+    """True when the page is the mobile build (no Angular ``ng-click`` menu)."""
+    try:
+        data = driver.execute_script(r"""
+          return {
+            ng: document.querySelectorAll('li[ng-click*="entrance"]').length,
+            categories: document.querySelectorAll('.category-item').length,
+            hub: /link truy cập/i.test(document.body.innerText || ''),
+          };
+        """) or {}
+    except Exception:
+        return False
+    return bool(data.get("categories")) or bool(data.get("hub"))
+
+
+def close_mobile_popups(driver, rounds=3):
+    closed = []
+    for _ in range(max(1, rounds)):
+        try:
+            result = driver.execute_script(_MOBILE_CLOSE_JS) or {}
+        except Exception:
+            return closed
+        closed.extend(result.get("closed") or [])
+        if not result.get("closed"):
+            break
+        time.sleep(0.6)
+    return closed
+
+
 def _safe_location(driver):
     """Return only host/path; never put query strings or session tokens in logs."""
     try:
@@ -203,6 +299,79 @@ def open_dg(driver, wait=120.0, log=None):
         driver.switch_to.window(source_handle)
         driver.switch_to.default_content()
         report("Đang thao tác trên %s." % _safe_location(driver))
+
+        # ---- Mobile build: a different Angular app with a category strip. ----
+        if _is_mobile_layout(driver):
+            stage = "giao diện điện thoại"
+            report("Phát hiện giao diện điện thoại GK881; dùng bộ chọn mobile.")
+            closed = close_mobile_popups(driver)
+            if closed:
+                report("Đã đóng %s lớp che trên mobile." % len(closed))
+            state = driver.execute_script(_MOBILE_STATE_JS) or {}
+            if state.get("isHub") and not state.get("categories"):
+                report("Trang hiện tại là trang tổng hợp link, không có menu Casino.", "error")
+                return {"ok": False, "site_id": "gk881",
+                        "error": "GK881 mobile đang ở trang tổng hợp link; hãy mở link casino chính thức rồi chạy lại."}
+            # Open the Casino category, then wait for the DG provider card.
+            nav = driver.execute_script(_MOBILE_CATEGORY_JS, "casino") or {}
+            if nav.get("ok"):
+                report("Đã chọn danh mục Casino trên mobile.")
+                time.sleep(2)
+                driver.execute_script(_MOBILE_CLOSE_JS)
+            else:
+                report("Không thấy danh mục Casino; thử tìm thẻ DreamGaming trực tiếp.",
+                       "warning")
+            # Tap the DreamGaming provider card when it appears.
+            dg_deadline = min(deadline, time.monotonic() + remain(45.0))
+            tapped = {}
+            while time.monotonic() < dg_deadline:
+                tapped = driver.execute_script(r"""
+                  const vis = (node) => {
+                    try {
+                      const rect = node.getBoundingClientRect();
+                      const style = window.getComputedStyle(node);
+                      return rect.width > 0 && rect.height > 0
+                        && style.visibility !== 'hidden' && style.display !== 'none';
+                    } catch (error) { return false; }
+                  };
+                  const norm = (value) => String(value || '')
+                    .replace(/\s+/g, ' ').trim().toLowerCase();
+                  const cards = [...document.querySelectorAll(
+                    '[class*=provider],[class*=vendor],[class*=game-item],[class*=category-item]')]
+                    .filter(vis);
+                  const dg = cards.find((node) => /dream\s*gaming|^dg$/i.test(norm(node.textContent))
+                    || [...node.querySelectorAll('img')].some((img) =>
+                      /DG-|dream/i.test((img.getAttribute('src') || '') + (img.alt || ''))));
+                  if (!dg) return {ok: false, count: cards.length};
+                  dg.scrollIntoView({block: 'center'});
+                  dg.click();
+                  return {ok: true};
+                """) or {}
+                if tapped.get("ok"):
+                    report("Đã chạm thẻ DreamGaming trên mobile.")
+                    break
+                time.sleep(1.0)
+            if not tapped.get("ok"):
+                report("Chưa thấy thẻ DreamGaming trên mobile.", "error")
+                return {"ok": False, "site_id": "gk881",
+                        "error": "GK881 mobile chưa hiển thị thẻ DreamGaming sau khi chọn Casino."}
+            # Wait for the DG lobby to mount.
+            lobby = {}
+            poll = min(deadline, time.monotonic() + remain(75.0))
+            while time.monotonic() < poll:
+                lobby = DG.lobby_tables(driver, wait=2.0)
+                if lobby.get("ok"):
+                    break
+                time.sleep(1.0)
+            if not lobby.get("ok"):
+                error = lobby.get("error") or "Sảnh DG chưa tải xong."
+                report("Sảnh DG mobile chưa sẵn sàng: %s" % error, "error")
+                return {"ok": False, "site_id": "gk881", "error": error}
+            tables = lobby.get("tables") or []
+            report("Sảnh DG mobile sẵn sàng; tìm thấy %s bàn." % len(tables))
+            return {"ok": True, "site_id": "gk881", "already_open": False,
+                    "lobby_ready": True, "tables": tables, "layout": "mobile",
+                    "note": "Đã mở sảnh DG từ giao diện điện thoại GK881."}
 
         # If the tab is already on GK881's DG hand-off page there is no Casino
         # menu to click: the DG document is still loading behind the redirect.

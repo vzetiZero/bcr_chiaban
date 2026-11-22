@@ -23,10 +23,15 @@ from urllib.parse import urlsplit
 
 from aibcr.adapters import febet as DG
 
+# Desktop uses `.popup_modal_close`; the mobile layout shows `.popup_container_v2`
+# promos and a `.bottom-modal` "add to home screen" sheet, each with its own
+# close control.
 _PROMO_CLOSE_SELECTORS = (
     ".popup_modal_close",
     ".close-popup",
     ".announce-popup-close",
+    ".popup_container_v2 [class*=close]",
+    ".bottom-modal [class*=close]",
 )
 
 _DISMISS_PROMO_JS = r"""
@@ -65,15 +70,23 @@ const visible = (node) => {
   } catch (error) { return false; }
 };
 const modal = [...document.querySelectorAll('.loginPopupModal')].find(visible);
-const form = document.querySelector('form.login-form');
-const user = document.querySelector('input.username_input');
-const pass = document.querySelector('input.password_input');
-const submit = form ? form.querySelector('button.submit_btn') : null;
+// Mobile: header `.login-btn` opens a dedicated `/m/login` page whose form uses
+// `.form-content` with `input[name=username]` / `input[name=password]`.
+const mobileForm = document.querySelector('form.form-content')
+  || document.querySelector('.form-page-container form');
+const form = document.querySelector('form.login-form') || mobileForm;
+const user = document.querySelector('input.username_input')
+  || document.querySelector('input[name=username]');
+const pass = document.querySelector('input.password_input')
+  || document.querySelector('input[name=password]');
+const submit = (form && (form.querySelector('button.submit_btn')
+  || form.querySelector('button.submit-btn')))
+  || document.querySelector('button.submit-btn.login-btn');
 return {
   modalVisible: !!modal,
   formPresent: !!form,
   submitVisible: submit ? visible(submit) : false,
-  // Only boolean flags leave the page; credential text never does.
+  mobile: !modal && !!mobileForm,
   hasUsername: !!(user && user.value.length > 0),
   hasPassword: !!(pass && pass.value.length > 0)
 };
@@ -90,11 +103,26 @@ const visible = (node) => {
   } catch (error) { return false; }
 };
 const modal = [...document.querySelectorAll('.loginPopupModal')].find(visible);
-if (!modal) return {clicked: false, reason: 'no-modal'};
-const form = document.querySelector('form.login-form');
-const submit = form ? form.querySelector('button.submit_btn') : null;
-const user = document.querySelector('input.username_input');
-const pass = document.querySelector('input.password_input');
+const mobileForm = document.querySelector('form.form-content')
+  || document.querySelector('.form-page-container form');
+const form = document.querySelector('form.login-form') || mobileForm;
+if (!modal && !form) {
+  // Mobile header button: it only navigates to /m/login, so click it and let the
+  // caller wait for the form to appear before submitting.
+  const opener = document.querySelector('.login-btn, .login-register .login-btn');
+  if (opener && visible(opener)) {
+    opener.click();
+    return {clicked: false, reason: 'opened-login-page', opened: true};
+  }
+  return {clicked: false, reason: 'no-form'};
+}
+const submit = (form && (form.querySelector('button.submit_btn')
+  || form.querySelector('button.submit-btn')))
+  || document.querySelector('button.submit-btn.login-btn');
+const user = document.querySelector('input.username_input')
+  || document.querySelector('input[name=username]');
+const pass = document.querySelector('input.password_input')
+  || document.querySelector('input[name=password]');
 if (!submit) return {clicked: false, reason: 'no-submit'};
 if (!user || !pass || !user.value || !pass.value) {
   return {clicked: false, reason: 'empty-credentials',
@@ -107,17 +135,34 @@ try { submit.click(); } catch (error) {}
 return {clicked: true};
 """
 
+# Desktop renders the menu as `.nav-name`; the mobile layout (`/m/index.html`)
+# uses a horizontal `.game-menu-item` strip with the same labels. Both are
+# matched by exact text so a rename cannot silently click the wrong entry.
 _CLICK_NAV_JS = r"""
 const norm = (value) => String(value || '').replace(/\s+/g, ' ').trim().toLowerCase();
-const span = [...document.querySelectorAll('.nav-name')]
-  .find((node) => norm(node.textContent) === arguments[0]);
-if (!span) {
-  return {ok: false, labels: [...document.querySelectorAll('.nav-name')]
-    .map((node) => norm(node.textContent))};
+const wanted = norm(arguments[0]);
+const visible = (node) => {
+  try {
+    const rect = node.getBoundingClientRect();
+    const style = window.getComputedStyle(node);
+    return rect.width > 0 && rect.height > 0
+      && style.visibility !== 'hidden' && style.display !== 'none';
+  } catch (error) { return false; }
+};
+const selectors = ['.nav-name', '.game-menu-item'];
+const labels = [];
+for (const selector of selectors) {
+  for (const node of document.querySelectorAll(selector)) {
+    const text = norm(node.textContent);
+    if (text) labels.push(text);
+    if (text === wanted && visible(node)) {
+      node.scrollIntoView({block: 'center', inline: 'center'});
+      node.click();
+      return {ok: true, layout: selector};
+    }
+  }
 }
-span.scrollIntoView({block: 'center', inline: 'center'});
-span.click();
-return {ok: true};
+return {ok: false, labels: labels.slice(0, 20)};
 """
 
 _LIVE_STATE_JS = r"""
@@ -129,19 +174,38 @@ const vis = (node) => {
       && style.visibility !== 'hidden' && style.display !== 'none';
   } catch (error) { return false; }
 };
-const boxes = [...document.querySelectorAll('.vendor-box')];
+// Desktop cards are `.vendor-box`; the mobile page renders `.vendor-game-item`
+// inside `.home-vendor-list`. Both expose the provider through an <img>.
+const DESKTOP_CARD = '.vendor-box';
+const MOBILE_CARD = '.vendor-game-item';
+const boxes = [...document.querySelectorAll(DESKTOP_CARD + ',' + MOBILE_CARD)];
+const providerOf = (src) => {
+  // Desktop: `.../DG-DEFAULT.png`. Mobile: `.../gcs__live-DG_1792424580512.png`,
+  // where the provider token sits right before the timestamp.
+  const desktop = src.match(/\/([A-Za-z0-9]+)-(?:DEFAULT|ACTIVE)\.(?:png|webp)/i);
+  if (desktop) return desktop[1].toUpperCase();
+  const mobile = src.match(/([A-Za-z0-9]+)_\d+\.(?:png|webp|avif)$/i);
+  return mobile ? mobile[1].toUpperCase() : '';
+};
 const names = boxes.map((box) => {
   const img = box.querySelector('img');
-  const src = img ? (img.getAttribute('src') || '') : '';
-  const match = src.match(/\/([A-Za-z0-9]+)-(?:DEFAULT|ACTIVE)\.png/i);
-  return match ? match[1].toUpperCase() : '';
+  return img ? providerOf(img.getAttribute('src') || '') : '';
 });
+const launchSelectors = ['.card-btn', '.vendor-game-item .play-btn',
+                         '.vendor-game-item [class*=btn]'];
+const launch = [];
+for (const selector of launchSelectors) {
+  for (const node of document.querySelectorAll(selector)) {
+    if (!vis(node)) continue;
+    launch.push(String(node.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 20));
+  }
+}
 return {
   path: location.pathname,
   boxCount: boxes.length,
   vendorNames: names,
-  launch: [...document.querySelectorAll('.card-btn')]
-    .filter(vis).map((node) => String(node.textContent || '').replace(/\s+/g, ' ').trim())
+  launch: launch.slice(0, 8),
+  mobile: document.querySelectorAll(MOBILE_CARD).length > 0
 };
 """
 
@@ -154,13 +218,17 @@ const vis = (node) => {
       && style.visibility !== 'hidden' && style.display !== 'none';
   } catch (error) { return false; }
 };
-const boxes = [...document.querySelectorAll('.vendor-box')];
-const isDg = (box) => [...box.querySelectorAll('img')].some((img) =>
-  /\/DG-(?:DEFAULT|ACTIVE)\.png$/i.test(img.getAttribute('src') || ''));
+const boxes = [...document.querySelectorAll('.vendor-box,.vendor-game-item')];
+const isDg = (box) => [...box.querySelectorAll('img')].some((img) => {
+  const src = img.getAttribute('src') || '';
+  // Desktop `DG-DEFAULT.png`, mobile `gcs__live-DG_<ts>.png`.
+  return /\/DG-(?:DEFAULT|ACTIVE)\./i.test(src) || /-DG_\d+\./i.test(src)
+    || /dream\s*gaming/i.test(img.alt || '');
+});
 const target = boxes.find(isDg);
 if (!target) return {ok: false, count: boxes.length};
 target.scrollIntoView({block: 'center', inline: 'center'});
-(target.querySelector('.vendor-icon') || target).click();
+(target.querySelector('.vendor-icon,.vendor-game-img') || target).click();
 return {ok: true};
 """
 
@@ -174,12 +242,25 @@ const vis = (node) => {
   } catch (error) { return false; }
 };
 const buttons = [...document.querySelectorAll('.card-btn')].filter(vis);
-const target = buttons.find((node) => /chơi ngay|choi ngay|play now/i.test(node.textContent || ''))
+let target = buttons.find((node) => /chơi ngay|choi ngay|play now/i.test(node.textContent || ''))
   || buttons[buttons.length - 1];
+let label = target ? String(target.textContent || '').replace(/\s+/g, ' ').trim() : '';
+if (!target) {
+  // Mobile: tapping the provider card itself opens the lobby.
+  const dgCard = [...document.querySelectorAll('.vendor-game-item')].find((card) =>
+    [...card.querySelectorAll('img')].some((img) => {
+      const src = img.getAttribute('src') || '';
+      return /\/DG-(?:DEFAULT|ACTIVE)\./i.test(src) || /-DG_\d+\./i.test(src);
+    }));
+  if (dgCard) {
+    target = dgCard;
+    label = 'vendor-card';
+  }
+}
 if (!target) return {ok: false};
 target.scrollIntoView({block: 'center'});
 target.click();
-return {ok: true, label: String(target.textContent || '').replace(/\s+/g, ' ').trim()};
+return {ok: true, label};
 """
 
 _NAVIGATE_IN_PLACE_JS = r"""
@@ -250,11 +331,15 @@ def login_if_prompted(driver):
 
 
 def wait_logged_in(driver, timeout=30.0):
-    """Wait until the login modal disappears after a successful sign-in."""
+    """Wait until the login form disappears after a successful sign-in.
+
+    Desktop hides the modal; mobile leaves the `/m/login` page, so both the
+    missing modal and the missing form count as success.
+    """
     deadline = time.monotonic() + max(0.0, timeout)
     while time.monotonic() < deadline:
         state = login_state(driver)
-        if not state.get("modalVisible"):
+        if not state.get("modalVisible") and not state.get("formPresent"):
             return True
         time.sleep(0.75)
     return False
@@ -329,7 +414,25 @@ def open_dg(driver, wait=150.0, log=None):
     # markup, so dismissing promos first can close the login form we still need.
     stage = "đăng nhập nếu có"
     state = login_state(driver)
-    if state.get("modalVisible") and state.get("formPresent"):
+    # Desktop shows a pre-filled modal; mobile shows a header button that opens
+    # a separate `/m/login` page. Both paths are handled here.
+    needs_login = bool(state.get("modalVisible") or state.get("mobile"))
+    if needs_login and not state.get("formPresent"):
+        # Mobile: press the header button, then wait for the login page form.
+        opened = login_if_prompted(driver)
+        if opened.get("opened"):
+            report("Đã mở trang đăng nhập trên giao diện điện thoại.")
+            deadline = time.monotonic() + remain(20.0)
+            while time.monotonic() < deadline:
+                time.sleep(0.5)
+                state = login_state(driver)
+                if state.get("formPresent"):
+                    break
+            if not state.get("formPresent"):
+                report("Không mở được form đăng nhập trên giao diện điện thoại.", "error")
+                return {"ok": False, "site_id": "e3951",
+                        "error": "E3951 mobile không mở được form đăng nhập."}
+    if needs_login and state.get("formPresent"):
         if state.get("hasUsername") and state.get("hasPassword"):
             result = login_if_prompted(driver)
             if result.get("clicked"):
@@ -345,7 +448,7 @@ def open_dg(driver, wait=150.0, log=None):
             report("Hộp đăng nhập chưa có thông tin lưu sẵn; cần đăng nhập thủ công.", "warning")
             return {"ok": False, "site_id": "e3951",
                     "error": "E3951 đang yêu cầu đăng nhập thủ công cho profile này."}
-    else:
+    elif not needs_login:
         report("Phiên đăng nhập còn hiệu lực; không cần đăng nhập lại.")
 
     stage = "đóng popup quảng cáo"

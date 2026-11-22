@@ -50,18 +50,41 @@ for (const selector of arguments[0]) {
 return {closed};
 """
 
+# Desktop lists categories as `.side-item > .side-text`. The mobile build keeps
+# the same labels in a compact tab bar with other class names, so the lookup
+# falls back to scanning every element whose text matches exactly.
 _CLICK_SIDE_JS = r"""
 const norm = (value) => String(value || '').replace(/\s+/g, ' ').trim().toLowerCase();
-const side = [...document.querySelectorAll('.side-text')]
-  .find((node) => norm(node.textContent) === arguments[0]);
+const wanted = norm(arguments[0]);
+const visible = (node) => {
+  try {
+    const rect = node.getBoundingClientRect();
+    const style = window.getComputedStyle(node);
+    return rect.width > 0 && rect.height > 0
+      && style.visibility !== 'hidden' && style.display !== 'none';
+  } catch (error) { return false; }
+};
+const primary = [...document.querySelectorAll('.side-text')];
+let side = primary.find((node) => norm(node.textContent) === wanted);
 if (!side) {
-  return {ok: false, labels: [...document.querySelectorAll('.side-text')]
-    .map((node) => norm(node.textContent))};
+  // Mobile tab bars: a leaf element carrying exactly the label.
+  side = [...document.querySelectorAll(
+    '.van-tab, .tab-item, [class*=tab], [class*=category], [class*=menu] span, nav span, nav a')]
+    .find((node) => visible(node) && node.children.length === 0
+      && norm(node.textContent) === wanted);
 }
-const item = side.closest('.side-item') || side.parentElement;
+if (!side) {
+  side = [...document.querySelectorAll('span, div, a, button, li')]
+    .find((node) => visible(node) && node.children.length === 0
+      && norm(node.textContent) === wanted);
+}
+if (!side) {
+  return {ok: false, labels: primary.map((node) => norm(node.textContent)).slice(0, 20)};
+}
+const item = side.closest('.side-item') || side.parentElement || side;
 side.scrollIntoView({block: 'center', inline: 'center'});
 try { side.click(); } catch (error) {}
-try { if (item) item.click(); } catch (error) {}
+try { if (item && item !== side) item.click(); } catch (error) {}
 return {ok: true};
 """
 
@@ -74,7 +97,8 @@ const visible = (node) => {
       && style.visibility !== 'hidden' && style.display !== 'none';
   } catch (error) { return false; }
 };
-const banners = [...document.querySelectorAll('img.platform-banner-full')];
+const banners = [...document.querySelectorAll('img.platform-banner-full, img[alt]')]
+  .filter(visible);
 return {
   path: location.pathname,
   bannerCount: banners.length,
@@ -87,10 +111,16 @@ return {
 
 _CLICK_DG_JS = r"""
 const norm = (value) => String(value || '').replace(/\s+/g, ' ').trim().toLowerCase();
-const banners = [...document.querySelectorAll('img.platform-banner-full')];
+const banners = [...document.querySelectorAll('img.platform-banner-full, img[alt]')]
+  .filter((node) => {
+    try {
+      const rect = node.getBoundingClientRect();
+      return rect.width > 0 && rect.height > 0;
+    } catch (error) { return false; }
+  });
 const target = banners.find((node) =>
   norm(node.alt).replace(/\s+/g, '') === arguments[0]);
-if (!target) return {ok: false, names: banners.map((node) => node.alt)};
+if (!target) return {ok: false, names: banners.map((node) => node.alt).slice(0, 20)};
 // The click handler sits on a wrapper above the banner image.
 let node = target;
 let clickable = target;
@@ -136,7 +166,8 @@ def _safe_location(driver):
 
 def dismiss_overlays(driver, rounds=3, pause=1.0):
     """Close the auth overlay or promo popups; credentials are never read."""
-    selectors = [".van-icon-cross", ".van-popup__close-icon", ".popup_modal_close"]
+    selectors = [".van-icon-cross", ".van-popup__close-icon", ".popup_modal_close",
+                 ".popup_modal_wrap [class*=close]", ".bottom-modal [class*=close]"]
     closed = []
     for _ in range(max(1, rounds)):
         try:

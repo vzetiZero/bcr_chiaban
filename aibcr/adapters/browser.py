@@ -730,6 +730,34 @@ class BrowserSession:
                 raise RuntimeError("cdp_browser_command_failed")
             return message.get("result", {})
 
+    def _mobile_window(self, window):
+        """Phone-shaped outer window when this profile carries a device identity.
+
+        The emulated viewport is a phone's CSS size (for example 393 px). If the
+        Chrome window stays 900 px wide the page only fills a narrow column and
+        the rest of the frame is blank, so the frame is resized to the phone
+        aspect ratio and the viewport is retargeted to that same page area.
+        """
+        if not isinstance(self.fingerprint, dict):
+            return window
+        try:
+            from aibcr.adapters import device_profile
+            frame = device_profile.mobile_window(self.fingerprint)
+        except Exception:
+            return window
+        if not frame:
+            return window
+        try:
+            self.fingerprint = device_profile.with_viewport(
+                self.fingerprint, frame["viewport"])
+        except Exception:
+            pass
+        sized = dict(window or {})
+        sized["width"] = frame["width"]
+        sized["height"] = frame["height"]
+        sized["fullscreen"] = False
+        return sized
+
     def resize_window(self, window=None, pos=None):
         """Đưa cửa sổ Chrome về cấu hình người dùng qua CDP: toàn màn hình hoặc kích thước tùy chọn.
 
@@ -739,6 +767,7 @@ class BrowserSession:
         import websocket
 
         window = normalize_window() if window is None else window
+        window = self._mobile_window(window)
         try:
             page = self._cdp_page()
         except Exception as exc:
@@ -814,7 +843,10 @@ class BrowserSession:
                 if not chrome:
                     raise FileNotFoundError("chrome.exe")
                 kind, why = driver_for()
-                self._start_driver(chrome, url, pos, kind, cdp, window)
+                self._start_driver(chrome, url, pos, kind, cdp, self._mobile_window(window))
+                # The viewport may have been retargeted by _mobile_window; apply
+                # the final metrics so the page matches the new frame exactly.
+                self._apply_fingerprint(self.driver)
                 self.mode = "driver"
                 self.note = why + " · Đăng nhập thủ công; chỉ đọc kết quả, cược chỉ mô phỏng."
                 self.connection_state = "waiting"
