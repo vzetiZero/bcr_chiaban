@@ -80,13 +80,25 @@ const vis = (node) => {
 };
 const norm = (value) => String(value || '').replace(/\s+/g, ' ').trim().toLowerCase();
 const wanted = norm(arguments[0]);
-const items = [...document.querySelectorAll('.category-item, [class*=category-item]')];
+const aliases = ['casino', 'sòng bạc', 'song bac', 'trò chơi', 'tro choi',
+                 'live casino', 'baccarat', 'đại lý', 'dai ly', 'game'];
+// Quét rộng: phần tử danh mục có thể là div/li/a không mang class category-item.
+const items = [...document.querySelectorAll(
+  '.category-item, [class*=category-item], li, a, div[role="button"], .menu-item, .tab-item')]
+  .filter(vis);
 const labels = items.map((node) => norm(node.textContent)).filter(Boolean);
-const target = items.find((node) => vis(node) && norm(node.textContent).includes(wanted));
+// Ưu tiên từ khóa Casino, sau đó chấp nhận bất kỳ mục trò chơi nào (trang chủ/thể thao thì bỏ qua).
+const skip = ['trang chủ', 'trangchu', 'home', 'thể thao', 'the thao', 'tin tức', 'tin tuc',
+              'khuyến mãi', 'khuyen mai', 'liên hệ', 'lien he', 'tải app', 'tai app'];
+const target = items.find((node) => {
+  const text = norm(node.textContent);
+  if (!text || skip.some((s) => text === s || text.startsWith(s))) return false;
+  return aliases.some((a) => text.includes(a));
+});
 if (!target) return {ok: false, labels: labels.slice(0, 20)};
 target.scrollIntoView({block: 'center', inline: 'center'});
 target.click();
-return {ok: true};
+return {ok: true, label: norm(target.textContent).slice(0, 30)};
 """
 
 # Mobile provider grid: a list of <li> cards, each with an <img> and a label
@@ -106,17 +118,18 @@ const isDgText = (text) => {
   const value = norm(text);
   return value === 'dg' || value === 'dg trực tuyến' || value === 'dg truc tuyen'
     || value.startsWith('dg ') || value.startsWith('dream gaming')
-    || value.startsWith('dreamgaming');
+    || value.startsWith('dreamgaming') || value.includes('dg');
 };
+// Quét rộng hơn: mọi phần tử có ảnh (div/li/a...) có thể là thẻ nhà cung cấp.
 const cards = [...document.querySelectorAll(
-  'li, [class*=provider], [class*=vendor], [class*=game-item], [class*=item]')]
+  'li, div, a, [class*=provider], [class*=vendor], [class*=game-item], [class*=item]')]
   .filter((node) => vis(node) && node.querySelector('img'));
 const labelMatch = cards.find((node) =>
   [...node.querySelectorAll('span, div, p')].some((label) =>
     label.children.length === 0 && isDgText(label.textContent)))
   || cards.find((node) => isDgText(node.textContent));
 const imageMatch = cards.find((node) => [...node.querySelectorAll('img')].some((img) =>
-  /dg[-_]|dream/i.test((img.getAttribute('src') || '') + ' ' + (img.alt || ''))));
+  /dg[-_]|dream|dg\./i.test((img.getAttribute('src') || '') + ' ' + (img.alt || ''))));
 const target = labelMatch || imageMatch;
 if (!target) return {ok: false, count: cards.length};
 target.scrollIntoView({block: 'center', inline: 'center'});

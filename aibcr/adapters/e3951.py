@@ -525,14 +525,36 @@ def open_dg(driver, wait=150.0, log=None):
                 "error": "E3951 không có nhà cung cấp DG trong sảnh Casino."}
     report("Đã chọn nhà cung cấp DG; chờ nút CHƠI NGAY.")
 
+    # On the mobile build the SPA re-renders after the vendor card is tapped and
+    # the CHƠI NGAY button only mounts a moment later. Poll for it before
+    # clicking so a race is not reported as a missing button.
+    stage = "chờ nút CHƠI NGAY xuất hiện"
+    launch_ready = False
+    launch_deadline = min(deadline, time.monotonic() + remain(15.0))
+    while time.monotonic() < launch_deadline:
+        probe = driver.execute_script(
+            "return !!document.querySelector('.card-btn');") or False
+        if probe:
+            launch_ready = True
+            break
+        time.sleep(0.75)
+    if not launch_ready:
+        report("Nút CHƠI NGAY chưa xuất hiện sau khi chọn DG.", "warning")
+
     stage = "bấm CHƠI NGAY"
     _navigate_in_place(driver)
     before = set(driver.window_handles)
     launch = driver.execute_script(_CLICK_LAUNCH_JS) or {}
     if not launch.get("ok"):
-        report("Không thấy nút CHƠI NGAY sau khi chọn DG.", "error")
-        return {"ok": False, "site_id": "e3951",
-                "error": "E3951 không hiển thị nút CHƠI NGAY cho DG."}
+        # Mobile fallback: tapping the DG provider card itself may open the
+        # lobby directly. Retry the card selection and launch once more.
+        report("Không thấy nút CHƠI NGAY sau khi chọn DG.", "warning")
+        driver.execute_script(_SELECT_DG_JS)
+        time.sleep(1.5)
+        launch = driver.execute_script(_CLICK_LAUNCH_JS) or {}
+        if not launch.get("ok"):
+            return {"ok": False, "site_id": "e3951",
+                    "error": "E3951 không hiển thị nút CHƠI NGAY cho DG."}
     report("Đã bấm %s; chờ sảnh Dream Gaming tải." % (launch.get("label") or "CHƠI NGAY"))
 
     stage = "chờ sảnh DG"

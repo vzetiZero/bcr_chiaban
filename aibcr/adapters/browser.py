@@ -731,32 +731,15 @@ class BrowserSession:
             return message.get("result", {})
 
     def _mobile_window(self, window):
-        """Phone-shaped outer window when this profile carries a device identity.
+        """Keep the user-configured window size.
 
-        The emulated viewport is a phone's CSS size (for example 393 px). If the
-        Chrome window stays 900 px wide the page only fills a narrow column and
-        the rest of the frame is blank, so the frame is resized to the phone
-        aspect ratio and the viewport is retargeted to that same page area.
+        The Android fingerprint (user-agent, canvas, navigator) is applied over
+        CDP so sites serve mobile markup, but the outer Chrome window keeps the
+        size the user chose (for example 900 × 1200 at 60 %). Resizing the window
+        to phone dimensions made the interface look smaller than configured and
+        broke desktop site layouts that ignore the user-agent alone.
         """
-        if not isinstance(self.fingerprint, dict):
-            return window
-        try:
-            from aibcr.adapters import device_profile
-            frame = device_profile.mobile_window(self.fingerprint)
-        except Exception:
-            return window
-        if not frame:
-            return window
-        try:
-            self.fingerprint = device_profile.with_viewport(
-                self.fingerprint, frame["viewport"])
-        except Exception:
-            pass
-        sized = dict(window or {})
-        sized["width"] = frame["width"]
-        sized["height"] = frame["height"]
-        sized["fullscreen"] = False
-        return sized
+        return window or {}
 
     def resize_window(self, window=None, pos=None):
         """Đưa cửa sổ Chrome về cấu hình người dùng qua CDP: toàn màn hình hoặc kích thước tùy chọn.
