@@ -109,53 +109,129 @@
     </div>
 
     <div class="tab-panel" role="tabpanel" data-tab-panel="profiles">
-    <section class="profiles-section">
-      <div class="section-heading">
-        <div><div class="eyebrow">QUẢN LÝ</div><h2>Profiles</h2></div>
-        <span id="profile-total" class="total">0 profile</span>
-      </div>
-      <p class="notice">Chọn site riêng cho từng profile; nút Mở sẽ mở URL site đã chọn.</p>
-      <div id="profile-list" class="profile-list"></div>
-    </section>
-    <section class="card omni-manager">
-      <div class="section-heading">
-        <div><div class="eyebrow">PROFILE PROVIDER</div><h2>Kết nối OmniLogin</h2></div>
-        <span class="total">API cục bộ</span>
-      </div>
-      <div class="omni-config-row">
-        <label class="field" for="omni-api-url"><span>Địa chỉ API OmniLogin</span>
-          <input id="omni-api-url" type="url" value="http://127.0.0.1:35353" spellcheck="false" />
-        </label>
-        <button id="omni-refresh" class="close-button" type="button">Kết nối / tải profiles</button>
-      </div>
-      <div id="omni-notice" class="notice" role="status" aria-live="polite">Chọn OmniLogin ở màn Chạy Tool, sau đó gán một profile cho mỗi cửa sổ.</div>
-      <div id="omni-profile-assignments" class="omni-profile-assignments"></div>
-    </section>
-    <section class="card hidemium-manager">
-      <div class="section-heading">
-        <div><div class="eyebrow">PROFILE PROVIDER</div><h2>Kết nối Hidemium</h2></div>
-        <span class="total">API cục bộ · v2</span>
-      </div>
-      <div class="omni-config-row">
-        <label class="field" for="hidemium-api-url"><span>Địa chỉ API Hidemium</span>
-          <input id="hidemium-api-url" type="url" value="http://127.0.0.1:5555" spellcheck="false" />
-        </label>
-        <button id="hidemium-refresh" class="close-button" type="button">Kết nối / tải profiles</button>
-      </div>
-      <div id="hidemium-notice" class="notice" role="status" aria-live="polite">Chọn Hidemium ở màn Chạy Tool, sau đó gán UUID profile cho từng cửa sổ.</div>
-      <div id="hidemium-profile-assignments" class="omni-profile-assignments"></div>
-    </section>
-    <section class="profiles-section settings-section">
-      <div class="section-heading">
-        <div><div class="eyebrow">CẤU HÌNH CHUNG</div><h2>Kích thước cửa sổ</h2></div>
-      </div>
-      <p class="shared-setting-note">Một cấu hình dùng cho tất cả profile khi mở Chrome.</p>
-      <div id="profile-settings" class="profile-settings">
-        <label class="setting-field"><span>Rộng (px)</span><input id="shared-window-width" type="number" min="520" max="3840" step="1" value="900" /></label>
-        <label class="setting-field"><span>Cao (px)</span><input id="shared-window-height" type="number" min="200" max="2160" step="1" value="1200" /></label>
-        <label class="setting-field"><span>Scale (%)</span><input id="shared-window-scale" type="number" min="50" max="200" step="1" value="60" /></label>
-      </div>
-    </section>
+    <div class="subtab-bar">
+      <nav class="subtab-nav" role="tablist" aria-label="Nguồn profile">
+        <button class="subtab-button active" type="button" role="tab" aria-selected="true" data-subtab-target="chrome">
+          <span class="subtab-icon" aria-hidden="true">&#9635;</span>
+          <span class="subtab-copy"><strong>Profile Chrome</strong><small>Cửa sổ riêng của ứng dụng</small></span>
+          <span id="subtab-count-chrome" class="subtab-badge">0</span>
+        </button>
+        <button class="subtab-button" type="button" role="tab" aria-selected="false" data-subtab-target="omni">
+          <span class="subtab-icon" aria-hidden="true">&#9723;</span>
+          <span class="subtab-copy"><strong>OmniLogin</strong><small>Anti-detect qua API</small></span>
+          <span id="subtab-count-omni" class="subtab-badge">0</span>
+        </button>
+        <button class="subtab-button" type="button" role="tab" aria-selected="false" data-subtab-target="hidemium">
+          <span class="subtab-icon" aria-hidden="true">&#9724;</span>
+          <span class="subtab-copy"><strong>Hidemium</strong><small>Anti-detect qua API</small></span>
+          <span id="subtab-count-hidemium" class="subtab-badge">0</span>
+        </button>
+      </nav>
+      <span id="profile-source-hint" class="subtab-hint">Nguồn đang chạy: Chrome riêng của ứng dụng</span>
+    </div>
+
+    <div class="subtab-panel active" role="tabpanel" data-subtab-panel="chrome">
+      <section class="profiles-section">
+        <div class="section-heading">
+          <div><div class="eyebrow">QUẢN LÝ</div><h2>Danh sách Profile Chrome</h2></div>
+          <span id="profile-total" class="total">0 profile</span>
+        </div>
+        <p class="notice">Chọn site riêng cho từng profile; nút Mở sẽ mở URL site đã chọn.</p>
+        <div class="subtab-toolbar">
+          <span class="subtab-toolbar-hint">Dùng chung cấu hình cửa sổ bên dưới cho mọi profile Chrome.</span>
+          <div class="subtab-toolbar-actions">
+            <button id="profile-select-all" class="close-button" type="button">Chọn tất cả</button>
+            <button id="profile-select-none" class="close-button" type="button">Bỏ chọn</button>
+            <button id="profile-open-selected" class="run-button subtle" type="button">Mở đã chọn</button>
+            <button id="profile-close-all" class="close-button danger-button" type="button">Đóng tất cả Chrome</button>
+          </div>
+        </div>
+        <div id="profile-list" class="profile-list"></div>
+      </section>
+      <section class="profiles-section settings-section">
+        <div class="section-heading">
+          <div><div class="eyebrow">CẤU HÌNH CHUNG</div><h2>Kích thước cửa sổ</h2></div>
+        </div>
+        <p class="shared-setting-note">Một cấu hình dùng cho tất cả profile khi mở Chrome.</p>
+        <div id="profile-settings" class="profile-settings">
+          <label class="setting-field"><span>Rộng (px)</span><input id="shared-window-width" type="number" min="520" max="3840" step="1" value="900" /></label>
+          <label class="setting-field"><span>Cao (px)</span><input id="shared-window-height" type="number" min="200" max="2160" step="1" value="1200" /></label>
+          <label class="setting-field"><span>Scale (%)</span><input id="shared-window-scale" type="number" min="50" max="200" step="1" value="60" /></label>
+        </div>
+      </section>
+    </div>
+
+    <div class="subtab-panel" role="tabpanel" data-subtab-panel="omni">
+      <section class="card provider-card omni-manager">
+        <div class="section-heading">
+          <div>
+            <div class="eyebrow">PROFILE PROVIDER</div>
+            <h2>OmniLogin</h2>
+            <p class="provider-subtitle">Kết nối API cục bộ, gán mỗi slot P1–P8 một profile rồi mở/đóng ngay trên dòng.</p>
+          </div>
+          <div class="provider-meta">
+            <span id="omni-status" class="provider-status" data-state="idle">Chưa kết nối</span>
+            <span class="total">API cục bộ</span>
+          </div>
+        </div>
+        <div class="provider-toolbar">
+          <div class="provider-toolbar-row provider-toolbar-connect">
+            <label class="field provider-url" for="omni-api-url"><span>Địa chỉ API</span>
+              <input id="omni-api-url" type="url" value="http://127.0.0.1:35353" spellcheck="false" />
+            </label>
+            <button id="omni-refresh" class="run-button provider-connect" type="button">Kết nối</button>
+            <span class="provider-endpoint">/profiles · /open · /stop</span>
+          </div>
+          <div class="provider-toolbar-row provider-toolbar-actions">
+            <label class="field provider-search" for="omni-search"><span>Tìm profile</span>
+              <input id="omni-search" type="search" placeholder="Tên hoặc ID" spellcheck="false" />
+            </label>
+            <button id="omni-assign-all" class="close-button" type="button">Gán lần lượt</button>
+            <button id="omni-open-all" class="run-button subtle" type="button">Mở tất cả</button>
+            <button id="omni-close-all" class="close-button" type="button">Đóng tất cả</button>
+            <button id="omni-clear" class="close-button danger-button" type="button">Bỏ gán</button>
+          </div>
+        </div>
+        <div id="omni-notice" class="notice" role="status" aria-live="polite">Bấm Kết nối để tải danh sách profile, sau đó gán cho từng slot.</div>
+        <div id="omni-profile-assignments" class="omni-profile-assignments provider-assignments"></div>
+      </section>
+    </div>
+
+    <div class="subtab-panel" role="tabpanel" data-subtab-panel="hidemium">
+      <section class="card provider-card hidemium-manager">
+        <div class="section-heading">
+          <div>
+            <div class="eyebrow">PROFILE PROVIDER</div>
+            <h2>Hidemium</h2>
+            <p class="provider-subtitle">Kết nối API cục bộ v2, gán UUID profile cho từng slot rồi mở/đóng ngay trên dòng.</p>
+          </div>
+          <div class="provider-meta">
+            <span id="hidemium-status" class="provider-status" data-state="idle">Chưa kết nối</span>
+            <span class="total">API cục bộ · v2</span>
+          </div>
+        </div>
+        <div class="provider-toolbar">
+          <div class="provider-toolbar-row provider-toolbar-connect">
+            <label class="field provider-url" for="hidemium-api-url"><span>Địa chỉ API</span>
+              <input id="hidemium-api-url" type="url" value="http://127.0.0.1:5555" spellcheck="false" />
+            </label>
+            <button id="hidemium-refresh" class="run-button provider-connect" type="button">Kết nối</button>
+            <span class="provider-endpoint">/profileList · /openProfile · /closeProfile</span>
+          </div>
+          <div class="provider-toolbar-row provider-toolbar-actions">
+            <label class="field provider-search" for="hidemium-search"><span>Tìm profile</span>
+              <input id="hidemium-search" type="search" placeholder="Tên hoặc UUID" spellcheck="false" />
+            </label>
+            <button id="hidemium-assign-all" class="close-button" type="button">Gán lần lượt</button>
+            <button id="hidemium-open-all" class="run-button subtle" type="button">Mở tất cả</button>
+            <button id="hidemium-close-all" class="close-button" type="button">Đóng tất cả</button>
+            <button id="hidemium-clear" class="close-button danger-button" type="button">Bỏ gán</button>
+          </div>
+        </div>
+        <div id="hidemium-notice" class="notice" role="status" aria-live="polite">Bấm Kết nối để tải danh sách profile, sau đó gán cho từng slot.</div>
+        <div id="hidemium-profile-assignments" class="omni-profile-assignments provider-assignments"></div>
+      </section>
+    </div>
     </div>
 
     <div class="tab-panel" role="tabpanel" data-tab-panel="proxies">

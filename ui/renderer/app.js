@@ -98,6 +98,7 @@ function profileIndex(game) {
 function updateProfile(index, state, detail = '') {
   const row = statusByIndex.get(index);
   profileStateByIndex.set(index, state);
+  mirrorProviderState(index, state);
   if (!row) {
     $('#close-profiles').disabled = !Array.from(profileStateByIndex.values())
       .some((item) => item === 'running' || item === 'opening' || item === 'closing');
@@ -163,6 +164,7 @@ function renderProfiles(count, siteLabel, replies = [], indices = null) {
     updateProfile(index, state, row.querySelector('.profile-detail').textContent);
   });
   localStorage.setItem('aibcr.profileSites', JSON.stringify(profileSiteSelections));
+  syncProfileSubtabs();
 }
 
 function updateSitePreview() {
@@ -301,20 +303,26 @@ function syncProfilePicker() {
       : 'Chưa chọn profile';
   }
   if (profileSites.length) runButton.disabled = selection.size === 0;
+  syncProfileSubtabs();
 }
 
 const THEME_KEY = 'aibcr.theme';
 
 function applyTheme(theme) {
   const next = theme === 'light' ? 'light' : 'dark';
-  document.documentElement.dataset.theme = next;
-  localStorage.setItem(THEME_KEY, next);
+  // theme.js là nơi duy nhất ghi data-theme + localStorage; app.js chỉ điều
+  // khiển nút, nhờ vậy hai nơi không ghi đè nhau khi bấm nút ở titlebar.
+  if (window.aibcrTheme) window.aibcrTheme.apply(next);
+  else {
+    document.documentElement.dataset.theme = next;
+    localStorage.setItem(THEME_KEY, next);
+    document.documentElement.style.colorScheme = next;
+  }
   const toggle = $('#theme-toggle');
   if (toggle) {
     toggle.setAttribute('aria-pressed', String(next === 'light'));
     toggle.title = next === 'light' ? 'Chuyển sang giao diện tối' : 'Chuyển sang giao diện sáng';
   }
-  document.documentElement.style.colorScheme = next;
 }
 
 function initTheme() {
@@ -345,6 +353,10 @@ $('#profile-picker').addEventListener('change', (event) => {
 
 const OMNI_API_KEY = 'aibcr.omniApiUrl';
 const OMNI_ASSIGNMENTS_KEY = 'aibcr.omniAssignments';
+const HIDEMIUM_API_KEY = 'aibcr.hidemiumApiUrl';
+const HIDEMIUM_ASSIGNMENTS_KEY = 'aibcr.hidemiumAssignments';
+const PROFILE_SOURCE_KEY = 'aibcr.profileSource';
+const PROFILE_SUBTAB_KEY = 'aibcr.profileSubtab';
 // Reconnect without re-configuring: restore the manager, API URL and profile
 // choice remembered from the last successful connection.
 async function restoreRememberedConnections() {
@@ -382,35 +394,15 @@ async function restoreRememberedConnections() {
       const result = await api.listOmniProfiles($('#omni-api-url').value.trim());
       if (result?.ok) {
         omniProfiles = result.profiles || [];
-        const select = $('#omni-profile-select');
-        if (select) {
-          select.replaceChildren();
-          for (const profile of omniProfiles) {
-            const option = document.createElement('option');
-            option.value = profile.id;
-            option.textContent = `${profile.name} \u00b7 ${profile.id}`;
-            select.append(option);
-          }
-        }
-        const status = $('#omni-status');
-        if (status) status.textContent = `Đã tải ${omniProfiles.length} profile OmniLogin.`;
+        setProviderStatus('omni', `${omniProfiles.length} profile khả dụng`,
+          omniProfiles.length ? 'ready' : 'idle');
       }
     } else if (source === 'hidemium' && $('#hidemium-api-url').value.trim()) {
       const result = await api.listHidemiumProfiles($('#hidemium-api-url').value.trim());
       if (result?.ok) {
         hidemiumProfiles = result.profiles || [];
-        const select = $('#hidemium-profile-select');
-        if (select) {
-          select.replaceChildren();
-          for (const profile of hidemiumProfiles) {
-            const option = document.createElement('option');
-            option.value = profile.id;
-            option.textContent = `${profile.name} \u00b7 ${profile.id}`;
-            select.append(option);
-          }
-        }
-        const status = $('#hidemium-status');
-        if (status) status.textContent = `Đã tải ${hidemiumProfiles.length} profile Hidemium.`;
+        setProviderStatus('hidemium', `${hidemiumProfiles.length} profile khả dụng`,
+          hidemiumProfiles.length ? 'ready' : 'idle');
       }
     }
   } catch (error) {
@@ -437,129 +429,487 @@ async function restoreRememberedConnections() {
     localStorage.setItem(PROFILE_SELECTION_KEY, JSON.stringify(selectedProfileIndices));
     profileSelectionTouched = true;
   }
-  renderOmniAssignments(MAX_PROFILES);
-  renderHidemiumAssignments(MAX_PROFILES);
+  renderProviderAssignments('omni');
+  renderProviderAssignments('hidemium');
   showNotice(`Đã khôi phục kết nối cũ cho profile ${restored.join(', ')}.`);
 }
-const HIDEMIUM_API_KEY = 'aibcr.hidemiumApiUrl';
-const HIDEMIUM_ASSIGNMENTS_KEY = 'aibcr.hidemiumAssignments';
-const PROFILE_SOURCE_KEY = 'aibcr.profileSource';
 
-function renderOmniAssignments(count) {
-  const list = $('#omni-profile-assignments');
-  if (!list) return;
-  list.replaceChildren();
+// Tab con của tab Profiles: mỗi nguồn profile một trang riêng (Chrome / OmniLogin
+// / Hidemium) thay vì dồn cả ba vào một trang dài. Cả ba dùng chung khuôn gán
+// slot P1–P8 nên phần render/ghi nhớ chỉ viết một lần.
+const PROVIDERS = {
+  omni: {
+    key: 'omni',
+    source: 'omni',
+    label: 'OmniLogin',
+    host: '#omni-profile-assignments',
+    connect: '#omni-refresh',
+    search: '#omni-search',
+    notice: '#omni-notice',
+    status: '#omni-status',
+    badge: '#subtab-count-omni',
+    apiInput: '#omni-api-url',
+    assignAll: '#omni-assign-all',
+    openAll: '#omni-open-all',
+    closeAll: '#omni-close-all',
+    clear: '#omni-clear',
+    apiKey: OMNI_API_KEY,
+    storageKey: OMNI_ASSIGNMENTS_KEY,
+  },
+  hidemium: {
+    key: 'hidemium',
+    source: 'hidemium',
+    label: 'Hidemium',
+    host: '#hidemium-profile-assignments',
+    connect: '#hidemium-refresh',
+    search: '#hidemium-search',
+    notice: '#hidemium-notice',
+    status: '#hidemium-status',
+    badge: '#subtab-count-hidemium',
+    apiInput: '#hidemium-api-url',
+    assignAll: '#hidemium-assign-all',
+    openAll: '#hidemium-open-all',
+    closeAll: '#hidemium-close-all',
+    clear: '#hidemium-clear',
+    apiKey: HIDEMIUM_API_KEY,
+    storageKey: HIDEMIUM_ASSIGNMENTS_KEY,
+  },
+};
+
+// Trạng thái mở/đóng theo từng dòng của provider, tách khỏi statusByIndex của
+// danh sách Profile Chrome để hai tab con không ghi đè lẫn nhau.
+const providerOpenState = new Map();
+const providerStateKey = (key, index) => `${key}:${index}`;
+
+// Trạng thái do luồng Chạy Tool/Đóng tất cả thay đổi phải hiện luôn ở tab con
+// provider, nếu không hai nơi sẽ nói khác nhau về cùng một profile. Chỉ đồng bộ
+// những slot đã từng được mở từ tab provider: mở Chrome local không có nghĩa là
+// profile OmniLogin/Hidemium tương ứng đang chạy.
+let mirroringProviderState = false;
+function mirrorProviderState(index, state) {
+  if (mirroringProviderState) return;
+  const keys = Object.keys(PROVIDERS)
+    .filter((key) => providerOpenState.has(providerStateKey(key, index)));
+  if (!keys.length) return;
+  for (const key of keys) providerOpenState.set(providerStateKey(key, index), state);
+  mirroringProviderState = true;
+  try {
+    for (const key of keys) {
+      if ($(PROVIDERS[key].host)?.children.length) renderProviderAssignments(key);
+    }
+  } finally {
+    mirroringProviderState = false;
+  }
+}
+
+function providerProfiles(key) {
+  return key === 'omni' ? omniProfiles : hidemiumProfiles;
+}
+
+function setProviderProfiles(key, list) {
+  if (key === 'omni') omniProfiles = list;
+  else hidemiumProfiles = list;
+}
+
+function providerAssignments(key) {
+  return key === 'omni' ? omniAssignments : hidemiumAssignments;
+}
+
+function setProviderAssignments(key, next) {
+  if (key === 'omni') omniAssignments = next;
+  else hidemiumAssignments = next;
+  localStorage.setItem(PROVIDERS[key].storageKey, JSON.stringify(next));
+}
+
+function providerAssignedCount(key) {
+  const profiles = providerProfiles(key);
+  return Object.values(providerAssignments(key))
+    .filter((id) => profiles.some((profile) => profile.id === id)).length;
+}
+
+function setProviderStatus(key, text, state = 'idle') {
+  const node = $(PROVIDERS[key].status);
+  if (!node) return;
+  node.textContent = text;
+  node.dataset.state = state;
+}
+
+// Badge số lượng trên thanh tab con, cập nhật sau mỗi lần gán/kết nối.
+function syncProfileSubtabs() {
+  const chromeBadge = $('#subtab-count-chrome');
+  if (chromeBadge) {
+    const count = activeProfileSelection().length;
+    chromeBadge.textContent = String(count);
+    chromeBadge.dataset.state = count ? 'ready' : 'idle';
+  }
+  for (const key of Object.keys(PROVIDERS)) {
+    const node = $(PROVIDERS[key].badge);
+    if (!node) continue;
+    const count = providerAssignedCount(key);
+    node.textContent = String(count);
+    node.dataset.state = count ? 'ready' : 'idle';
+  }
+}
+
+function providerOptionLabel(profile) {
+  return profile.name && profile.name !== profile.id ? `${profile.name} · ${profile.id}` : profile.id;
+}
+
+function renderProviderAssignments(key, count = MAX_PROFILES) {
+  const spec = PROVIDERS[key];
+  const host = $(spec.host);
+  if (!host) return;
+  const profiles = providerProfiles(key);
+  const assignments = providerAssignments(key);
+  const query = ($(spec.search)?.value || '').trim().toLowerCase();
+  // Tìm kiếm lọc chính danh sách option của từng slot (không ẩn slot), để người
+  // dùng luôn thấy đủ P1–P8 và chỉ thu hẹp lựa chọn khi gán.
+  const matches = query
+    ? profiles.filter((profile) => `${profile.name} ${profile.id}`.toLowerCase().includes(query))
+    : profiles;
+  host.replaceChildren();
   for (let index = 1; index <= count; index += 1) {
-    const row = document.createElement('label');
-    row.className = 'omni-assignment-row';
-    row.innerHTML = '<span></span><select></select>';
-    row.querySelector('span').textContent = `Profile ${index}`;
+    const chosen = assignments[String(index)] || '';
+    const known = Boolean(chosen) && profiles.some((profile) => profile.id === chosen);
+    const row = document.createElement('div');
+    row.className = `provider-assignment${known ? ' assigned' : ''}`;
+    row.dataset.profile = String(index);
+    row.innerHTML = `<span class="provider-slot">P${index}</span><select></select>
+      <span class="provider-row-state"></span>
+      <button class="provider-row-toggle" type="button" data-profile="${index}">Mở</button>`;
     const select = row.querySelector('select');
     select.dataset.profile = String(index);
     const empty = document.createElement('option');
     empty.value = '';
-    empty.textContent = omniProfiles.length ? 'Ch\u1ecdn profile OmniLogin' : 'K\u1ebft n\u1ed1i API \u0111\u1ec3 t\u1ea3i profiles';
+    empty.textContent = profiles.length
+      ? (query && !matches.length ? 'Không khớp từ khoá' : 'Chưa gán profile')
+      : 'Kết nối API để tải profiles';
     select.append(empty);
-    for (const profile of omniProfiles) {
+    // Giữ option đang gán kể cả khi nó không khớp từ khoá, nếu không select sẽ
+    // nhảy về rỗng và người dùng tưởng profile bị bỏ gán.
+    const options = known && !matches.some((profile) => profile.id === chosen)
+      ? [...matches, profiles.find((profile) => profile.id === chosen)].filter(Boolean)
+      : matches;
+    for (const profile of options) {
       const option = document.createElement('option');
       option.value = profile.id;
-      option.textContent = `${profile.name} \u00b7 ${profile.id}`;
+      option.textContent = providerOptionLabel(profile);
       select.append(option);
     }
-    select.value = omniAssignments[String(index)] || '';
-    list.append(row);
+    select.value = known ? chosen : '';
+
+    const state = providerOpenState.get(providerStateKey(key, index)) || 'closed';
+    const stateNode = row.querySelector('.provider-row-state');
+    // Cửa sổ có thể vẫn đang mở dù người dùng đã bấm "Bỏ gán"; khi đó vẫn phải hiện
+    // trạng thái thật và cho đóng, tránh màn hình nói "Chưa gán" trong lúc Chrome chạy.
+    const live = state !== 'closed';
+    stateNode.textContent = state === 'running' ? 'Đang mở'
+      : state === 'opening' ? 'Đang mở…' : state === 'closing' ? 'Đang đóng…'
+        : state === 'error' ? 'Có lỗi' : known ? 'Chưa mở' : 'Chưa gán';
+    stateNode.dataset.state = known || live ? state : 'unset';
+    row.dataset.assigned = known ? 'yes' : 'no';
+    row.classList.toggle('live', live);
+    const toggle = row.querySelector('.provider-row-toggle');
+    const canClose = known || state === 'running';
+    toggle.textContent = state === 'running' || state === 'opening' ? 'Đóng' : 'Mở';
+    toggle.disabled = !canClose || state === 'opening' || state === 'closing';
+    host.append(row);
   }
+  if (!host.children.length) {
+    const empty = document.createElement('p');
+    empty.className = 'provider-empty';
+    empty.textContent = `Chưa có profile ${spec.label}. Bấm Kết nối để tải danh sách từ API cục bộ.`;
+    host.append(empty);
+  }
+  syncProfileSubtabs();
 }
 
-async function refreshOmniProfiles() {
-  const button = $('#omni-refresh');
+async function connectProvider(key) {
+  const spec = PROVIDERS[key];
+  const button = $(spec.connect);
   button.disabled = true;
-  $('#omni-notice').textContent = '\u0110ang k\u1ebft n\u1ed1i API OmniLogin...';
+  setProviderStatus(key, 'Đang kết nối…', 'pending');
+  $(spec.notice).textContent = `Đang kết nối API ${spec.label}…`;
   try {
-    const result = await api.listOmniProfiles($('#omni-api-url').value.trim());
-    if (!result || !result.ok) throw new Error(result?.error || 'Kh\u00f4ng t\u1ea3i \u0111\u01b0\u1ee3c profiles.');
-    omniProfiles = result.profiles || [];
-    $('#omni-api-url').value = result.apiUrl;
-    localStorage.setItem(OMNI_API_KEY, result.apiUrl);
-    omniAssignments = Object.fromEntries(Object.entries(omniAssignments)
-      .filter(([, id]) => omniProfiles.some((profile) => profile.id === id)));
-    localStorage.setItem(OMNI_ASSIGNMENTS_KEY, JSON.stringify(omniAssignments));
-    renderOmniAssignments(MAX_PROFILES);
-    $('#omni-notice').textContent = `OmniLogin k\u1ebft n\u1ed1i th\u00e0nh c\u00f4ng ? ${omniProfiles.length} profiles.`;
+    const apiUrl = $(spec.apiInput).value.trim();
+    const result = key === 'omni'
+      ? await api.listOmniProfiles(apiUrl) : await api.listHidemiumProfiles(apiUrl);
+    if (!result?.ok) throw new Error(result?.error || `Không tải được profiles ${spec.label}.`);
+    const list = result.profiles || [];
+    setProviderProfiles(key, list);
+    $(spec.apiInput).value = result.apiUrl;
+    localStorage.setItem(spec.apiKey, result.apiUrl);
+    // Bỏ gán trỏ tới profile đã bị xoá ở provider để lần chạy sau không lỗi.
+    setProviderAssignments(key, Object.fromEntries(Object.entries(providerAssignments(key))
+      .filter(([, id]) => list.some((profile) => profile.id === id))));
+    renderProviderAssignments(key);
+    setProviderStatus(key, `${list.length} profile khả dụng`, list.length ? 'ready' : 'idle');
+    $(spec.notice).textContent = `${spec.label} kết nối thành công · ${list.length} profiles.`;
+    window.aibcrToast?.success(`${spec.label}: đã tải ${list.length} profile.`);
   } catch (error) {
-    $('#omni-notice').textContent = String(error.message || error);
+    const message = String(error.message || error);
+    setProviderStatus(key, 'Lỗi kết nối', 'error');
+    $(spec.notice).textContent = message;
+    window.aibcrToast?.error(message, { title: spec.label });
   } finally {
     button.disabled = false;
   }
 }
 
-$('#omni-refresh').addEventListener('click', refreshOmniProfiles);
-$('#omni-api-url').addEventListener('change', () => localStorage.setItem(OMNI_API_KEY, $('#omni-api-url').value.trim()));
-$('#omni-profile-assignments').addEventListener('change', (event) => {
-  const select = event.target.closest('select[data-profile]');
-  if (!select) return;
-  if (select.value) omniAssignments[select.dataset.profile] = select.value;
-  else delete omniAssignments[select.dataset.profile];
-  localStorage.setItem(OMNI_ASSIGNMENTS_KEY, JSON.stringify(omniAssignments));
-  $('#omni-notice').textContent = `\u0110\u00e3 l\u01b0u g\u00e1n cho Profile ${select.dataset.profile}.`;
-});
-
-function renderHidemiumAssignments(count) {
-  const list = $('#hidemium-profile-assignments');
-  list.replaceChildren();
-  for (let index = 1; index <= count; index += 1) {
-    const row = document.createElement('label');
-    row.className = 'omni-assignment-row';
-    row.innerHTML = '<span></span><select></select>';
-    row.querySelector('span').textContent = `Profile ${index}`;
-    const select = row.querySelector('select');
-    select.dataset.profile = String(index);
-    const empty = document.createElement('option');
-    empty.value = '';
-    empty.textContent = hidemiumProfiles.length ? 'Chọn profile Hidemium' : 'Kết nối API để tải profiles';
-    select.append(empty);
-    for (const profile of hidemiumProfiles) {
-      const option = document.createElement('option');
-      option.value = profile.id;
-      option.textContent = `${profile.name} · ${profile.id}`;
-      select.append(option);
-    }
-    select.value = hidemiumAssignments[String(index)] || '';
-    list.append(row);
+// Gán lần lượt danh sách profile của provider vào các slot đang chọn, bỏ qua
+// slot đã có profile hợp lệ và không dùng lại cùng một profile hai lần.
+function assignProviderSequentially(key) {
+  const spec = PROVIDERS[key];
+  const profiles = providerProfiles(key);
+  if (!profiles.length) {
+    $(spec.notice).textContent = `Kết nối ${spec.label} trước khi gán profile.`;
+    return;
   }
+  const slots = activeProfileSelection().length
+    ? activeProfileSelection() : Array.from({ length: MAX_PROFILES }, (_, offset) => offset + 1);
+  const next = { ...providerAssignments(key) };
+  const used = new Set(Object.values(next));
+  let cursor = 0;
+  let assigned = 0;
+  for (const index of slots) {
+    const current = next[String(index)];
+    if (current && profiles.some((profile) => profile.id === current)) continue;
+    while (cursor < profiles.length && used.has(profiles[cursor].id)) cursor += 1;
+    if (cursor >= profiles.length) break;
+    next[String(index)] = profiles[cursor].id;
+    used.add(profiles[cursor].id);
+    cursor += 1;
+    assigned += 1;
+  }
+  setProviderAssignments(key, next);
+  renderProviderAssignments(key);
+  $(spec.notice).textContent = assigned
+    ? `Đã gán ${assigned} profile ${spec.label} cho ${slots.length} slot đang chọn.`
+    : `Các slot đang chọn đã có profile ${spec.label} hợp lệ.`;
+  // Phân biệt "gán thêm được" với "slot đã đủ profile", tránh báo sai là hết profile.
+  window.aibcrToast?.info(assigned
+    ? `${spec.label}: gán ${assigned} profile.`
+    : `Slot đang chọn đã có profile ${spec.label}.`);
 }
 
-async function refreshHidemiumProfiles() {
-  const button = $('#hidemium-refresh');
-  button.disabled = true;
-  $('#hidemium-notice').textContent = 'Đang kết nối API Hidemium...';
+function clearProviderAssignments(key) {
+  const spec = PROVIDERS[key];
+  setProviderAssignments(key, {});
+  renderProviderAssignments(key);
+  $(spec.notice).textContent = `Đã bỏ toàn bộ gán ${spec.label}.`;
+  window.aibcrToast?.info(`Đã bỏ gán ${spec.label}.`);
+}
+
+// Mở/đóng ngay tại dòng của provider. Dùng chung IPC profile:open/close nên
+// Chrome mở ra chính là profile của OmniLogin/Hidemium, không phải cửa sổ mới.
+async function toggleProviderProfile(key, index) {
+  const spec = PROVIDERS[key];
+  const state = providerOpenState.get(providerStateKey(key, index)) || 'closed';
+  const running = state === 'running' || state === 'opening';
+  const profileId = providerAssignments(key)[String(index)] || '';
+  providerOpenState.set(providerStateKey(key, index), running ? 'closing' : 'opening');
+  renderProviderAssignments(key);
   try {
-    const result = await api.listHidemiumProfiles($('#hidemium-api-url').value.trim());
-    if (!result?.ok) throw new Error(result?.error || 'Không tải được profiles.');
-    hidemiumProfiles = result.profiles || [];
-    $('#hidemium-api-url').value = result.apiUrl;
-    localStorage.setItem(HIDEMIUM_API_KEY, result.apiUrl);
-    hidemiumAssignments = Object.fromEntries(Object.entries(hidemiumAssignments)
-      .filter(([, id]) => hidemiumProfiles.some((profile) => profile.id === id)));
-    localStorage.setItem(HIDEMIUM_ASSIGNMENTS_KEY, JSON.stringify(hidemiumAssignments));
-    renderHidemiumAssignments(MAX_PROFILES);
-    $('#hidemium-notice').textContent = `Hidemium kết nối thành công · ${hidemiumProfiles.length} profiles.`;
+    let result;
+    if (running) {
+      result = await api.closeProfile(index);
+    } else {
+      const siteId = profileSiteSelections[String(index)] || profileSites[0]?.id;
+      const site = profileSites.find((item) => item.id === siteId);
+      result = await api.openProfile(index, MAX_PROFILES, collectSettings(1, [index])[0],
+        site?.url, spec.source, $('#omni-api-url').value.trim(), $('#hidemium-api-url').value.trim());
+    }
+    if (!result?.ok) {
+      providerOpenState.set(providerStateKey(key, index), 'error');
+      renderProviderAssignments(key);
+      $(spec.notice).textContent = result?.error || `Không thao tác được profile ${spec.label}.`;
+      window.aibcrToast?.error(result?.error || 'Không thao tác được profile.', { title: spec.label });
+      return;
+    }
+    providerOpenState.set(providerStateKey(key, index), running ? 'closed' : 'running');
+    renderProviderAssignments(key);
+    const detail = running
+      ? `Đã đóng ${spec.label} · P${index}.`
+      : `Đã mở ${spec.label} ${profileId} · P${index}.`;
+    $(spec.notice).textContent = detail;
+    window.aibcrToast?.success(detail);
+    // Đồng bộ sang danh sách Profile Chrome để hai tab con luôn khớp trạng thái.
+    updateProfile(index, running ? 'closed' : 'running', detail);
   } catch (error) {
-    $('#hidemium-notice').textContent = String(error.message || error);
-  } finally {
-    button.disabled = false;
+    providerOpenState.set(providerStateKey(key, index), 'error');
+    renderProviderAssignments(key);
+    $(spec.notice).textContent = String(error.message || error);
   }
 }
 
-$('#hidemium-refresh').addEventListener('click', refreshHidemiumProfiles);
-$('#hidemium-api-url').addEventListener('change', () => localStorage.setItem(HIDEMIUM_API_KEY, $('#hidemium-api-url').value.trim()));
-$('#hidemium-profile-assignments').addEventListener('change', (event) => {
-  const select = event.target.closest('select[data-profile]');
-  if (!select) return;
-  if (select.value) hidemiumAssignments[select.dataset.profile] = select.value;
-  else delete hidemiumAssignments[select.dataset.profile];
-  localStorage.setItem(HIDEMIUM_ASSIGNMENTS_KEY, JSON.stringify(hidemiumAssignments));
-  $('#hidemium-notice').textContent = `Đã lưu gán cho Profile ${select.dataset.profile}.`;
+// Mở/đóng toàn bộ slot đã gán của provider. Mở tuần tự để không mở 8 cửa sổ
+// cùng lúc (provider dễ nghẽn cổng CDP) và báo tiến độ theo từng dòng.
+async function openAllProviderProfiles(key) {
+  const spec = PROVIDERS[key];
+  const assignments = providerAssignments(key);
+  // Bỏ qua slot đang mở/đang chuyển: mở lại sẽ lỗi vì cửa sổ đã tồn tại.
+  const skipped = [];
+  const indices = Object.keys(assignments)
+    .map(Number).filter((index) => Number.isInteger(index))
+    .sort((a, b) => a - b)
+    .filter((index) => {
+      const state = providerOpenState.get(providerStateKey(key, index)) || 'closed';
+      if (state === 'closed' || state === 'error') return true;
+      skipped.push(index);
+      return false;
+    });
+  if (!indices.length) {
+    const message = skipped.length
+      ? `${spec.label}: ${skipped.length} profile đã mở sẵn.`
+      : `Chưa gán profile ${spec.label} nào để mở.`;
+    $(spec.notice).textContent = message;
+    window.aibcrToast?.warning(message);
+    return;
+  }
+  $(spec.openAll).disabled = true;
+  // Mỗi slot dùng site riêng đã chọn ở tab Profile Chrome, giống nút Mở từng dòng;
+  // chỉ khi slot chưa chọn site mới rơi về site đầu tiên.
+  const siteFor = (index) => {
+    const siteId = profileSiteSelections[String(index)] || profileSites[0]?.id;
+    return profileSites.find((item) => item.id === siteId) || profileSites[0];
+  };
+  let opened = 0;
+  const failures = [];
+  try {
+    for (const index of indices) {
+      const site = siteFor(index);
+      providerOpenState.set(providerStateKey(key, index), 'opening');
+      renderProviderAssignments(key);
+      let reply;
+      try {
+        reply = await api.openProfile(index, MAX_PROFILES, collectSettings(1, [index])[0],
+          site?.url, spec.source, $('#omni-api-url').value.trim(), $('#hidemium-api-url').value.trim());
+      } catch (error) {
+        reply = { ok: false, error: String(error.message || error) };
+      }
+      if (reply?.ok) {
+        opened += 1;
+        providerOpenState.set(providerStateKey(key, index), 'running');
+        updateProfile(index, 'running', reply.note || `Đã mở ${spec.label}.`);
+      } else {
+        failures.push(index);
+        providerOpenState.set(providerStateKey(key, index), 'error');
+      }
+      renderProviderAssignments(key);
+    }
+    const message = failures.length
+      ? `${spec.label}: mở ${opened}/${indices.length}${skipped.length ? ` · ${skipped.length} đã mở sẵn` : ''}, lỗi ở P${failures.join(', P')}.`
+      : `${spec.label}: đã mở ${opened} profile${skipped.length ? ` · ${skipped.length} đã mở sẵn` : ''}.`;
+    $(spec.notice).textContent = message;
+    if (failures.length) window.aibcrToast?.warning(message, { title: spec.label });
+    else window.aibcrToast?.success(message, { title: spec.label });
+  } finally {
+    $(spec.openAll).disabled = false;
+  }
+}
+
+async function closeAllProviderProfiles(key) {
+  const spec = PROVIDERS[key];
+  // Lấy theo trạng thái mở thay vì theo danh sách gán: người dùng có thể đã bấm
+  // "Bỏ gán" trong khi cửa sổ vẫn đang mở, và những cửa sổ đó vẫn phải đóng được.
+  const indices = [...providerOpenState.entries()]
+    .filter(([stateKey, state]) => stateKey.startsWith(`${key}:`) && state !== 'closed')
+    .map(([stateKey]) => Number(stateKey.slice(key.length + 1)))
+    .filter((index) => Number.isInteger(index))
+    .sort((a, b) => a - b);
+  if (!indices.length) {
+    $(spec.notice).textContent = `Không có profile ${spec.label} nào đang mở.`;
+    return;
+  }
+  $(spec.closeAll).disabled = true;
+  let closed = 0;
+  try {
+    for (const index of indices) {
+      providerOpenState.set(providerStateKey(key, index), 'closing');
+      renderProviderAssignments(key);
+      try {
+        const reply = await api.closeProfile(index);
+        if (reply?.ok) closed += 1;
+      } catch { /* dòng lỗi được đánh dấu bên dưới */ }
+      providerOpenState.set(providerStateKey(key, index), 'closed');
+      renderProviderAssignments(key);
+      updateProfile(index, 'closed', `Đã đóng ${spec.label}.`);
+    }
+    const message = `${spec.label}: đã đóng ${closed}/${indices.length} profile.`;
+    $(spec.notice).textContent = message;
+    window.aibcrToast?.success(message, { title: spec.label });
+  } finally {
+    $(spec.closeAll).disabled = false;
+  }
+}
+
+for (const key of Object.keys(PROVIDERS)) {
+  const spec = PROVIDERS[key];
+  $(spec.connect).addEventListener('click', () => connectProvider(key));
+  $(spec.apiInput).addEventListener('change', () => localStorage.setItem(
+    spec.apiKey, $(spec.apiInput).value.trim()));
+  $(spec.search).addEventListener('input', () => renderProviderAssignments(key));
+  $(spec.assignAll).addEventListener('click', () => assignProviderSequentially(key));
+  $(spec.openAll).addEventListener('click', () => openAllProviderProfiles(key));
+  $(spec.closeAll).addEventListener('click', () => closeAllProviderProfiles(key));
+  $(spec.clear).addEventListener('click', () => clearProviderAssignments(key));
+  $(spec.host).addEventListener('change', (event) => {
+    const select = event.target.closest('select[data-profile]');
+    if (!select) return;
+    const index = select.dataset.profile;
+    const next = { ...providerAssignments(key) };
+    if (select.value) next[index] = select.value;
+    else delete next[index];
+    setProviderAssignments(key, next);
+    renderProviderAssignments(key);
+    $(spec.notice).textContent = select.value
+      ? `Đã gán ${spec.label} cho P${index}.`
+      : `Đã bỏ gán ${spec.label} ở P${index}.`;
+  });
+  $(spec.host).addEventListener('click', (event) => {
+    const toggle = event.target.closest('.provider-row-toggle');
+    if (!toggle) return;
+    toggleProviderProfile(key, Number(toggle.dataset.profile));
+  });
+}
+
+// --------------------------------------------------------------- tab con nguồn
+
+function updateSubtabHint() {
+  const hint = $('#profile-source-hint');
+  if (!hint) return;
+  const source = $('#profile-source')?.value || 'local';
+  const labels = { local: 'Chrome riêng của ứng dụng', omni: 'OmniLogin', hidemium: 'Hidemium' };
+  hint.textContent = `Nguồn đang chạy: ${labels[source] || labels.local}`;
+}
+
+function setProfileSubtab(name, { applySource = true } = {}) {
+  const next = ['chrome', 'omni', 'hidemium'].includes(name) ? name : 'chrome';
+  document.querySelectorAll('[data-subtab-target]').forEach((button) => {
+    const active = button.dataset.subtabTarget === next;
+    button.classList.toggle('active', active);
+    button.setAttribute('aria-selected', String(active));
+    button.tabIndex = active ? 0 : -1;
+  });
+  document.querySelectorAll('[data-subtab-panel]').forEach((panel) => {
+    panel.classList.toggle('active', panel.dataset.subtabPanel === next);
+  });
+  localStorage.setItem(PROFILE_SUBTAB_KEY, next);
+  if (next !== 'chrome') renderProviderAssignments(next);
+  if (applySource) {
+    const select = $('#profile-source');
+    const source = next === 'chrome' ? 'local' : next;
+    if (select && [...select.options].some((option) => option.value === source)) {
+      select.value = source;
+      localStorage.setItem(PROFILE_SOURCE_KEY, source);
+      updateSitePreview();
+    }
+  }
+  updateSubtabHint();
+}
+
+document.querySelectorAll('[data-subtab-target]').forEach((button) => {
+  button.addEventListener('click', () => setProfileSubtab(button.dataset.subtabTarget));
 });
 
 for (const input of Object.values(sharedWindowInputs)) {
@@ -617,6 +967,11 @@ profileList.addEventListener('change', (event) => {
 });
 $('#profile-source').addEventListener('change', () => {
   localStorage.setItem(PROFILE_SOURCE_KEY, $('#profile-source').value);
+  // Chọn nguồn ở ô "Nguồn profile" cũng nhảy sang tab con tương ứng để người
+  // dùng thấy ngay danh sách profile của nguồn đó.
+  const source = $('#profile-source').value;
+  setProfileSubtab(source === 'local' ? 'chrome' : source, { applySource: false });
+  updateSubtabHint();
   updateSitePreview();
 });
 document.querySelectorAll('[data-tab-target]').forEach((button) => {
@@ -643,6 +998,92 @@ $('#save-profile-selection').addEventListener('click', () => {
   renderProfiles(MAX_PROFILES, lastSiteLabel, [], selectedIndicesOrDefault());
   $('#header-profile-count').textContent = String(selection.length);
   showNotice(`Đã lưu lựa chọn ${selection.map((index) => `P${index}`).join(', ')}.`);
+});
+
+// Lối tắt cho tab Profile Chrome: chọn nhanh toàn bộ P1–P8 hoặc bỏ chọn hết,
+// và đóng mọi cửa sổ Chrome đang mở mà không phải quay lại tab Chạy Tool.
+function setSelection(indices, message) {
+  selectedProfileIndices = [...new Set(indices)].sort((a, b) => a - b);
+  profileSelectionTouched = true;
+  localStorage.setItem(PROFILE_SELECTION_KEY, JSON.stringify(selectedProfileIndices));
+  syncProfilePicker();
+  renderProfiles(MAX_PROFILES, lastSiteLabel, [], selectedIndicesOrDefault());
+  showNotice(message);
+}
+
+$('#profile-select-all').addEventListener('click', () => {
+  setSelection(Array.from({ length: MAX_PROFILES }, (_, offset) => offset + 1),
+    `Đã chọn tất cả P1–P${MAX_PROFILES}.`);
+});
+
+$('#profile-select-none').addEventListener('click', () => {
+  if (!window.confirm('Bỏ chọn toàn bộ profile? Nút Chạy Tool sẽ cần chọn lại.')) return;
+  setSelection([], 'Đã bỏ chọn toàn bộ profile.');
+});
+
+// Mở các profile Chrome đang chọn (không đồng bộ DG) — dùng khi chỉ cần dựng
+// sẵn cửa sổ để kiểm tra site/proxy trước khi bấm Chạy Tool.
+$('#profile-open-selected').addEventListener('click', async (event) => {
+  const button = event.currentTarget;
+  const indices = activeProfileSelection();
+  if (!indices.length) {
+    showNotice('Hãy chọn ít nhất một profile trước khi mở.', true);
+    return;
+  }
+  button.disabled = true;
+  const source = $('#profile-source').value;
+  try {
+    for (const index of indices) updateProfile(index, 'opening', 'Đang mở Chrome…');
+    const results = await Promise.allSettled(indices.map((index) => {
+      const siteId = profileSiteSelections[String(index)] || profileSites[0]?.id;
+      const site = profileSites.find((item) => item.id === siteId);
+      return api.openProfile(index, MAX_PROFILES, collectSettings(1, [index])[0],
+        site?.url, source, $('#omni-api-url').value.trim(), $('#hidemium-api-url').value.trim());
+    }));
+    let opened = 0;
+    const failures = [];
+    results.forEach((result, offset) => {
+      const index = indices[offset];
+      const reply = result.status === 'fulfilled' ? result.value : { ok: false, error: result.reason?.message };
+      if (reply?.ok) {
+        opened += 1;
+        const dims = reply.width && reply.height ? ` · ${reply.width}×${reply.height} · ${reply.scale}%` : '';
+        updateProfile(index, 'running', `${reply.note || 'Đang mở profile.'}${dims}`);
+      } else {
+        failures.push(index);
+        updateProfile(index, 'error', reply?.error || 'Không mở được profile.');
+      }
+    });
+    if (failures.length) {
+      showNotice(`Mở ${opened}/${indices.length} profile · lỗi ở P${failures.join(', P')}.`, true);
+    } else {
+      showNotice(`Đã mở ${opened} profile Chrome theo site đã chọn.`);
+    }
+  } catch (error) {
+    showNotice(String(error.message || error), true);
+  } finally {
+    button.disabled = false;
+    $('#close-profiles').disabled = false;
+  }
+});
+
+$('#profile-close-all').addEventListener('click', async (event) => {
+  const button = event.currentTarget;
+  button.disabled = true;
+  try {
+    const result = await api.closeProfiles();
+    if (!result?.ok) {
+      showNotice(result?.error || 'Không đóng được các profile.', true);
+      return;
+    }
+    for (const index of profileStateByIndex.keys()) updateProfile(index, 'closed', 'Đã đóng Chrome profile.');
+    showNotice(`Đã gửi lệnh đóng ${result.count} cửa sổ Chrome.`);
+  } catch (error) {
+    showNotice(String(error.message || error), true);
+  } finally {
+    button.disabled = false;
+    $('#close-profiles').disabled = true;
+  }
 });
 
 $('#proxy-assignments').addEventListener('change', async (event) => {
@@ -1215,12 +1656,14 @@ $('#site-reset')?.addEventListener('click', async () => {
     $('#hidemium-api-url').value = localStorage.getItem(HIDEMIUM_API_KEY) || 'http://127.0.0.1:5555';
     try { omniAssignments = JSON.parse(localStorage.getItem(OMNI_ASSIGNMENTS_KEY) || '{}') || {}; } catch { omniAssignments = {}; }
     try { hidemiumAssignments = JSON.parse(localStorage.getItem(HIDEMIUM_ASSIGNMENTS_KEY) || '{}') || {}; } catch { hidemiumAssignments = {}; }
-    renderOmniAssignments(MAX_PROFILES);
-    renderHidemiumAssignments(MAX_PROFILES);
+    renderProviderAssignments('omni');
+    renderProviderAssignments('hidemium');
     await restoreRememberedConnections();
     syncProfilePicker();
     renderProfiles(MAX_PROFILES, lastSiteLabel, [], selectedIndicesOrDefault());
     updateSitePreview();
+    setProfileSubtab(localStorage.getItem(PROFILE_SUBTAB_KEY) || (
+      savedSource === 'omni' || savedSource === 'hidemium' ? savedSource : 'chrome'), { applySource: false });
     showNotice('');
   } catch (error) {
     showNotice(`Không tải được danh sách website: ${error.message || error}`, true);

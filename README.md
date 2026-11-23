@@ -115,6 +115,25 @@ nhóm) → **Log** (theo dõi, còi sự cố). Tab **Proxy** và **Cấu hình*
   `showNotice()` trong `app.js` vẫn ghi vào `#notice` và đẩy thêm toast tương ứng.
 - Mọi màu đi qua biến CSS trong `:root` / `:root[data-theme="light"]`.
 
+### Tab Profiles chia 3 tab con
+
+Tab **Profiles** có ba tab con nằm ngang, chuyển trang tại chỗ (không dồn hết vào
+một trang dài):
+
+| Tab con | Nội dung |
+| --- | --- |
+| **Profile Chrome** | 8 slot P1–P8, chọn site/khung cửa sổ, `Chọn tất cả` / `Bỏ chọn` / `Mở đã chọn` / `Đóng tất cả Chrome` |
+| **OmniLogin** | API `127.0.0.1:35353`, tìm profile, `Gán lần lượt`, `Mở tất cả`, `Đóng tất cả`, `Bỏ gán`, mỗi dòng có nút Mở/Đóng |
+| **Hidemium** | API `127.0.0.1:5555` (v2), UUID profile, cùng bộ thao tác như OmniLogin |
+
+- Badge trên mỗi tab cho biết số profile đang dùng (Chrome: số slot đang chọn).
+- Chọn **Nguồn profile** ở tab *Chạy Tool* sẽ tự nhảy sang tab con tương ứng, và
+  ngược lại chuyển tab con sẽ đổi luôn nguồn chạy.
+- Tab con đang xem lưu trong `localStorage['aibcr.profileSubtab']`.
+- Mở/đóng ở tab provider dùng chung IPC `profile:open` / `profile:close`, nên cửa sổ
+  mở ra chính là profile của OmniLogin/Hidemium. `Mở tất cả` chạy tuần tự để không
+  nghẽn cổng CDP; đóng xong trạng thái được đồng bộ về cả tab Chrome.
+
 ## Cài đặt và chạy
 
 ```
@@ -346,6 +365,8 @@ python -m unittest tests.test_live_ai -v          # AI, key RAM, bet.place, ch�
 python -m unittest tests.test_lobby_promote -v    # tách iframe sảnh DG ra URL trang (GK881 mobile)
 python -m unittest tests.test_architecture -v     # ranh giới tầng MVC, không LONG-LONG
 node tests/test_reader.cjs                        # test logic đọc bàn (node --test)
+node tests/test_profile_subtabs.cjs               # tab Profiles: Chrome / OmniLogin / Hidemium
+node tests/test_toast_theme.cjs                   # toast + dark/light theme
 ```
 
 Kiểm tra thực tế ở mức chọn bàn (Chrome đang mở sảnh, CDP 9222):
