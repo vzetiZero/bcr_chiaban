@@ -1,19 +1,26 @@
 <!DOCTYPE html>
-<html lang="vi">
+<html lang="vi" data-theme="dark">
 <head>
   <meta charset="utf-8" />
   <meta http-equiv="Content-Security-Policy"
         content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:;" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>ChiaBanBCR</title>
+  <script src="theme.js"></script>
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
   <header class="titlebar">
-    <div class="brand"><span class="brand-mark">B</span></div>
+    <div class="brand">
+      <span class="brand-mark">B</span>
+      <span class="brand-copy">
+        <strong>ChiaBanBCR</strong>
+        <small>Baccarat group operator</small>
+      </span>
+    </div>
     <div class="drag"></div>
     <div class="titlebar-actions">
-      <button id="theme-toggle" class="theme-toggle" type="button" title="Chuyển giao diện sáng/tối" aria-label="Chuyển giao diện sáng/tối">
+      <button id="theme-toggle" class="theme-toggle" type="button" title="Chuyển giao diện sáng/tối" aria-label="Chuyển giao diện sáng/tối" aria-pressed="false">
         <span class="theme-icon theme-icon-dark" aria-hidden="true">&#9790;</span>
         <span class="theme-icon theme-icon-light" aria-hidden="true">&#9728;</span>
       </button>
@@ -28,7 +35,9 @@
   <main class="page">
     <section class="app-heading">
       <div class="app-heading-copy">
+        <div class="eyebrow">TRUNG TÂM ĐIỀU PHỐI</div>
         <h1>ChiaBanBCR</h1>
+        <p>Đồng bộ sảnh DG, quản lý profile và vận hành dãy cược nhóm trong một màn hình.</p>
       </div>
       <div class="app-heading-status">
         <div class="alarm-box" id="alarm-sound-box">
@@ -44,7 +53,7 @@
           </label>
           <button id="alarm-test" class="alarm-test" type="button" title="Nghe thử còi báo động">Thử còi</button>
         </div>
-        <span class="system-state"><i></i> S&#7860;N S&#192;NG</span>
+        <span class="system-state"><i></i> SẴN SÀNG</span>
         <span class="header-profile-count"><strong id="header-profile-count">4</strong><span>profiles</span></span>
       </div>
     </section>
@@ -55,7 +64,7 @@
       <button class="tab-button" type="button" role="tab" aria-selected="false" data-tab-target="proxies">Proxy</button>
       <button class="tab-button" type="button" role="tab" aria-selected="false" data-tab-target="bets">Cược</button>
       <button class="tab-button" type="button" role="tab" aria-selected="false" data-tab-target="logs">Log</button>
-      <button class="tab-button" type="button" role="tab" aria-selected="false" data-tab-target="config">C&#7845;u h&#236;nh</button>
+      <button class="tab-button" type="button" role="tab" aria-selected="false" data-tab-target="config">Cấu hình</button>
     </nav>
 
     <div class="tab-panel active" role="tabpanel" data-tab-panel="run">
@@ -82,19 +91,19 @@
       </div>
       <div class="run-overview">
         <div class="run-overview-heading">
-          <div><div class="eyebrow">&#272;I&#7872;U PH&#7888;I PHI&#202;N</div><h2 id="run-mode-title">&#272;&#7891;ng b&#7897; b&#224;n DG v&#224; v&#7853;n h&#224;nh nh&#243;m</h2></div>
-          <span id="run-mode-badge" class="mode-badge">S&#7860;N S&#192;NG</span>
+          <div><div class="eyebrow">ĐIỀU PHỐI PHIÊN</div><h2 id="run-mode-title">Đồng bộ bàn DG và vận hành nhóm</h2></div>
+          <span id="run-mode-badge" class="mode-badge">SẴN SÀNG</span>
         </div>
         <div class="run-stats">
-          <div class="run-stat"><span>Profile &#273;&#227; ch&#7885;n</span><strong id="run-count-stat">4</strong></div>
-          <div class="run-stat"><span>Site theo profile</span><strong id="run-site-stat">Ch&#7885;n ri&#234;ng t&#7915;ng profile</strong></div>
-          <div class="run-stat"><span>B&#224;n t&#7921; ch&#7885;n</span><strong id="run-table-stat">T&#7921; &#273;&#7897;ng</strong></div>
+          <div class="run-stat"><span>Profile đã chọn</span><strong id="run-count-stat">4</strong></div>
+          <div class="run-stat"><span>Site theo profile</span><strong id="run-site-stat">Chọn riêng từng profile</strong></div>
+          <div class="run-stat"><span>Bàn tự chọn</span><strong id="run-table-stat">Tự động</strong></div>
         </div>
         <div class="run-actions">
-          <button id="run-profiles" class="run-button" disabled><span class="run-icon">&#9654;</span> Ch&#7841;y Tool</button>
-          <button id="close-profiles" class="close-button" disabled>&#272;&#243;ng t&#7845;t c&#7843;</button>
+          <button id="run-profiles" class="run-button" disabled><span class="run-icon">&#9654;</span> Chạy Tool</button>
+          <button id="close-profiles" class="close-button" disabled>Đóng tất cả</button>
         </div>
-        <div id="notice" class="notice" role="status" aria-live="polite">Ch&#7885;n s&#7889; profile v&#224; site ri&#234;ng trong tab Profiles; Ch&#7841;y Tool s&#7869; m&#7903; c&#225;c profile, v&#224;o s&#7843;nh DG, &#273;&#7891;ng b&#7897; b&#224;n v&#224; v&#7853;n h&#224;nh d&#227;y c&#432;&#7907;c nh&#243;m.</div>
+        <div id="notice" class="notice" role="status" aria-live="polite">Chọn số profile và site riêng trong tab Profiles; Chạy Tool sẽ mở các profile, vào sảnh DG, đồng bộ bàn và vận hành dãy cược nhóm.</div>
       </div>
     </section>
     </div>
@@ -105,7 +114,7 @@
         <div><div class="eyebrow">QUẢN LÝ</div><h2>Profiles</h2></div>
         <span id="profile-total" class="total">0 profile</span>
       </div>
-      <p class="notice">Ch&#7885;n site ri&#234;ng cho t&#7915;ng profile; n&#250;t M&#7903; s&#7869; m&#7903; URL site &#273;&#227; ch&#7885;n.</p>
+      <p class="notice">Chọn site riêng cho từng profile; nút Mở sẽ mở URL site đã chọn.</p>
       <div id="profile-list" class="profile-list"></div>
     </section>
     <section class="card omni-manager">
@@ -124,16 +133,16 @@
     </section>
     <section class="card hidemium-manager">
       <div class="section-heading">
-        <div><div class="eyebrow">PROFILE PROVIDER</div><h2>K&#7871;t n&#7889;i Hidemium</h2></div>
-        <span class="total">API c&#7909;c b&#7897; &#183; v2</span>
+        <div><div class="eyebrow">PROFILE PROVIDER</div><h2>Kết nối Hidemium</h2></div>
+        <span class="total">API cục bộ · v2</span>
       </div>
       <div class="omni-config-row">
-        <label class="field" for="hidemium-api-url"><span>&#272;&#7883;a ch&#7881; API Hidemium</span>
+        <label class="field" for="hidemium-api-url"><span>Địa chỉ API Hidemium</span>
           <input id="hidemium-api-url" type="url" value="http://127.0.0.1:5555" spellcheck="false" />
         </label>
-        <button id="hidemium-refresh" class="close-button" type="button">K&#7871;t n&#7889;i / t&#7843;i profiles</button>
+        <button id="hidemium-refresh" class="close-button" type="button">Kết nối / tải profiles</button>
       </div>
-      <div id="hidemium-notice" class="notice" role="status" aria-live="polite">Ch&#7885;n Hidemium &#7903; m&#224;n Ch&#7841;y Tool, sau &#273;&#243; g&#225;n UUID profile cho t&#7915;ng c&#7917;a s&#7893;.</div>
+      <div id="hidemium-notice" class="notice" role="status" aria-live="polite">Chọn Hidemium ở màn Chạy Tool, sau đó gán UUID profile cho từng cửa sổ.</div>
       <div id="hidemium-profile-assignments" class="omni-profile-assignments"></div>
     </section>
     <section class="profiles-section settings-section">
@@ -236,29 +245,29 @@
     <div class="tab-panel" role="tabpanel" data-tab-panel="config">
     <section class="manager card">
       <div class="manager-heading">
-        <div><div class="eyebrow">DANH S&#193;CH SITE</div><h2>Qu&#7843;n l&#253; trang v&#224; &#273;&#432;&#7901;ng d&#7841;n</h2></div>
+        <div><div class="eyebrow">DANH SÁCH SITE</div><h2>Quản lý trang và đường dẫn</h2></div>
         <div class="site-config-actions">
-          <button id="site-add" class="close-button" type="button">+ Th&#234;m site</button>
-          <button id="site-reset" class="close-button" type="button">Kh&#244;i ph&#7909;c m&#7863;c &#273;&#7883;nh</button>
+          <button id="site-add" class="close-button" type="button">+ Thêm site</button>
+          <button id="site-reset" class="close-button" type="button">Khôi phục mặc định</button>
         </div>
       </div>
-      <p class="site-config-note">S&#7917;a &#273;&#432;&#7901;ng d&#7841;n khi site &#273;&#7893;i link. M&#227; site d&#249;ng cho logic v&#224;o s&#7843;nh DG; site ch&#432;a c&#243; adapter s&#7869; &#273;&#432;&#7907;c m&#7903; &#273;&#7875; v&#224;o s&#7843;nh th&#7911; c&#244;ng.</p>
+      <p class="site-config-note">Sửa đường dẫn khi site đổi link. Mã site dùng cho logic vào sảnh DG; site chưa có adapter sẽ được mở để vào sảnh thủ công.</p>
       <div id="site-config-list" class="site-config-list"></div>
       <form id="site-form" class="site-form" hidden>
         <div class="site-form-grid">
-          <label class="setting-field"><span>M&#227; site</span><input id="site-form-id" type="text" maxlength="24" placeholder="vd: abc123" autocomplete="off" /></label>
-          <label class="setting-field"><span>T&#234;n hi&#7875;n th&#7883;</span><input id="site-form-label" type="text" maxlength="40" placeholder="vd: ABC123" autocomplete="off" /></label>
-          <label class="setting-field"><span>Nh&#243;m chip</span>
+          <label class="setting-field"><span>Mã site</span><input id="site-form-id" type="text" maxlength="24" placeholder="vd: abc123" autocomplete="off" /></label>
+          <label class="setting-field"><span>Tên hiển thị</span><input id="site-form-label" type="text" maxlength="40" placeholder="vd: ABC123" autocomplete="off" /></label>
+          <label class="setting-field"><span>Nhóm chip</span>
             <select id="site-form-chips">
               <option value="small">Chip 10</option>
               <option value="large">Chip 100k</option>
             </select>
           </label>
-          <label class="setting-field site-form-url"><span>&#272;&#432;&#7901;ng d&#7851;n</span><input id="site-form-url" type="url" placeholder="https://..." autocomplete="off" /></label>
+          <label class="setting-field site-form-url"><span>Đường dẫn</span><input id="site-form-url" type="url" placeholder="https://..." autocomplete="off" /></label>
         </div>
         <div class="site-form-actions">
-          <button id="site-form-save" class="run-button" type="submit">L&#432;u site</button>
-          <button id="site-form-cancel" class="close-button" type="button">Hu&#7927;</button>
+          <button id="site-form-save" class="run-button" type="submit">Lưu site</button>
+          <button id="site-form-cancel" class="close-button" type="button">Huỷ</button>
           <span id="site-form-note" class="notice" role="status"></span>
         </div>
       </form>
@@ -277,9 +286,10 @@
       </section>
     </div>
 
-    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    <div id="toast-stack" class="toast-stack" role="region" aria-label="Thông báo"></div>
   </main>
   <script src="alarm.js"></script>
+  <script src="toast.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

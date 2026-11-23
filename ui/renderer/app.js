@@ -77,8 +77,16 @@ window.addEventListener('error', (event) => showNotice(String(event.message || e
 window.addEventListener('unhandledrejection', (event) => showNotice(String(event.reason), true));
 
 function showNotice(message, isError = false) {
+  const text = String(message == null ? '' : message).trim();
   notice.textContent = message;
   notice.dataset.state = isError ? 'error' : 'ready';
+  // Cùng một thông điệp hiện ở khung notice và toast để người dùng đang ở tab
+  // khác vẫn thấy phản hồi; toast tự chống trùng lặp trong 1,2 giây.
+  if (!text) return;
+  const toast = window.aibcrToast;
+  if (!toast) return;
+  if (isError) toast.error(text);
+  else toast.info(text);
 }
 
 function profileIndex(game) {
@@ -306,11 +314,14 @@ function applyTheme(theme) {
     toggle.setAttribute('aria-pressed', String(next === 'light'));
     toggle.title = next === 'light' ? 'Chuyển sang giao diện tối' : 'Chuyển sang giao diện sáng';
   }
+  document.documentElement.style.colorScheme = next;
 }
 
 function initTheme() {
+  // theme.js đã áp màu trong <head> để tránh nháy sáng/tối; ở đây chỉ đồng bộ
+  // lại trạng thái nút và nối sự kiện chuyển đổi.
   const saved = localStorage.getItem(THEME_KEY);
-  applyTheme(saved || 'dark');
+  applyTheme(saved || document.documentElement.dataset.theme || 'dark');
   $('#theme-toggle').addEventListener('click', () => {
     applyTheme(document.documentElement.dataset.theme === 'light' ? 'dark' : 'light');
   });

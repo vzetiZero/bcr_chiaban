@@ -1,0 +1,6 @@
+# Giữ xuống dòng LF cho mã nguồn để test đọc chuỗi (node --test) không phụ
+# thuộc cấu hình core.autocrlf của từng máy Windows.
+ui/renderer/*.js   text eol=lf
+ui/renderer/*.css  text eol=lf
+ui/renderer/*.html text eol=lf
+tests/*.cjs        text eol=lf

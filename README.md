@@ -84,7 +84,13 @@ ChiaBanBCR/
 ├─ ui/                       Electron
 │  ├─ main.js                spawn engine, IPC, cửa sổ
 │  ├─ preload.js             contextBridge `window.aibcr`
-│  └─ renderer/              index.html / app.js / styles.css
+│  └─ renderer/
+│     ├─ index.html          khung màn hình, tab, form
+│     ├─ styles.css          token màu dark/light + layout
+│     ├─ theme.js            áp `data-theme` trong <head> (không nháy nền)
+│     ├─ toast.js            khay thông báo nổi có animation
+│     ├─ alarm.js            còi sự cố (Web Audio)
+│     └─ app.js              luồng UI: profile, proxy, cược, site, log
 ├─ tests/                    unittest + node --test
 ├─ tools/                    script chạy tay (đọc WebSocket, soi CDP, kiểm chọn bàn)
 ├─ Start.bat                 mở app (tự cài Electron nếu thiếu)
@@ -94,6 +100,20 @@ ChiaBanBCR/
 
 Luồng một lệnh: Electron → `preload.js` → `ui/main.js` → `aibcr.service.engine`
 → controller → adapter/model, rồi sự kiện `state`/`log` trả ngược lên giao diện.
+
+Quy trình tổng quát người dùng đi qua: **Profiles** (chọn P1–P8, gán site/proxy) →
+**Chạy Tool** (mở Chrome, vào sảnh DG, đồng bộ một bàn) → **Cược** (dãy cược + vận hành
+nhóm) → **Log** (theo dõi, còi sự cố). Tab **Proxy** và **Cấu hình** là phần chuẩn bị.
+
+## Giao diện
+
+- **Dark / Light**: nút ở titlebar; lựa chọn lưu trong `localStorage['aibcr.theme']`
+  và được `ui/renderer/theme.js` áp ngay trong `<head>` nên không nháy nền khi mở app.
+- **Toast**: `ui/renderer/toast.js` dựng khay `#toast-stack` với 4 loại
+  `success / error / warning / info`, tự xếp chồng tối đa 4 cái, có thanh đếm giờ,
+  rê chuột để tạm dừng, bấm × để đóng và chống lặp trong 1,2 giây.
+  `showNotice()` trong `app.js` vẫn ghi vào `#notice` và đẩy thêm toast tương ứng.
+- Mọi màu đi qua biến CSS trong `:root` / `:root[data-theme="light"]`.
 
 ## Cài đặt và chạy
 
