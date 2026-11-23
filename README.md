@@ -33,6 +33,23 @@ body (no separate iframe), steps 2–3 are skipped and the flow falls back to ta
 the table card inside the Laya lobby. The same promotion helper
 (`febet.promote_lobby_to_tab`) is used by E3951 and VNWTop.
 
+#### Lớp che, thẻ DG và sảnh Laya trên bản điện thoại
+
+Ba lỗi thật đã đo trực tiếp trên `m.gk881.vip` (Chrome Android qua CDP), kèm cách sửa:
+
+| Hiện tượng | Nguyên nhân thật | Cách sửa |
+| --- | --- | --- |
+| Bấm thẻ DG không ăn, bị đá sang `/Maintenance` hoặc `/Account/Login` | Trang chồng **2 dialog Angular-CDK** ("TIN TỨC MỚI NHẤT" + "GK88 – THƯỞNG NGHÌN TỶ"); nút đóng là `<span class="close …">X</span>`, không phải `<button>`, nên danh sách selector cũ không bao giờ khớp. Backdrop còn đó thì cú bấm rơi vào backdrop | `_MOBILE_CLOSE_JS` quét `.cdk-overlay-pane` / `[role=dialog]`, nhận cả `span` + `[class*=close]`, trả về `backdrops`/`panes` còn lại; `close_mobile_popups()` lặp tới khi sạch và được gọi lại **trước mỗi lần** bấm thẻ DG và trong lúc chờ sảnh (dialog mở lại sau khi đổi danh mục) |
+| Bấm "Casino" nhưng lại mở trang **đại lý** (bắt đăng nhập) | `<li>ĐẠI LÝ</li>` nằm trước thanh danh mục trong DOM và khớp danh sách alias cũ (`…, 'đại lý', …`) | `_MOBILE_CATEGORY_JS` ưu tiên tuyệt đối `.category-item` khớp đúng nhãn, và danh sách loại trừ hẳn `đại lý/nạp tiền/cskh/tài khoản…`; trả về `via` để log biết nhánh nào |
+| Sảnh DG đã hiện "Baccarat RB01…RB05" mà tool báo *"chưa tìm thấy node bàn thật"* / *"Chưa thấy frame game DG đang tải"* | Bản `ddnewwap` giữ `tableId`/`gameType`/`onlineNum` **ngay trên node thẻ** và vẽ tên bằng các `Text` con; không có wrapper `tableInfo`, không có `enterMC` (dùng `tableMC`/`roadMC`) | `_DG_LOBBY_JS` đọc id/`onlineNum` trên chính node và lấy nhãn từ text con; `_DG_STATE_JS` nhận `tableMC`/`roadMC` và đếm `tableId` (`table_cards`); mọi chỗ so marker `ddnewpc` đổi thành `ddnew` để bản điện thoại `ddnewwap` cũng được nhận; `_LAYA_ENTER_JS` khớp thẻ theo **thuộc tính `tableId`** thay vì so nhãn với mã số |
+
+Khi profile **chưa đăng nhập**, site đá sang `/Account/Login?loginToGame=…`. Trang này
+có ô mật khẩu và (đo thực tế) đứng yên, nên sau `_LOGIN_WALL_GRACE` (10 s) flow dừng và
+báo thẳng *"Profile chưa đăng nhập GK881…"* thay vì chờ hết 120 s rồi báo lỗi chung.
+Trang chuyển tiếp `/Account/LoginToSupplier?SupplierType=DG` **không** bị coi là tường
+đăng nhập (nó là trang bàn giao DG, có thể tự mount sảnh Laya cho cả profile chưa đăng nhập).
+
+
 > **BẮT BUỘC — push GitHub sau MỖI lần cập nhật hoặc sửa đổi**
 >
 > Remote: `https://github.com/vzetiZero/bcr_chiaban.git` (nhánh `main`).
@@ -400,6 +417,7 @@ python -m unittest tests.test_engine -v           # engine JSON-RPC + vào bàn 
 python -m unittest tests.test_enter_valid_flow -v # harness pipeline chọn bàn (Chrome giả)
 python -m unittest tests.test_live_ai -v          # AI, key RAM, bet.place, chặn override
 python -m unittest tests.test_lobby_promote -v    # tách iframe sảnh DG ra URL trang (GK881 mobile)
+python -m unittest tests.test_gk881_mobile_flow -v # lớp che CDK, thẻ DG, sảnh Laya bản điện thoại
 python -m unittest tests.test_architecture -v     # ranh giới tầng MVC, không LONG-LONG
 node tests/test_reader.cjs                        # test logic đọc bàn (node --test)
 node tests/test_profile_subtabs.cjs               # tab Profiles: Chrome / OmniLogin / Hidemium

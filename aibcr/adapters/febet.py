@@ -365,7 +365,9 @@ def _dg_frame(driver, wait=15.0):
                 fallback = None
                 for path, info in _frame_contexts(driver):
                     location = str(info.get("url") or "")
-                    if "ddnewpc" in location.lower():
+                    # ``ddnewpc`` is the desktop loader and ``ddnewwap`` the phone
+                    # one; both are DG documents, so match the shared prefix.
+                    if "ddnew" in location.lower():
                         driver.switch_to.default_content()
                         return path, location
                     # A lobby rendered without the ddnewpc marker: GK881 mobile
@@ -392,22 +394,28 @@ def _dg_frame(driver, wait=15.0):
 
 
 # DG vẽ sảnh và bàn bằng LayaAir (canvas): phân biệt trạng thái qua tên node —
-# sảnh lưới bàn có thẻ enterMC, bàn thật có cửa cược Banker/Player hiện rõ.
+# sảnh lưới bàn có thẻ enterMC (bản desktop) hoặc tableMC/roadMC (bản mobile
+# ddnewwap), bàn thật có cửa cược Banker/Player hiện rõ.
 _DG_STATE_JS = """
 return (() => {
   if (typeof Laya === 'undefined' || !Laya.stage) return {ready: false};
-  let lobby = false, inTable = false, label = '';
+  let lobby = false, inTable = false, label = '', cards = 0;
   const walk = (n, d) => {
     if (d > 10) return;
     const name = String(n.name || '');
     if (name === 'enterMC') lobby = true;
+    // Bản mobile đặt lưới bàn trong 'tableMC' (kèm 'roadMC' cho cầu) chứ không
+    // có 'enterMC', nên chỉ kiểm tra enterMC thì sảnh mobile bị coi là chưa tải.
+    if (name === 'tableMC' || name === 'roadMC') lobby = true;
+    if (n.tableId !== undefined && n.tableId !== null && String(n.tableId) !== '') cards++;
     if (name.toLowerCase() === 'banker' && n.visible) inTable = true;
     const t = typeof n.text === 'string' ? n.text.trim() : '';
     if (!label && t && t.length <= 30 && /(RB|S|SB)[0-9]+/.test(t)) label = t;
     for (let i = 0; i < (n.numChildren || 0); i++) walk(n.getChildAt(i), d + 1);
   };
   walk(Laya.stage, 0);
-  return {ready: true, lobby: lobby, in_table: inTable, label: label,
+  return {ready: true, lobby: lobby || cards > 0, in_table: inTable, label: label,
+          table_cards: cards,
           url_table: (location.href.match(/tableId=([0-9]+)/) || [])[1] || ''};
 })()
 """
@@ -713,15 +721,39 @@ return (() => {
     const objects = [n, info];
     const tableId = String(valueOf(objects,
       ['tableId', 'tableID', 'table_id', 'gameTableId', 'game_table_id']));
+    // The mobile build (ddnewwap) keeps the id and the label on the card node
+    // itself: ``tableId="60101"``, ``gameType="Baccarat"``, name drawn by child
+    // ``Text`` nodes ("Baccarat RB01" / "BLAIR"). It has no tableInfo wrapper,
+    // so the old check rejected every row and the lobby looked empty even
+    // though "Baccarat RB01/02..." was on screen.
     const name = String(valueOf(objects,
       ['tableName', 'table_name', 'name', 'tableCode', 'code', 'label']));
-    if (tableId && /^60\d{3,}$/.test(tableId)
-        && (n.tableInfo || n._tableInfo || n.tableData || n._tableData
-            || /\b(RB|SB|S)\s*\d+\b/i.test(name))) {
+    const gameType = String(valueOf(objects, ['gameType', 'game_type']));
+    let label = name.trim();
+    if (!label) {
+      // Read the first meaningful child text ("Baccarat RB01", "BLAIR").
+      const texts = [];
+      const collect = (node, depth) => {
+        if (depth > 5 || texts.length >= 6) return;
+        const value = typeof node.text === 'string' ? node.text.trim() : '';
+        if (value) texts.push(value.replace(/\s+/g, ' '));
+        for (let i = 0; i < (node.numChildren || 0); i++) {
+          collect(node.getChildAt(i), depth + 1);
+        }
+      };
+      collect(n, 0);
+      label = texts.find((value) => /\b(RB|SB|S)\s*\d+\b/i.test(value))
+        || texts.find((value) => value.length <= 24) || '';
+    }
+    const baccarat = /baccarat/i.test(gameType) || /baccarat/i.test(label)
+      || /\b(RB|SB|S)\s*\d+\b/i.test(label);
+    if (tableId && /^60\d{3,}$/.test(tableId) && baccarat) {
       if (!seen.has(tableId)) {
         seen.add(tableId);
-        tables.push({table_id: tableId, name: name.trim(),
-                     online: Number(valueOf(objects, ['onlineCount', 'online_count', 'playerCount'])) || 0});
+        tables.push({table_id: tableId,
+                     name: label || ('Bàn ' + tableId),
+                     online: Number(valueOf(objects,
+                       ['onlineNum', 'onlineCount', 'online_count', 'playerCount'])) || 0});
       }
     }
     for (let i = 0; i < (n.numChildren || 0); i++) walk(n.getChildAt(i), d + 1);
@@ -733,9 +765,9 @@ return (() => {
 
 
 # Some sites (GK881 mobile) render the DG lobby directly in the page that hands
-# the player over — ``/Account/LoginToSupplier?SupplierType=DG`` — instead of an
-# ``ddnewpc`` iframe. The lobby is then a Laya stage in the top document, so the
-# frame walkers below would never see it.
+# the player over — ``/Account/LoginToSupplier?SupplierType=DG`` — instead of a
+# DG iframe. The lobby is then a Laya stage in the top document, so the frame
+# walkers below would never see it.
 _TOP_LAYA_JS = r"""
 try {
   if (typeof Laya === 'undefined' || !Laya.stage) return {laya: false};
@@ -768,7 +800,8 @@ def _dg_window(driver):
             driver.switch_to.window(handle)
             driver.switch_to.default_content()
             url = (driver.current_url or "").lower()
-            if "ddnewpc" in url:
+            # ``ddnewpc`` (desktop) and ``ddnewwap`` (phone) are both DG tabs.
+            if "ddnew" in url:
                 return handle
             if _has_top_laya(driver):
                 return handle
@@ -784,9 +817,10 @@ def _dg_context(driver, wait=15.0):
         window = _dg_window(driver)
         if window is not None:
             location = driver.current_url or ""
-            # Distinguish a real ddnewpc tab from a page that hosts the lobby in
-            # its own body (GK881 mobile hand-off page).
-            mode = "tab" if "ddnewpc" in location.lower() else "top"
+            # Distinguish a real DG tab (desktop ``ddnewpc`` / phone ``ddnewwap``)
+            # from a page that hosts the lobby in its own body (GK881 mobile
+            # hand-off page).
+            mode = "tab" if "ddnew" in location.lower() else "top"
             return {"mode": mode, "location": location}
         else:
             path, location = _dg_frame(driver, wait=0)
@@ -796,9 +830,9 @@ def _dg_context(driver, wait=15.0):
                 return {"mode": "top", "location": location}
             if path is not None:
                 _enter_path(driver, path)
-                mode = "iframe" if "ddnewpc" in (location or "").lower() else "laya-frame"
+                mode = "iframe" if "ddnew" in (location or "").lower() else "laya-frame"
                 return {"mode": mode, "path": path, "location": location}
-            # No ddnewpc frame: the lobby may be a Laya stage in this document.
+            # No DG frame: the lobby may be a Laya stage in this document.
             if _has_top_laya(driver):
                 return {"mode": "top", "location": driver.current_url or ""}
         if time.monotonic() >= deadline:
@@ -855,7 +889,7 @@ def game_frame(driver, site_hosts=(), wait=6.0, handles=None):
                 host = _frame_host(url)
                 if not host:
                     continue
-                if "ddnewpc" in url.lower():
+                if "ddnew" in url.lower():
                     try:
                         driver.switch_to.default_content()
                     except Exception:
@@ -967,7 +1001,7 @@ def promote_lobby_to_tab(driver, site_hosts=(), wait=6.0, settle=20.0,
             laya = _has_top_laya(driver)
         except Exception:
             laya = False
-        if "ddnewpc" in current.lower() or laya:
+        if "ddnew" in current.lower() or laya:
             result.update(ok=True, promoted=True, mode="tab",
                           host=_frame_host(current) or _frame_host(found["url"]),
                           note="Đã thay URL trang bằng sảnh DG.")
@@ -999,6 +1033,29 @@ const labelOf = (node) => {
   }
   return '';
 };
+// The mobile build (ddnewwap) keeps the id on the card node itself and draws the
+// name in child Text nodes ("Baccarat RB01"), so matching the label against the
+// numeric id never hit a card there.
+const idOf = (node) => {
+  try {
+    const value = node.tableId;
+    if (value !== undefined && value !== null && String(value) !== '') return String(value);
+  } catch (error) {}
+  return '';
+};
+const textsOf = (node, limit) => {
+  const out = [];
+  const collect = (current, depth) => {
+    if (!current || depth > 4 || out.length >= limit) return;
+    const value = labelOf(current);
+    if (value) out.push(value.replace(/\s+/g, ' '));
+    for (let i = 0; i < (current.numChildren || 0); i++) {
+      collect(current.getChildAt(i), depth + 1);
+    }
+  };
+  collect(node, 0);
+  return out;
+};
 const clickable = (node) => {
   let cur = node;
   let hops = 0;
@@ -1011,12 +1068,19 @@ const clickable = (node) => {
   }
   return null;
 };
-const match = nodes.find((node) => {
+const byId = wanted ? nodes.filter((node) => idOf(node) === wanted) : [];
+const byLabel = nodes.filter((node) => {
   const label = labelOf(node);
   if (!label) return false;
   if (wantedName && label.toLowerCase().includes(wantedName)) return true;
-  return wanted ? label.includes(wanted) : false;
+  if (wanted && label.includes(wanted)) return true;
+  if (wantedName && textsOf(node, 6).some((text) =>
+        text.toLowerCase().includes(wantedName))) return true;
+  return false;
 });
+const match = byId.find((node) => clickable(node))
+  || byLabel.find((node) => clickable(node))
+  || byId[0] || byLabel[0];
 if (!match) return {ok: false, reason: 'no-card', scanned: nodes.length};
 const target = clickable(match);
 if (!target) return {ok: false, reason: 'no-handler'};
@@ -1026,7 +1090,8 @@ try {
   } else {
     target.event('mousedown'); target.event('mouseup'); target.event('click');
   }
-  return {ok: true, label: labelOf(match)};
+  return {ok: true, label: labelOf(match) || idOf(match),
+          table_id: idOf(match)};
 } catch (error) {
   return {ok: false, reason: 'throw'};
 }
@@ -1042,7 +1107,9 @@ def _laya_enter_table(driver, table_id, name=""):
 
 
 def _loader_url(location, src, table_id):
-    base = src if "ddnewpc" in (src or "") else location
+    # The desktop build uses ``ddnewpc`` and the phone build ``ddnewwap``; both
+    # load a table through ``direct1.html`` in their own folder.
+    base = src if "ddnew" in (src or "").lower() else location
     parsed = urlsplit(base)
     query = parse_qs(parsed.query, keep_blank_values=True)
     query["tableId"] = [table_id]

@@ -76,20 +76,42 @@ const vis = (node) => {
     const rect = node.getBoundingClientRect();
     const style = window.getComputedStyle(node);
     return rect.width > 0 && rect.height > 0
-      && style.visibility !== 'hidden' && style.display !== 'none';
+      && style.visibility !== 'hidden' && style.display !== 'none'
+      && style.opacity !== '0';
   } catch (error) { return false; }
 };
-const wanted = ['tôi biết rồi', 'đóng', '×', 'x', 'đồng ý'];
+const norm = (value) => String(value || '').replace(/\s+/g, ' ').trim().toLowerCase();
+const wanted = ['tôi biết rồi', 'toi biet roi', 'đóng', 'dong', '×', 'x', '✕',
+                'đồng ý', 'dong y', 'ok', 'đã hiểu', 'da hieu'];
 const closed = [];
-for (const button of document.querySelectorAll('button, [class*=close], .btn')) {
-  if (!vis(button)) continue;
-  const rect = button.getBoundingClientRect();
-  if (rect.width > 200 || rect.height > 200) continue;
-  const text = (button.textContent || '').replace(/\s+/g, ' ').trim().toLowerCase();
-  if (!wanted.includes(text)) continue;
-  try { button.click(); closed.push(text); } catch (error) {}
+const backdrops = () => [...document.querySelectorAll(
+  '.cdk-overlay-backdrop, [class*=overlay-backdrop], [class*=dialog-backdrop]')].filter(vis);
+const panes = () => [...document.querySelectorAll('.cdk-overlay-pane, [role=dialog]')].filter(vis);
+// GK881 mobile xếp lớp bằng Angular CDK: mỗi dialog là một .cdk-overlay-pane kèm
+// .cdk-overlay-backdrop riêng, và có thể mở 2-3 cái chồng nhau ("TÔI BIẾT RỒI",
+// "TIN TỨC MỚI NHẤT"). Nút đóng thật là <span class="close ...">X</span> chứ
+// không phải <button>, nên phải quét cả 'span' và '[class*=close]'.
+for (const pane of panes()) {
+  const candidates = [...pane.querySelectorAll(
+    'button, span, i, a, [class*=close], [class*=Close]')].filter(vis);
+  for (const node of candidates) {
+    const rect = node.getBoundingClientRect();
+    if (rect.width > 300 || rect.height > 260) continue;
+    const text = norm(node.textContent);
+    const cls = String(node.className || '');
+    const isClose = wanted.includes(text) || /(^|[\s_-])close([\s_-]|$)/i.test(cls);
+    if (!isClose) continue;
+    try { node.click(); closed.push(text || cls.slice(0, 20)); } catch (error) {}
+    break;
+  }
 }
-return {closed};
+// Không còn pane nào nhưng backdrop vẫn còn -> bấm chính backdrop để đóng.
+if (!panes().length) {
+  for (const node of backdrops()) {
+    try { node.click(); closed.push('backdrop'); } catch (error) {}
+  }
+}
+return {closed, backdrops: backdrops().length, panes: panes().length};
 """
 
 _MOBILE_CATEGORY_JS = r"""
@@ -103,25 +125,40 @@ const vis = (node) => {
 };
 const norm = (value) => String(value || '').replace(/\s+/g, ' ').trim().toLowerCase();
 const wanted = norm(arguments[0]);
-const aliases = ['casino', 'sòng bạc', 'song bac', 'trò chơi', 'tro choi',
-                 'live casino', 'baccarat', 'đại lý', 'dai ly', 'game'];
-// Quét rộng: phần tử danh mục có thể là div/li/a không mang class category-item.
+// Ưu tiên tuyệt đối thanh danh mục trò chơi (.category-item). Bản mobile GK881
+// có thêm các <li> ở header/footer ("Nạp Tiền", "ĐẠI LÝ", "CSKH 24/7") nằm TRƯỚC
+// thanh danh mục trong DOM; quét chung 'li, a, div' từng khớp "đại lý" và bấm
+// sang trang đại lý (bắt đăng nhập) thay vì mở Casino.
+const strip = [...document.querySelectorAll('.category-item')].filter(vis);
+const exact = strip.find((node) => norm(node.textContent) === wanted);
+if (exact) {
+  exact.scrollIntoView({block: 'center', inline: 'center'});
+  try { exact.click(); } catch (error) {}
+  const innerExact = exact.querySelector('span, div, img');
+  if (innerExact) { try { innerExact.click(); } catch (error) {} }
+  return {ok: true, label: norm(exact.textContent).slice(0, 30), via: 'category-item'};
+}
+// Không có thanh danh mục đúng chuẩn: chỉ xét các mục trò chơi, và loại hẳn
+// các mục tài khoản/đại lý để không bấm nhầm.
+const skip = ['trang chủ', 'trangchu', 'home', 'thể thao', 'the thao', 'tin tức', 'tin tuc',
+              'khuyến mãi', 'khuyen mai', 'liên hệ', 'lien he', 'tải app', 'tai app',
+              'đại lý', 'dai ly', 'nạp tiền', 'nap tien', 'rút tiền', 'rut tien',
+              'cskh', 'tài khoản', 'tai khoan', 'đăng nhập', 'dang nhap',
+              'đăng ký', 'dang ky', 'giới thiệu', 'gioi thieu'];
+const aliases = ['casino', 'sòng bạc', 'song bac', 'live casino', 'baccarat'];
 const items = [...document.querySelectorAll(
   '.category-item, [class*=category-item], li, a, div[role="button"], .menu-item, .tab-item')]
   .filter(vis);
 const labels = items.map((node) => norm(node.textContent)).filter(Boolean);
-// Ưu tiên từ khóa Casino, sau đó chấp nhận bất kỳ mục trò chơi nào (trang chủ/thể thao thì bỏ qua).
-const skip = ['trang chủ', 'trangchu', 'home', 'thể thao', 'the thao', 'tin tức', 'tin tuc',
-              'khuyến mãi', 'khuyen mai', 'liên hệ', 'lien he', 'tải app', 'tai app'];
 const target = items.find((node) => {
   const text = norm(node.textContent);
   if (!text || skip.some((s) => text === s || text.startsWith(s))) return false;
-  return aliases.some((a) => text.includes(a));
+  return aliases.some((a) => text === a || text.includes(a));
 });
 if (!target) return {ok: false, labels: labels.slice(0, 20)};
 target.scrollIntoView({block: 'center', inline: 'center'});
 target.click();
-return {ok: true, label: norm(target.textContent).slice(0, 30)};
+return {ok: true, label: norm(target.textContent).slice(0, 30), via: 'fallback'};
 """
 
 # Mobile provider grid: a list of <li> cards, each with an <img> and a label
@@ -137,24 +174,32 @@ const vis = (node) => {
   } catch (error) { return false; }
 };
 const norm = (value) => String(value || '').replace(/\s+/g, ' ').trim().toLowerCase();
-const isDgText = (text) => {
+const isDgLabel = (text) => {
   const value = norm(text);
   return value === 'dg' || value === 'dg trực tuyến' || value === 'dg truc tuyen'
-    || value.startsWith('dg ') || value.startsWith('dream gaming')
-    || value.startsWith('dreamgaming') || value.includes('dg');
+    || value.startsWith('dg trực tuyến') || value.startsWith('dg truc tuyen')
+    || value.startsWith('dream gaming') || value.startsWith('dreamgaming');
 };
-// Quét rộng hơn: mọi phần tử có ảnh (div/li/a...) có thể là thẻ nhà cung cấp.
+// Có khung còn marquee "DG CASINO <tên bàn> <số người>" — đó là dòng quảng cáo bàn
+// đang chơi, không phải thẻ nhà cung cấp; nhãn dài quá thì bỏ qua.
+const isProviderCard = (node) => {
+  const text = norm(node.textContent);
+  if (!text || text.length > 40) return false;
+  return isDgLabel(text);
+};
 const cards = [...document.querySelectorAll(
   'li, div, a, [class*=provider], [class*=vendor], [class*=game-item], [class*=item]')]
   .filter((node) => vis(node) && node.querySelector('img'));
-const labelMatch = cards.find((node) =>
-  [...node.querySelectorAll('span, div, p')].some((label) =>
-    label.children.length === 0 && isDgText(label.textContent)))
-  || cards.find((node) => isDgText(node.textContent));
+const labelMatch = cards.find(isProviderCard);
 const imageMatch = cards.find((node) => [...node.querySelectorAll('img')].some((img) =>
-  /dg[-_]|dream|dg\./i.test((img.getAttribute('src') || '') + ' ' + (img.alt || ''))));
+  /dg[-_]|dream|dg\./i.test((img.getAttribute('src') || '') + ' ' + (img.alt || '')))
+  && norm(node.textContent).length <= 40);
 const target = labelMatch || imageMatch;
-if (!target) return {ok: false, count: cards.length};
+if (!target) {
+  return {ok: false, count: cards.length,
+          labels: cards.map((node) => norm(node.textContent).slice(0, 24))
+            .filter(Boolean).slice(0, 12)};
+}
 target.scrollIntoView({block: 'center', inline: 'center'});
 try { target.click(); } catch (error) {}
 const inner = target.querySelector('span, div, img');
@@ -214,7 +259,63 @@ def _is_mobile_layout(driver):
     return bool(data.get("categories")) or bool(data.get("hub"))
 
 
-def close_mobile_popups(driver, rounds=3):
+def _is_login_wall(driver):
+    """True when the tab is sitting on the GK881 login/maintenance page.
+
+    This is *not* an immediate hard stop: a measured run showed
+    ``/Account/Login?loginToGame=…`` resolving by itself into
+    ``/Account/LoginToSupplier?SupplierType=DG`` (the DG hand-off page, which
+    mounts the phone lobby even for a signed-out profile). Callers therefore use
+    this only to explain a timeout — the wait itself must go on, which is what
+    "chạy đúng đến khi vào bàn được" needs. Reporting the login error too early
+    would fail runs that do reach the lobby.
+    """
+    try:
+        data = driver.execute_script(r"""
+          const path = String(location.pathname || '').toLowerCase();
+          const visible = (node) => {
+            try {
+              const rect = node.getBoundingClientRect();
+              const style = getComputedStyle(node);
+              return rect.width > 0 && rect.height > 0
+                && style.visibility !== 'hidden' && style.display !== 'none';
+            } catch (error) { return false; }
+          };
+          const password = [...document.querySelectorAll('input[type="password"]')]
+            .some(visible);
+          return {
+            path: path,
+            password: password,
+            maintenance: /\/maintenance/.test(path),
+            handoff: /logintosupplier/.test(path),
+          };
+        """) or {}
+    except Exception:
+        return False
+    if data.get("handoff"):
+        return False
+    if data.get("maintenance"):
+        return True
+    return bool(data.get("password"))
+
+
+_LOGIN_HINT = ("Profile chưa đăng nhập GK881: sau khi chọn DG, trang dừng ở màn hình "
+               "đăng nhập. Hãy đăng nhập trên profile rồi chạy lại.")
+
+# A rendered password box only exists on the real login screen; the DG hand-off
+# page (``LoginToSupplier``) has none. Measured on the live site, the login page
+# never resolves by itself, so a short grace is enough to tell the two apart and
+# spares the operator a full 120 s wait before the real cause is named.
+_LOGIN_WALL_GRACE = 10.0
+
+
+def close_mobile_popups(driver, rounds=6, require_clear=True):
+    """Đóng mọi lớp che (dialog/thông báo) cho tới khi không còn backdrop.
+
+    GK881 mobile có thể mở nhiều dialog chồng nhau và mở lại sau khi điều hướng,
+    nên một lượt là không đủ: lặp tới khi báo cáo ``backdrops == 0``. Trả về danh
+    sách nhãn đã bấm để controller ghi log.
+    """
     closed = []
     for _ in range(max(1, rounds)):
         try:
@@ -222,9 +323,14 @@ def close_mobile_popups(driver, rounds=3):
         except Exception:
             return closed
         closed.extend(result.get("closed") or [])
-        if not result.get("closed"):
+        if not require_clear:
+            if not result.get("closed"):
+                break
+            time.sleep(0.5)
+            continue
+        if not result.get("backdrops") and not result.get("panes"):
             break
-        time.sleep(0.6)
+        time.sleep(0.5)
     return closed
 
 
@@ -409,9 +515,18 @@ def open_dg(driver, wait=120.0, log=None):
         if _is_mobile_layout(driver):
             stage = "giao diện điện thoại"
             report("Phát hiện giao diện điện thoại GK881; dùng bộ chọn mobile.")
-            closed = close_mobile_popups(driver)
-            if closed:
-                report("Đã đóng %s lớp che trên mobile." % len(closed))
+
+            def clear_mobile_layers():
+                """Đóng mọi lớp che; trả về số nhãn vừa bấm."""
+                try:
+                    hits = close_mobile_popups(driver, rounds=4)
+                except Exception:
+                    return 0
+                if hits:
+                    report("Đã đóng %s lớp che trên mobile." % len(hits))
+                return len(hits)
+
+            clear_mobile_layers()
             state = driver.execute_script(_MOBILE_STATE_JS) or {}
             if state.get("isHub") and not state.get("categories"):
                 report("Trang hiện tại là trang tổng hợp link, không có menu Casino.", "error")
@@ -420,16 +535,32 @@ def open_dg(driver, wait=120.0, log=None):
             # Open the Casino category, then wait for the DG provider card.
             nav = driver.execute_script(_MOBILE_CATEGORY_JS, "casino") or {}
             if nav.get("ok"):
-                report("Đã chọn danh mục Casino trên mobile.")
+                report("Đã chọn danh mục Casino trên mobile (%s)." % (nav.get("via") or "menu"))
                 time.sleep(2)
-                driver.execute_script(_MOBILE_CLOSE_JS)
+                clear_mobile_layers()
             else:
                 report("Không thấy danh mục Casino; thử tìm thẻ DreamGaming trực tiếp.",
                        "warning")
-            # Tap the DreamGaming provider card when it appears.
+            # Tap the DreamGaming provider card when it appears. The site reopens
+            # its announcement/news dialogs after a category switch, and their
+            # backdrop swallows the card tap (the click then lands on the
+            # backdrop and the site bounces to /Maintenance or /Account/Login),
+            # so the layers are cleared again on every pass before tapping.
             dg_deadline = min(deadline, time.monotonic() + remain(45.0))
             tapped = {}
+            wall_since = None
             while time.monotonic() < dg_deadline:
+                # Keep looking even while the login form is up; a signed-out
+                # profile stays there, so name that cause after a short grace
+                # instead of burning the whole card budget first.
+                if _is_login_wall(driver):
+                    wall_since = wall_since or time.monotonic()
+                    if time.monotonic() - wall_since >= _LOGIN_WALL_GRACE:
+                        report("GK881 dừng ở màn hình đăng nhập nên không có thẻ DG.", "error")
+                        return {"ok": False, "site_id": "gk881", "error": _LOGIN_HINT}
+                else:
+                    wall_since = None
+                clear_mobile_layers()
                 tapped = driver.execute_script(_MOBILE_DG_CARD_JS) or {}
                 if tapped.get("ok"):
                     report("Đã chạm thẻ DreamGaming trên mobile.")
@@ -437,18 +568,43 @@ def open_dg(driver, wait=120.0, log=None):
                 time.sleep(1.0)
             if not tapped.get("ok"):
                 report("Chưa thấy thẻ DreamGaming trên mobile.", "error")
+                if _is_login_wall(driver):
+                    return {"ok": False, "site_id": "gk881", "error": _LOGIN_HINT}
+                details = tapped.get("labels") or []
                 return {"ok": False, "site_id": "gk881",
-                        "error": "GK881 mobile chưa hiển thị thẻ DreamGaming sau khi chọn Casino."}
-            # Wait for the DG lobby to mount.
+                        "error": "GK881 mobile chưa hiển thị thẻ DreamGaming sau khi chọn Casino."
+                                 + (" Thẻ đang thấy: %s." % ", ".join(details[:6])
+                                    if details else "")}
+            # Wait for the DG lobby to mount. Announcement dialogs can reappear on
+            # the hand-off page as well, so keep clearing them while polling.
             lobby = {}
+            wall_since = None
             poll = min(deadline, time.monotonic() + remain(75.0))
             while time.monotonic() < poll:
+                # Keep polling even while the login form is up: the measured
+                # redirect resolves by itself into the DG hand-off page, and only
+                # a form that stays put is a real wall.
+                if _is_login_wall(driver):
+                    wall_since = wall_since or time.monotonic()
+                else:
+                    wall_since = None
+                clear_mobile_layers()
                 lobby = DG.lobby_tables(driver, wait=2.0)
                 if lobby.get("ok"):
                     break
+                if (wall_since is not None
+                        and time.monotonic() - wall_since >= _LOGIN_WALL_GRACE):
+                    # Measured: a signed-out profile parks on the login form and
+                    # never leaves it, so stop early and name the real cause
+                    # instead of waiting out the whole lobby budget.
+                    report("GK881 dừng ở màn hình đăng nhập nên sảnh DG không mở.", "error")
+                    return {"ok": False, "site_id": "gk881", "error": _LOGIN_HINT}
                 time.sleep(1.0)
             if not lobby.get("ok"):
                 error = lobby.get("error") or "Sảnh DG chưa tải xong."
+                if _is_login_wall(driver):
+                    report("GK881 dừng ở màn hình đăng nhập nên sảnh DG không mở.", "error")
+                    return {"ok": False, "site_id": "gk881", "error": _LOGIN_HINT}
                 report("Sảnh DG mobile chưa sẵn sàng: %s" % error, "error")
                 return {"ok": False, "site_id": "gk881", "error": error}
             tables = lobby.get("tables") or []

@@ -227,7 +227,7 @@ class GK881MobilePromoteTest(unittest.TestCase):
                         "providers": [], "dgText": True}
             if "aliases" in script:
                 return {"ok": True, "label": "casino"}
-            if "isDgText" in script:
+            if "isDgLabel" in script:
                 return {"ok": True, "label": "dg trực tuyến"}
             return None
 
