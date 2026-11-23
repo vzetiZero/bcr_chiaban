@@ -873,7 +873,7 @@ h2 { margin: 6px 0 0; color: var(--text-strong); font-size: 17px; font-weight: 8
 
 .site-config-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
   gap: 12px;
   padding: 11px 13px;
@@ -883,6 +883,21 @@ h2 { margin: 6px 0 0; color: var(--text-strong); font-size: 17px; font-weight: 8
   transition: background var(--dur-fast) ease, border-color var(--dur-fast) ease;
 }
 .site-config-row:hover { border-color: rgba(240, 169, 42, .34); background: var(--row-bg-hover); }
+.site-config-order { display: flex; align-items: center; }
+.site-config-order-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 30px;
+  padding: 4px 6px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: var(--stat-bg);
+  color: var(--amber-bright);
+  font-family: "JetBrains Mono", Consolas, monospace;
+  font-size: 10px;
+  font-weight: 800;
+}
 .site-config-info { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
 .site-config-title { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
 .site-config-title strong { color: var(--text); font-size: 12px; font-weight: 800; }
@@ -902,7 +917,7 @@ h2 { margin: 6px 0 0; color: var(--text-strong); font-size: 17px; font-weight: 8
 .site-config-manual { padding: 2px 7px; border-radius: 999px; background: rgba(148, 163, 184, .18); color: var(--muted); font-size: 9px; font-weight: 850; }
 .site-config-url { overflow: hidden; color: var(--muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 
-.site-config-buttons { display: flex; gap: 6px; }
+.site-config-buttons { display: flex; gap: 6px; align-items: center; }
 .site-config-buttons button {
   padding: 6px 12px;
   border: 1px solid var(--line-strong);
@@ -916,6 +931,15 @@ h2 { margin: 6px 0 0; color: var(--text-strong); font-size: 17px; font-weight: 8
 }
 .site-config-buttons button:hover { border-color: var(--amber); color: var(--amber-bright); }
 .site-config-buttons .danger:hover { border-color: var(--red); color: var(--red); }
+.site-config-buttons .site-move { padding: 5px 8px; font-size: 9.5px; line-height: 1; }
+.site-config-buttons .site-move-top { padding: 5px 10px; }
+.site-config-buttons button:disabled {
+  border-color: var(--line);
+  color: var(--muted);
+  cursor: not-allowed;
+  opacity: .45;
+}
+.site-config-buttons button:disabled:hover { border-color: var(--line); color: var(--muted); }
 
 .site-form {
   margin-top: 16px;
@@ -1369,6 +1393,10 @@ h2 { margin: 6px 0 0; color: var(--text-strong); font-size: 17px; font-weight: 8
   .provider-assignment select { grid-area: select; }
   .provider-assignment .provider-row-state { grid-area: state; }
   .provider-assignment .provider-row-toggle { grid-area: toggle; }
+  .site-config-row { grid-template-columns: auto minmax(0, 1fr); row-gap: 9px; }
+  .site-config-buttons { grid-column: 1 / -1; flex-wrap: wrap; }
+  .site-config-buttons .site-move { flex: 1 1 auto; }
+  .site-config-buttons button { flex: 1 1 auto; }
   .subtab-toolbar-actions { width: 100%; }
   .subtab-toolbar-actions .close-button { flex: 1 1 auto; }
   .toast-stack { right: 12px; bottom: 12px; }

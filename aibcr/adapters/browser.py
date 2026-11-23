@@ -411,6 +411,9 @@ class BrowserSession:
         self._external_service = None
         # Dấu vết thiết bị Android của profile (user-agent, màn hình, canvas).
         self.fingerprint = None
+        # Vùng trang thật của cửa sổ (CSS px). Khung nhìn emulate phải khớp vùng
+        # này thì giao diện mới phủ kín khung thay vì để trống bên phải/dưới.
+        self._page_area = None
 
     @property
     def connected(self):
@@ -741,6 +744,57 @@ class BrowserSession:
         """
         return window or {}
 
+    def page_area(self, driver=None, reset=False):
+        """Vùng trang thật + devicePixelRatio của cửa sổ Chrome đang mở.
+
+        Chrome thu mặt phẳng render của khung nhìn emulate vào vùng trang này,
+        nên biết ``width/height`` (CSS pixel) là điều kiện để khung nhìn phủ kín
+        khung thay vì chừa dải trống hai bên.
+
+        Phải gọi khi **chưa** có ``Emulation.setDeviceMetricsOverride``, vì sau
+        khi override chạy ``innerWidth``/``devicePixelRatio`` trả về giá trị đã
+        emulate chứ không phải cửa sổ thật. ``reset=True`` gỡ override đang có
+        (dùng sau khi đổi kích thước cửa sổ) — chỉ gỡ, không nạp lại trang.
+        """
+        driver = driver if driver is not None else self.driver
+        if driver is None:
+            return None
+        if reset:
+            try:
+                driver.execute_cdp_cmd("Emulation.clearDeviceMetricsOverride", {})
+            except Exception:
+                pass
+        # Sau khi gỡ override / đổi kích thước, Chrome cần vài khung hình mới cập
+        # nhật layout. Đọc tới khi hai lần liên tiếp trùng nhau (tối đa ~1,5 s)
+        # để không lấy phải kích thước cũ rồi đặt khung nhìn sai.
+        attempts = 6 if reset else 1
+        previous = None
+        for attempt in range(attempts):
+            try:
+                size = driver.execute_script(
+                    "return {width: window.innerWidth, height: window.innerHeight,"
+                    " dpr: window.devicePixelRatio};")
+            except Exception:
+                break
+            width = int((size or {}).get("width") or 0)
+            height = int((size or {}).get("height") or 0)
+            dpr = float((size or {}).get("dpr") or 0)
+            if width <= 0 or height <= 0:
+                break
+            current = (width, height, dpr if dpr > 0 else 1.0)
+            if current == previous:
+                self._page_area = {"width": current[0], "height": current[1],
+                                   "dpr": current[2]}
+                return self._page_area
+            previous = current
+            if attempt + 1 < attempts:
+                time.sleep(0.25)
+        if previous is not None:
+            self._page_area = {"width": previous[0], "height": previous[1],
+                               "dpr": previous[2]}
+            return self._page_area
+        return self._page_area
+
     def resize_window(self, window=None, pos=None):
         """Đưa cửa sổ Chrome về cấu hình người dùng qua CDP: toàn màn hình hoặc kích thước tùy chọn.
 
@@ -776,17 +830,20 @@ class BrowserSession:
                 self._browser_command(ws, 3, "Browser.setWindowBounds",
                                       {"windowId": window_id,
                                        "bounds": {"windowState": "fullscreen"}})
-                return True, "Đã đưa Chrome về toàn màn hình · %s." % scale_note
-            self._browser_command(ws, 2, "Browser.setWindowBounds",
-                                  {"windowId": window_id, "bounds": {"windowState": "normal"}})
-            bounds = {"width": window["width"], "height": window["height"],
-                      "windowState": "normal"}
-            if pos:
-                bounds.update(left=int(pos[0]), top=int(pos[1]))
-            self._browser_command(ws, 3, "Browser.setWindowBounds",
-                                  {"windowId": window_id, "bounds": bounds})
-            return True, "Đã đưa Chrome về %d × %d · %s." % (
-                window["width"], window["height"], scale_note)
+                fitted = True
+                note = "Đã đưa Chrome về toàn màn hình · %s." % scale_note
+            else:
+                self._browser_command(ws, 2, "Browser.setWindowBounds",
+                                      {"windowId": window_id, "bounds": {"windowState": "normal"}})
+                bounds = {"width": window["width"], "height": window["height"],
+                          "windowState": "normal"}
+                if pos:
+                    bounds.update(left=int(pos[0]), top=int(pos[1]))
+                self._browser_command(ws, 3, "Browser.setWindowBounds",
+                                      {"windowId": window_id, "bounds": bounds})
+                fitted = True
+                note = "Đã đưa Chrome về %d × %d · %s." % (
+                    window["width"], window["height"], scale_note)
         except Exception as exc:
             return False, "Không đổi được kích thước cửa sổ Chrome (%s)." % type(exc).__name__
         finally:
@@ -794,6 +851,14 @@ class BrowserSession:
                 ws.close()
             except Exception:
                 pass
+        # Cửa sổ vừa đổi kích thước: khung nhìn emulate phải được đo lại, nếu không
+        # trang sẽ vẽ vào vùng cũ và để trống phần còn lại của khung.
+        if fitted:
+            try:
+                self.fit_viewport(remeasure=True)
+            except Exception:
+                pass
+        return True, note
 
     def start(self, url=None, pos=(1290, 30), cdp=False, window=None):
         with self.lock:
@@ -827,9 +892,10 @@ class BrowserSession:
                     raise FileNotFoundError("chrome.exe")
                 kind, why = driver_for()
                 self._start_driver(chrome, url, pos, kind, cdp, self._mobile_window(window))
-                # The viewport may have been retargeted by _mobile_window; apply
-                # the final metrics so the page matches the new frame exactly.
-                self._apply_fingerprint(self.driver)
+                # The window now exists, so measure its real page area and fit the
+                # emulated viewport to it. Without this the phone viewport draws
+                # into the top-left corner and leaves the rest of the frame blank.
+                self.fit_viewport()
                 self.mode = "driver"
                 self.note = why + " · Đăng nhập thủ công; chỉ đọc kết quả, cược chỉ mô phỏng."
                 self.connection_state = "waiting"
@@ -862,9 +928,12 @@ class BrowserSession:
             driver.set_page_load_timeout(PAGE_LOAD_TIMEOUT)
             driver.set_script_timeout(SCRIPT_TIMEOUT)
             driver.implicitly_wait(0)
-            # Inject the device fingerprint before the first navigation so every
-            # document (including iframes the casino opens later) sees it.
-            self._apply_fingerprint(driver)
+            # Inject the Android identity before the first navigation so every
+            # document (including iframes the casino opens later) sees it. The
+            # metrics are left for the second pass: the real page area cannot be
+            # measured until a document exists, and an unmeasured viewport is
+            # exactly what left a blank strip inside the window.
+            self._apply_fingerprint(driver, skip_metrics=True)
             driver.get(url)  # Điều hướng duy nhất; các bước tiếp theo đều do người dùng.
             handle = driver.current_window_handle
             caps = driver.capabilities
@@ -885,7 +954,7 @@ class BrowserSession:
         self._selected_handle = handle
         self._driver_info = info
 
-    def _apply_fingerprint(self, driver, major=None):
+    def _apply_fingerprint(self, driver, major=None, page_area=None, skip_metrics=False):
         """Apply the Android device fingerprint over CDP; never raises."""
         if driver is None or not isinstance(self.fingerprint, dict):
             return []
@@ -893,10 +962,39 @@ class BrowserSession:
             from aibcr.adapters import device_profile
         except Exception:
             return []
+        area = None if skip_metrics else (
+            page_area if page_area is not None else self.page_area(driver))
         try:
-            return device_profile.apply_to_driver(driver, self.fingerprint, major)
+            return device_profile.apply_to_driver(driver, self.fingerprint, major,
+                                                  page_area=area,
+                                                  skip_metrics=skip_metrics)
         except Exception:
             return []
+
+    def fit_viewport(self, remeasure=False):
+        """Đặt metrics cho khớp đúng vùng trang thật của cửa sổ hiện tại.
+
+        Gọi sau khi cửa sổ đổi kích thước (``resize_window``). Không bao giờ ném
+        lỗi: máy không hỗ trợ CDP thì bỏ qua và giữ nguyên giao diện đang có.
+
+        ``remeasure=True`` khi cửa sổ vừa đổi kích thước thật sự — phải gỡ
+        override để ``innerWidth`` báo lại kích thước cửa sổ. Mặc định dùng vùng
+        đã đo trước khi áp dấu vết, vì lúc đó ``innerWidth`` đang là giá trị đã
+        emulate, đo lại sẽ ra chính khung nhìn cũ.
+        """
+        driver = self.driver
+        if driver is None or not isinstance(self.fingerprint, dict):
+            return False
+        try:
+            area = self.page_area(driver, reset=remeasure)
+        except Exception:
+            return False
+        if not area:
+            return False
+        try:
+            return bool(self._apply_fingerprint(driver, page_area=area))
+        except Exception:
+            return False
 
     def alive(self):
         with self.lock:

@@ -1479,9 +1479,19 @@ function renderSiteConfig(sites) {
     host.append(empty);
     return;
   }
-  for (const site of siteRows) {
+  siteRows.forEach((site, offset) => {
+    const position = offset + 1;
     const row = document.createElement('div');
     row.className = 'site-config-row';
+    row.dataset.siteId = site.id;
+    row.dataset.position = String(position);
+    const order = document.createElement('div');
+    order.className = 'site-config-order';
+    const orderBadge = document.createElement('span');
+    orderBadge.className = 'site-config-order-badge';
+    orderBadge.textContent = `#${position}`;
+    orderBadge.title = `Vị trí ${position} trong danh sách chọn site của profile`;
+    order.append(orderBadge);
     const info = document.createElement('div');
     info.className = 'site-config-info';
 
@@ -1508,6 +1518,29 @@ function renderSiteConfig(sites) {
 
     const buttons = document.createElement('div');
     buttons.className = 'site-config-buttons';
+    const toTop = document.createElement('button');
+    toTop.type = 'button';
+    toTop.className = 'site-move site-move-top';
+    toTop.textContent = '↑ Đầu';
+    toTop.title = 'Đưa site lên vị trí 1 trong danh sách chọn site';
+    toTop.disabled = position === 1;
+    toTop.addEventListener('click', () => reorderSite(site, 'top'));
+    const up = document.createElement('button');
+    up.type = 'button';
+    up.className = 'site-move site-move-up';
+    up.textContent = '▲';
+    up.title = 'Tăng 1 vị trí';
+    up.setAttribute('aria-label', `Đưa ${site.label || site.id} lên 1 vị trí`);
+    up.disabled = position === 1;
+    up.addEventListener('click', () => reorderSite(site, 'up'));
+    const down = document.createElement('button');
+    down.type = 'button';
+    down.className = 'site-move site-move-down';
+    down.textContent = '▼';
+    down.title = 'Giảm 1 vị trí';
+    down.setAttribute('aria-label', `Đưa ${site.label || site.id} xuống 1 vị trí`);
+    down.disabled = position === siteRows.length;
+    down.addEventListener('click', () => reorderSite(site, 'down'));
     const edit = document.createElement('button');
     edit.type = 'button';
     edit.textContent = 'Sửa';
@@ -1517,11 +1550,11 @@ function renderSiteConfig(sites) {
     remove.className = 'danger';
     remove.textContent = 'Xoá';
     remove.addEventListener('click', () => deleteSite(site));
-    buttons.append(edit, remove);
+    buttons.append(toTop, up, down, edit, remove);
 
-    row.append(info, buttons);
+    row.append(order, info, buttons);
     host.append(row);
-  }
+  });
 }
 
 function setSiteFormNote(message, isError = false) {
@@ -1595,6 +1628,22 @@ async function deleteSite(site) {
   syncProfileSiteOptions();
   renderProfiles(MAX_PROFILES, lastSiteLabel, [], selectedIndicesOrDefault());
   showNotice(`Đã xoá site ${site.id}.`);
+}
+
+// Sắp xếp lại thứ tự site: thứ tự này chính là thứ tự option ở mọi dropdown
+// chọn site của profile, và cũng là thứ tự mặc định khi mở/chạy nhóm.
+async function reorderSite(site, action) {
+  if (!site?.id) return;
+  const result = await api.reorderSite(site.id, action);
+  if (!result?.ok) {
+    showNotice(result?.error || 'Không sắp xếp được site.', true);
+    return;
+  }
+  profileSites = result.sites || profileSites;
+  renderSiteConfig(profileSites);
+  syncProfileSiteOptions();
+  renderProfiles(MAX_PROFILES, lastSiteLabel, [], selectedIndicesOrDefault());
+  showNotice(result.note || 'Đã cập nhật thứ tự site.');
 }
 
 // Keep every per-profile site dropdown in step with the editable list.

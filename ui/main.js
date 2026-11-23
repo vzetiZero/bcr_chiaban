@@ -8,6 +8,7 @@ const fs = require('node:fs');
 const { randomUUID } = require('node:crypto');
 const { parseProxy, proxyLabel, startProxyBridge, checkProxy } = require('./proxy_bridge');
 const { commonReachableStake } = require('./chip_amounts');
+const { reorderSites } = require('./site_order');
 
 const PROJECT_ROOT = path.resolve(__dirname, '..');
 const ACTIVITY_LOG_LIMIT = 5000;
@@ -1962,6 +1963,15 @@ ipcMain.handle('sites:update', async (_event, { site } = {}) => {
   updated[index] = next;
   await saveSitesConfig(updated);
   return { ok: true, sites: publicSites() };
+});
+
+// Thứ tự site trong store chính là thứ tự option ở dropdown của từng profile.
+// "top" đưa lên vị trí 1, "up"/"down" dịch một bậc; đã ở biên thì báo chứ không lỗi.
+ipcMain.handle('sites:reorder', async (_event, { id, action } = {}) => {
+  const result = reorderSites(sitesConfig(), id, action);
+  if (!result.ok) return result;
+  if (result.moved) await saveSitesConfig(result.sites);
+  return { ok: true, sites: publicSites(), moved: result.moved, note: result.note };
 });
 
 ipcMain.handle('sites:delete', async (_event, { id } = {}) => {

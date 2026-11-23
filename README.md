@@ -134,6 +134,20 @@ một trang dài):
   mở ra chính là profile của OmniLogin/Hidemium. `Mở tất cả` chạy tuần tự để không
   nghẽn cổng CDP; đóng xong trạng thái được đồng bộ về cả tab Chrome.
 
+### Sắp xếp site trong tab Cấu hình
+
+Mỗi dòng site có nút **↑ Đầu** / **▲** / **▼** để đổi thứ tự. Thứ tự này là thật,
+không chỉ là hiển thị:
+
+- Lưu vào `sites-config.json` (`ui/main.js` → IPC `sites:reorder`, tính toán thuần
+  trong `ui/site_order.js`), nên mở lại app vẫn giữ nguyên.
+- Là thứ tự `<option>` trong dropdown chọn site của từng Profile, đồng bộ ngay sau
+  mỗi lần bấm — không cần tải lại tab.
+- Site ở vị trí 1 là lựa chọn mặc định cho profile chưa có lựa chọn riêng.
+- Site đã ở đầu/cuối thì nút bị khoá và bấm vào chỉ báo "đã ở đầu/cuối danh sách",
+  không ghi file, không báo lỗi.
+- Đang gán site riêng cho profile nào thì lựa chọn đó được giữ nguyên khi đổi thứ tự.
+
 ## Cài đặt và chạy
 
 ```
@@ -150,6 +164,29 @@ python -m aibcr.service.engine --game baccarat
 
 Cấu hình Chrome: cổng CDP **9222**, profile `chrome_profile/`, file phiên
 `aibcr_state_baccarat.json` (xem `aibcr/service/engine.py::GAMES`).
+
+### Khung cửa sổ và dấu vết điện thoại
+
+Khung mặc định là **Rộng 900 × Cao 1200 × Scale 60%** (dọc), đặt trong tab
+**Profiles → Profile Chrome → Kích thước cửa sổ**. Mỗi profile Chrome mang một dấu
+vết Android riêng (user-agent, `screen`, WebGL, nhiễu canvas) để site trả giao diện
+di động.
+
+Chrome **thu mặt phẳng render** của khung nhìn emulate cho vừa vùng trang của cửa sổ,
+nên khung nhìn phải cùng tỉ lệ với vùng trang thì trang mới phủ kín khung. Vì vậy sau
+khi mở Chrome, app đo vùng trang thật rồi đặt khung nhìn đúng bằng vùng đó:
+
+| khung nhìn | render thật | phủ khung |
+| --- | --- | --- |
+| 412 × 915 (tỉ lệ 0.45) | 248 × 549 | 47% × 83% — còn dải trống |
+| 880 × 1048 (tỉ lệ 0.84) | 528 × 629 | 100% × 100% |
+
+Số đo bằng `Page.getLayoutMetrics` trên máy (khung 900 × 1200 @ 60%). Nhờ vậy giao
+diện điện thoại vẫn giữ nguyên (user-agent Android, `mobile: true`, touch, bottom
+nav của site) mà không còn bị thu nhỏ hay chừa khoảng trắng.
+
+Đổi kích thước cửa sổ (kéo tay hoặc sửa cấu hình) sẽ đo lại và khớp lại khung nhìn,
+nên không cần mở lại Chrome.
 
 ## Backend Baccarat legacy
 

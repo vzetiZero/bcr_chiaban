@@ -157,5 +157,66 @@ class ApplyTest(unittest.TestCase):
         self.assertEqual(driver.calls, [])
 
 
+class FitViewportTest(unittest.TestCase):
+    """The emulated viewport must equal the window's real page area.
+
+    Chrome shrinks the emulated surface to fit the page area, so a phone-shaped
+    viewport (412×915, ratio 0.45) inside a 900×1200 frame (page area ratio 0.80)
+    rendered at only 47 % × 83 % — the "page smaller than the window" report.
+    Matching the area renders 1:1 and fills the frame.
+    """
+
+    def test_viewport_equals_the_page_area(self):
+        area = {"width": 888, "height": 1108, "dpr": 0.6}
+        fitted = DP._fit_viewport_to_area({"width": 412, "height": 915},
+                                          {"dpr": 3.0}, area)
+        self.assertEqual((fitted["width"], fitted["height"]), (888, 1108))
+
+    def test_scale_factor_follows_the_window_not_the_phone(self):
+        area = {"width": 888, "height": 1108, "dpr": 0.6}
+        fitted = DP._fit_viewport_to_area({"width": 412, "height": 915},
+                                          {"dpr": 3.0}, area)
+        # 0.6 makes 888 CSS × 0.6 = 533 device px = the real page surface.
+        self.assertAlmostEqual(fitted["deviceScaleFactor"], 0.6, places=4)
+
+    def test_aspect_ratio_matches_the_area(self):
+        area = {"width": 520, "height": 900, "dpr": 1.25}
+        fitted = DP._fit_viewport_to_area({"width": 412, "height": 915},
+                                          {"dpr": 3.0}, area)
+        self.assertAlmostEqual(fitted["width"] / fitted["height"],
+                               520 / 900.0, places=4)
+
+    def test_missing_area_falls_back_to_the_phone_viewport(self):
+        self.assertIsNone(DP._fit_viewport_to_area(
+            {"width": 412, "height": 915}, {"dpr": 3.0}, None))
+        self.assertIsNone(DP._fit_viewport_to_area(
+            {"width": 412, "height": 915}, {"dpr": 3.0}, {"width": 0, "height": 0}))
+
+    def test_page_area_wins_over_the_phone_viewport(self):
+        driver = FakeDriver()
+        fingerprint = FP.generate(seed=42)
+        DP.apply_to_driver(driver, fingerprint,
+                           page_area={"width": 888, "height": 1108, "dpr": 0.6})
+        metrics = next(p for m, p in driver.calls
+                       if m == "Emulation.setDeviceMetricsOverride")
+        self.assertEqual((metrics["width"], metrics["height"]), (888, 1108))
+        self.assertTrue(metrics["mobile"])
+        # screen must track the viewport: a real phone reports
+        # innerWidth == screen.width, so claiming a 412 px screen inside an
+        # 888 px viewport would itself be a fingerprinting tell.
+        self.assertEqual(metrics["screenWidth"], 888)
+        self.assertEqual(metrics["screenHeight"], 1108)
+
+    def test_skip_metrics_sets_no_viewport(self):
+        driver = FakeDriver()
+        DP.apply_to_driver(driver, FP.generate(seed=42), skip_metrics=True)
+        methods = [call[0] for call in driver.calls]
+        self.assertNotIn("Emulation.setDeviceMetricsOverride", methods)
+        self.assertNotIn("Emulation.setTouchEmulationEnabled", methods)
+        # The user-agent must still go in before the first navigation.
+        self.assertIn("Network.setUserAgentOverride", methods)
+        self.assertIn("Page.addScriptToEvaluateOnNewDocument", methods)
+
+
 if __name__ == "__main__":
     unittest.main()

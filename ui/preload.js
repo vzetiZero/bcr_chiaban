@@ -9,6 +9,7 @@ contextBridge.exposeInMainWorld('aibcr', {
   updateSite: (site) => ipcRenderer.invoke('sites:update', { site }),
   deleteSite: (id) => ipcRenderer.invoke('sites:delete', { id }),
   resetSites: () => ipcRenderer.invoke('sites:reset'),
+  reorderSite: (id, action) => ipcRenderer.invoke('sites:reorder', { id, action }),
   getProfileFingerprint: (index) => ipcRenderer.invoke('profile:fingerprint', { index }),
   regenerateProfileFingerprint: (index) => ipcRenderer.invoke('profile:regenerateFingerprint', { index }),
   loadProfileConnections: () => ipcRenderer.invoke('profiles:connections'),

@@ -154,6 +154,30 @@ class PhoneFrameTest(unittest.TestCase):
         self.assertEqual(metrics["width"], 430)
         self.assertEqual(metrics["height"], 955)
 
+    def test_page_area_overrides_the_retargeted_viewport(self):
+        """Once the window is known, its real area wins over the phone viewport.
+
+        Otherwise Chrome shrinks the phone surface into the frame and leaves a
+        blank strip (the reported "UI smaller than the window").
+        """
+        from aibcr.adapters import device_profile as DP
+        from aibcr.models import fingerprint as FP
+
+        class Driver:
+            def __init__(self):
+                self.calls = []
+
+            def execute_cdp_cmd(self, method, params):
+                self.calls.append((method, params))
+
+        driver = Driver()
+        fingerprint = DP.with_viewport(FP.generate(seed=9), {"width": 430, "height": 955})
+        DP.apply_to_driver(driver, fingerprint,
+                           page_area={"width": 888, "height": 1108, "dpr": 0.6})
+        metrics = next(p for m, p in driver.calls
+                       if m == "Emulation.setDeviceMetricsOverride")
+        self.assertEqual((metrics["width"], metrics["height"]), (888, 1108))
+
     def test_device_scale_is_capped(self):
         from aibcr.adapters import device_profile as DP
         from aibcr.models import fingerprint as FP

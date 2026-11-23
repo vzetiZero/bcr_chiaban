@@ -168,8 +168,56 @@ def _client_hints(fingerprint, major):
     }
 
 
-def apply_to_driver(driver, fingerprint, chrome_major=None):
-    """Áp dấu vết lên driver hiện có. Trả về danh sách bước đã áp."""
+def _fit_viewport_to_area(viewport, screen, area):
+    """Khung nhìn khớp đúng vùng trang thật để trang phủ kín cửa sổ Chrome.
+
+    Chrome **thu mặt phẳng render** của khung nhìn emulate cho vừa vùng trang của
+    cửa sổ. Vì vậy trang chỉ phủ kín khung khi tỉ lệ khung nhìn trùng tỉ lệ vùng
+    trang. Số đo thật bằng ``Page.getLayoutMetrics`` trên máy (khung Rộng 900 ×
+    Cao 1200 × Scale 60% → vùng trang 533 × 665 điểm ảnh):
+
+    ==========================  ======================  ===========
+    khung nhìn                  mặt phẳng render thật    phủ khung
+    ==========================  ======================  ===========
+    412 × 915  (tỉ lệ 0.450)    248 × 549               47% × 83%
+    412 × 514  (tỉ lệ 0.801)    248 × 309               47% × 46%
+    888 × 1108 (tỉ lệ 0.801)    533 × 665              100% × 100%
+    ==========================  ======================  ===========
+
+    Tỉ lệ 0.450 so với 0.801 là nguyên nhân giao diện "bé hơn khung": Chrome thu
+    theo chiều cao nên bề ngang chỉ còn 47 %, phần còn lại là nền trống. Không
+    thể vừa giữ khung nhìn điện thoại 412 × 915 vừa phủ kín khung 900 × 1200 —
+    hai tỉ lệ khác nhau về mặt hình học.
+
+    Nên khung nhìn lấy đúng vùng trang (``area``) và ``deviceScaleFactor`` lấy
+    đúng ``devicePixelRatio`` của cửa sổ: ánh xạ 1:1, không thu, không dải trống,
+    chữ vẫn sắc nét. ``mobile_layout`` + touch + user-agent Android vẫn giữ nên
+    site tiếp tục trả giao diện di động.
+    """
+    area_width = int((area or {}).get("width") or 0)
+    area_height = int((area or {}).get("height") or 0)
+    if min(area_width, area_height) <= 0:
+        return None
+    ratio = float((area or {}).get("dpr") or 0)
+    if ratio <= 0:
+        ratio = float(screen.get("dpr") or viewport.get("dpr") or 1)
+    return {"width": area_width, "height": area_height,
+            "deviceScaleFactor": round(min(8.0, max(0.1, ratio)), 4),
+            "screenWidth": area_width, "screenHeight": area_height}
+
+
+def apply_to_driver(driver, fingerprint, chrome_major=None, page_area=None,
+                    skip_metrics=False):
+    """Áp dấu vết lên driver hiện có. Trả về danh sách bước đã áp.
+
+    ``page_area`` là vùng trang thật của cửa sổ (CSS pixel, đã trừ viền/tab của
+    Chrome). Khi có, metrics được thu cho vừa đúng vùng đó để trang phủ kín khung
+    thay vì để trống một dải bên phải/dưới.
+
+    ``skip_metrics`` dùng cho lượt áp **trước khi điều hướng**: lúc đó chưa đo
+    được vùng trang thật, nên chỉ đặt user-agent (để site trả markup mobile) và
+    để lượt áp sau điều hướng đặt metrics đúng.
+    """
     if driver is None or not isinstance(fingerprint, dict) or not fingerprint.get("user_agent"):
         return []
     applied = []
@@ -197,15 +245,23 @@ def apply_to_driver(driver, fingerprint, chrome_major=None):
 
     screen = fingerprint.get("screen") or {}
     viewport = fingerprint.get("viewport") or screen
-    if viewport.get("width") and viewport.get("height"):
+    if skip_metrics:
+        metrics = None
+    else:
+        metrics = _fit_viewport_to_area(viewport, screen, page_area) if page_area else None
+        if metrics is None and viewport.get("width") and viewport.get("height"):
+            metrics = {
+                "width": int(viewport["width"]),
+                "height": int(viewport["height"]),
+                # Cap the ratio: 3.5 makes every glyph huge inside a desktop window.
+                "deviceScaleFactor": min(3.0, float(screen.get("dpr") or 1)),
+                "screenWidth": int(screen.get("width") or 0) or int(viewport["width"]),
+                "screenHeight": int(screen.get("height") or 0) or int(viewport["height"]),
+            }
+    if metrics is not None:
         attempt("metrics", "Emulation.setDeviceMetricsOverride", {
-            "width": int(viewport["width"]),
-            "height": int(viewport["height"]),
-            # Cap the ratio: 3.5 makes every glyph huge inside a desktop window.
-            "deviceScaleFactor": min(3.0, float(screen.get("dpr") or 1)),
+            **metrics,
             "mobile": bool(fingerprint.get("mobile_layout", True)),
-            "screenWidth": int(screen.get("width") or viewport["width"]),
-            "screenHeight": int(screen.get("height") or viewport["height"]),
             "screenOrientation": {"type": "portraitPrimary", "angle": 0},
         })
         attempt("touch", "Emulation.setTouchEmulationEnabled",
@@ -223,11 +279,12 @@ CHROME_UI_WIDTH = 16
 
 
 def mobile_window(fingerprint, preferred_width=430):
-    """Outer window size that makes a phone layout fill the whole frame.
+    """Outer window size for a portrait phone layout.
 
-    The emulated viewport must equal the page area, otherwise the right side of
-    the window stays blank. ``preferred_width`` keeps the window readable while
-    preserving the device aspect ratio.
+    Only used when a caller wants a phone-shaped *window*. The normal app path
+    keeps the user's configured window (900 × 1200 @ 60 %) and instead fits the
+    emulated viewport to the window's real page area — see
+    ``_fit_viewport_to_area``.
     """
     screen = (fingerprint or {}).get("screen") or {}
     width = float(screen.get("width") or 393)
