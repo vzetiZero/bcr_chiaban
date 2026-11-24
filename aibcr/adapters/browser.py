@@ -450,7 +450,14 @@ class BrowserSession:
                 if bool(self.driver.window_handles):
                     return True
             except Exception:
-                self.driver = None      # phiên WebDriver đã chết
+                # chromedriver ném lỗi tạm thời khi trang đang điều hướng hoặc
+                # driver đang bận; cổng CDP vẫn mở nghĩa là Chrome còn sống. Chỉ bỏ
+                # tham chiếu driver khi cổng đã đóng, nếu không một lần đọc state
+                # đúng lúc chuyển trang sẽ xoá mất phiên đang chạy (đo được: P2 mất
+                # driver ngay sau khi mở sảnh, rồi "dg.syncTable" báo profile chưa mở).
+                if self._port_open():
+                    return True
+                self.driver = None      # Chrome đã đóng thật
         return self._port_open()
 
     @staticmethod

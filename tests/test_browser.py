@@ -62,6 +62,38 @@ class ChromeLivenessTests(unittest.TestCase):
         with patch.object(BR.BrowserSession, "_probe_alive", return_value=False):
             self.assertFalse(session.connected)
 
+    def test_transient_driver_error_keeps_a_live_chrome(self):
+        """``window_handles`` throws while navigating; the port stays open.
+
+        Measured live: a state poll landing exactly during a page navigation
+        dropped the driver of profile 2, and ``dg.syncTable`` then reported
+        "Mở profile Chrome trước khi đồng bộ bàn DG." while Chrome was running.
+        """
+        session = self.session()
+
+        class BusyDriver:
+            @property
+            def window_handles(self):
+                raise RuntimeError("chrome not reachable (transient)")
+
+        session.driver = BusyDriver()
+        with patch.object(BR.BrowserSession, "_port_open", return_value=True):
+            self.assertTrue(session._probe_alive())
+        self.assertIsNotNone(session.driver, "không được xoá phiên khi Chrome còn sống")
+
+    def test_closed_port_still_drops_the_driver(self):
+        session = self.session()
+
+        class BusyDriver:
+            @property
+            def window_handles(self):
+                raise RuntimeError("chrome not reachable")
+
+        session.driver = BusyDriver()
+        with patch.object(BR.BrowserSession, "_port_open", return_value=False):
+            self.assertFalse(session._probe_alive())
+        self.assertIsNone(session.driver)
+
     def test_mark_closed_resets_everything(self):
         session = self.session()
         session.mark_closed()
