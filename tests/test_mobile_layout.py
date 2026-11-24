@@ -83,7 +83,9 @@ class GK881MobileTest(unittest.TestCase):
         self.assertIn(".category-item", GK._MOBILE_STATE_JS)
         source = inspect.getsource(GK._is_mobile_layout)
         self.assertIn("category-item", source)
-        self.assertIn("link truy cập", source)
+        # The hub signal must be the page *heading*, not any line of text: a
+        # footer mention turned ``hub`` on and misclassified a normal page.
+        self.assertIn("h1, h2, h3", source)
 
     def test_mobile_category_click(self):
         self.assertIn(".category-item", GK._MOBILE_CATEGORY_JS)
@@ -92,9 +94,16 @@ class GK881MobileTest(unittest.TestCase):
         for label in ("tôi biết rồi", "đóng"):
             self.assertIn(label, GK._MOBILE_CLOSE_JS)
 
-    def test_mirror_hub_is_reported_not_clicked(self):
+    def test_mirror_hub_warns_but_keeps_looking(self):
+        """A hub heading must not abort the run on its own.
+
+        Measured: the same URL and profile read "link truy cập" from the footer
+        before the category strip was drawn; aborting there threw away a run that
+        would have reached the lobby. The flow now warns and keeps trying.
+        """
         source = inspect.getsource(GK.open_dg)
-        self.assertIn("trang tổng hợp link", source)
+        self.assertIn("tổng hợp link", source)
+        self.assertIn("vẫn thử tiếp", source)
 
     def test_desktop_flow_is_untouched(self):
         # The old Angular selectors must still be present.

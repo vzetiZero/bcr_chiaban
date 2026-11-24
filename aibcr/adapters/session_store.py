@@ -37,6 +37,40 @@ def _safe_name(value):
     return cleaned.strip("-") or "session"
 
 
+def _read_cookies(driver):
+    """Đọc cookie của **mọi** tên miền trong profile, không chỉ tab đang mở.
+
+    ``driver.get_cookies()`` chỉ trả cookie thuộc origin hiện tại. Sau khi GK881
+    chuyển sang sảnh DG (``new-dd-cn…``) nó không còn thấy cookie ``gk881``, nên
+    bước lưu phiên cuối lượt chạy ghi ra ``cookies: 0`` — đo được trên đĩa: tệp
+    phiên của profile 1 chỉ còn 105 byte trong khi profile 2 có 10 cookie.
+    ``Network.getAllCookies`` (CDP) trả toàn bộ cookie của profile.
+    """
+    try:
+        result = driver.execute_cdp_cmd("Network.getAllCookies", {}) or {}
+        cookies = result.get("cookies")
+        if cookies:
+            out = []
+            for item in cookies:
+                if not item.get("name"):
+                    continue
+                expiry = item.get("expires")
+                try:
+                    # CDP trả -1 cho session cookie; Selenium chỉ nhận số dương.
+                    expiry = int(expiry) if expiry is not None and int(expiry) > 0 else None
+                except (TypeError, ValueError):
+                    expiry = None
+                out.append({"name": item.get("name"), "value": item.get("value"),
+                            "domain": item.get("domain"), "path": item.get("path"),
+                            "expiry": expiry, "secure": item.get("secure"),
+                            "httpOnly": item.get("httpOnly"),
+                            "sameSite": item.get("sameSite")})
+            return out
+    except Exception:
+        pass
+    return driver.get_cookies() or []
+
+
 def save(driver, profile_dir, name="session", domains=None):
     """Ghi cookie + localStorage hiện tại của ``driver`` xuống đĩa.
 
@@ -47,9 +81,10 @@ def save(driver, profile_dir, name="session", domains=None):
     if driver is None:
         return {"ok": False, "error": "Chưa mở Chrome nên không lưu được phiên."}
     try:
-        cookies = driver.get_cookies() or []
+        cookies = _read_cookies(driver)
     except Exception:
         return {"ok": False, "error": "Không đọc được cookie của phiên."}
+    seen = len(cookies)
     if domains:
         wanted = tuple(str(item).lower() for item in domains)
         cookies = [c for c in cookies
@@ -67,8 +102,19 @@ def save(driver, profile_dir, name="session", domains=None):
     except Exception:
         local = {}
 
+    # Không bao giờ thay một phiên thật bằng bản rỗng. Sau khi sảnh DG mở, tab
+    # đã sang tên miền nhà cung cấp (``new-dd-cn…``) nên bộ lọc ``gk881`` không
+    # khớp cookie nào và localStorage là của trang khác. Đo được: profile 1 lưu
+    # 7 cookie, chạy xong một lượt thành công thì tệp còn ``cookies: 0`` — tức
+    # là lần sau mất phiên vì chính lần lưu "thành công".
+    previous = load(profile_dir, name) or {}
+    if not cookies and previous.get("cookies"):
+        cookies = list(previous.get("cookies") or [])
+    merged_local = dict(previous.get("local") or {})
+    merged_local.update(local)
+
     payload = {"format": "bcr-session-v1", "saved_at": time.time(),
-               "cookies": cookies, "local": local}
+               "cookies": cookies, "local": merged_local}
     path = session_path(profile_dir, name)
     try:
         parent = os.path.dirname(path)
@@ -80,7 +126,8 @@ def save(driver, profile_dir, name="session", domains=None):
         os.replace(tmp, path)
     except OSError:
         return {"ok": False, "error": "Không ghi được tệp phiên."}
-    return {"ok": True, "cookies": len(cookies), "local": len(local), "path": path}
+    return {"ok": True, "cookies": len(cookies), "local": len(merged_local),
+            "path": path, "seen": seen}
 
 
 def _read_local_storage(driver):

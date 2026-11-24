@@ -140,6 +140,69 @@ class SessionStoreTest(unittest.TestCase):
         path = SS.session_path(self.dir, "gk881")
         self.assertTrue(os.path.abspath(path).startswith(os.path.abspath(self.dir)))
 
+    def test_save_never_overwrites_a_real_session_with_an_empty_one(self):
+        """Saving after the run must not wipe the cookies it just used.
+
+        Measured: profile 1 saved 7 cookies, then one successful run ended on the
+        provider domain (``new-dd-cn…``); the ``gk881`` filter matched nothing and
+        ``save()`` replaced the good file with ``cookies: 0`` — losing the session
+        because of the very step meant to protect it.
+        """
+        good = FakeCookieDriver(cookies=[
+            {"name": "sess", "value": "v", "domain": ".gk881.vip"}],
+            local={"token": "x"}, url="https://m.gk881.vip/")
+        SS.save(good, self.dir, "gk881", domains=["gk881"])
+        self.assertEqual(SS.load(self.dir, "gk881")["cookies"][0]["name"], "sess")
+
+        # Now the tab is on the provider domain: no cookie matches "gk881".
+        late = FakeCookieDriver(cookies=[
+            {"name": "other", "value": "y", "domain": ".new-dd-cn.example.com"}],
+            local={"other_key": "z"},
+            url="https://new-dd-cn.example.com/ddnewwap/index.html")
+        saved = SS.save(late, self.dir, "gk881", domains=["gk881"])
+        self.assertTrue(saved["ok"])
+        kept = SS.load(self.dir, "gk881")
+        self.assertEqual([c["name"] for c in kept["cookies"]], ["sess"])
+        self.assertEqual(kept["local"].get("token"), "x")
+        self.assertEqual(kept["local"].get("other_key"), "z")
+
+    def test_read_cookies_uses_cdp_for_every_domain(self):
+        """``get_cookies`` is per-origin; CDP is not.
+
+        After the DG lobby opens the tab is on the provider domain, so the
+        per-origin call returns nothing for ``gk881``. Saving then wrote an empty
+        session — the measured bug behind "phải đăng nhập lại".
+        """
+
+        class DomainDriver(FakeCookieDriver):
+            def get_cookies(self):
+                return [{"name": "other", "value": "y", "domain": ".new-dd-cn.example.com"}]
+
+            def execute_cdp_cmd(self, command, params):
+                self.cdp = command
+                return {"cookies": [
+                    {"name": "sess", "value": "v", "domain": ".gk881.vip",
+                     "path": "/", "expires": 1830055400, "secure": True,
+                     "httpOnly": True, "sameSite": "Lax"},
+                    {"name": "sid", "value": "w", "domain": "m.gk881.vip",
+                     "path": "/", "expires": -1},
+                ]}
+
+        cookies = SS._read_cookies(DomainDriver())
+        self.assertEqual([c["name"] for c in cookies], ["sess", "sid"])
+        # -1 means a session cookie in CDP; Selenium rejects it, so it is dropped.
+        self.assertIsNone(cookies[1]["expiry"])
+        self.assertEqual(cookies[0]["expiry"], 1830055400)
+
+    def test_read_cookies_falls_back_when_cdp_is_unavailable(self):
+        class NoCdp(FakeCookieDriver):
+            def execute_cdp_cmd(self, command, params):
+                raise RuntimeError("no cdp")
+
+        driver = NoCdp(cookies=[
+            {"name": "sess", "value": "v", "domain": ".gk881.vip"}])
+        self.assertEqual([c["name"] for c in SS._read_cookies(driver)], ["sess"])
+
     def test_clear_removes_the_file(self):
         SS.save(FakeCookieDriver(cookies=[
             {"name": "a", "value": "b", "domain": ".gk881.vip"}]), self.dir, "gk881")

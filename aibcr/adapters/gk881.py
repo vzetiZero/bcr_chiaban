@@ -218,8 +218,19 @@ const vis = (node) => {
   } catch (error) { return false; }
 };
 const norm = (value) => String(value || '').replace(/\s+/g, ' ').trim().toLowerCase();
+// "Trang tong hop link" phai la TIEU DE cua trang, khong phai mot cau bat ky.
+// Do duoc: profile 2 doc dung m.gk881.vip/ nhung luc DOM chua dung thanh danh muc,
+// chuoi "link truy cap" nam trong footer lam isHub=true va ca luot chay bi bo oan.
+const hubHeading = [...document.querySelectorAll('h1, h2, h3, .title, .page-title')]
+  .filter(vis)
+  .filter((node) => {
+    const text = norm(node.textContent);
+    return text.length > 0 && text.length < 60;
+  })
+  .some((node) => /link\s*truy\s*c\u1eadp|link\s*v\u00e0o|danh\s*s\u00e1ch\s*link/i
+    .test(norm(node.textContent)));
 return {
-  isHub: /link truy cập/i.test(document.body.innerText || ''),
+  isHub: hubHeading,
   categories: [...document.querySelectorAll('.category-item')]
     .filter(vis).map((node) => norm(node.textContent)).slice(0, 20),
   providers: [...document.querySelectorAll('[class*=provider],[class*=vendor],[class*=game-item]')]
@@ -247,7 +258,14 @@ def _is_mobile_layout(driver):
             touch,
             ng: document.querySelectorAll('li[ng-click*="entrance"]').length,
             categories: document.querySelectorAll('.category-item').length,
-            hub: /link truy cập/i.test(document.body.innerText || ''),
+            hub: [...document.querySelectorAll('h1, h2, h3, .title, .page-title')]
+              .some((node) => {
+                const text = String(node.textContent || '').replace(/\s+/g, ' ')
+                  .trim().toLowerCase();
+                return text.length > 0 && text.length < 60
+                  && /link\s*truy\s*c\u1eadp|link\s*v\u00e0o|danh\s*s\u00e1ch\s*link/
+                    .test(text);
+              }),
           };
         """) or {}
     except Exception:
@@ -662,9 +680,11 @@ def open_dg(driver, wait=120.0, log=None):
             clear_mobile_layers()
             state = driver.execute_script(_MOBILE_STATE_JS) or {}
             if state.get("isHub") and not state.get("categories"):
-                report("Trang hiện tại là trang tổng hợp link, không có menu Casino.", "error")
-                return {"ok": False, "site_id": "gk881",
-                        "error": "GK881 mobile đang ở trang tổng hợp link; hãy mở link casino chính thức rồi chạy lại."}
+                # Chỉ cảnh báo rồi vẫn thử tiếp: trang có thể còn đang dựng thanh
+                # danh mục (đo được: cùng một URL, cùng profile, lần đọc sớm thấy
+                # "link truy cập" trong footer nên bị bỏ oan cả lượt chạy).
+                report("Trang có tiêu đề tổng hợp link nhưng chưa thấy menu Casino; "
+                       "vẫn thử tiếp.", "warning")
             # A signed-out profile is parked on the login form before it can even
             # show the category strip. The gate below runs inside every polling
             # loop instead of blocking one, so a redirect that resolves by itself

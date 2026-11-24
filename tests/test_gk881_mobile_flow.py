@@ -32,7 +32,8 @@ from aibcr.adapters import gk881 as GK
 class MobileSiteDriver:
     """Minimal driver for the mobile flow: dialogs close only when tapped."""
 
-    def __init__(self, dialogs=2, categories=None, card_after=1, login_after=None):
+    def __init__(self, dialogs=2, categories=None, card_after=1, login_after=None,
+                 is_hub=False):
         self.handle = "site"
         self.window_handles = ["site"]
         self.current_url = "https://m.gk881.vip/"
@@ -43,6 +44,7 @@ class MobileSiteDriver:
             "hot nhất", "casino", "nổ hũ", "bắn cá", "thể thao"]
         self.card_after = card_after
         self.login_after = login_after
+        self.is_hub = is_hub
         self.card_taps = 0
         self.close_calls = 0
         self.close_before_tap = []
@@ -62,7 +64,7 @@ class MobileSiteDriver:
         if "cdk-overlay-backdrop" in script and "tôi biết rồi" in script:
             return self._close_layers()
         if "isHub" in script:
-            return {"isHub": False, "categories": self.categories,
+            return {"isHub": self.is_hub, "categories": self.categories,
                     "providers": [], "dgText": True}
         # ``_login_page_state`` (wait-for-operator) asks for the same route/password
         # facts but with its own field names; ``_is_login_wall`` keeps the old one.
@@ -299,6 +301,21 @@ class MobileFlowTest(unittest.TestCase):
         self.assertTrue(driver.close_before_tap)
         # The backdrop was gone before the successful card tap.
         self.assertGreaterEqual(driver.close_before_tap[-1], 3)
+
+    def test_link_hub_warning_does_not_abort_the_run(self):
+        """A footer line mentioning "link truy cập" must not kill the whole run.
+
+        Measured live: profile 2 read the correct ``m.gk881.vip/`` but the DOM
+        had not drawn the category strip yet; the phrase "link truy cập" sat in
+        the footer, ``isHub`` became true and the run was dropped with "trang
+        tổng hợp link" while the page was fine.
+        """
+        driver = MobileSiteDriver(dialogs=0, card_after=0, is_hub=True)
+        GK.DG.lobby_tables = self._lobby_after(1)
+        result = GK.open_dg(driver, wait=60)
+        self.assertTrue(result["ok"], result.get("error"))
+        self.assertEqual(result["layout"], "mobile")
+        self.assertEqual(driver.card_taps, 1)
 
     def test_login_wall_waits_for_the_operator_then_continues(self):
         """A login form must be waited on, not turned into a hard failure."""
