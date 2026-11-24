@@ -23,16 +23,15 @@ node tests/test_reader.cjs
 
 ## Bí mật — tuyệt đối không commit
 
-- Link bàn có `token=`, JWT, cookie, API key AI: không dán vào mã, README, test.
+- Link bàn có `token=`, JWT, cookie, API key: không dán vào mã, README, test.
 - Đã nằm trong `.gitignore`: `chrome_profile*/`, `aibcr_state*.json`,
   `aibcr_ws_frames*`, `drivers/`, `live_reports.jsonl`, `aibcr_trace.jsonl`.
-- Key AI đọc từ biến môi trường `BCR_AI_KEY` (không ghi vào file).
 
 ## Kiến trúc
 
 - `aibcr/` backend MVC: `models/` thuần logic, `adapters/` CDP/Selenium,
   `controllers/` điều phối, `service/` transport JSON-RPC.
-- `aibcr/live/` bộ đọc WebSocket riêng cho site Petalive BCR
-  (`cards.py`, `decode.py`, `reader.py`, `predict.py`, `ai.py`).
+- Phạm vi chỉ là **đặt cược DG (Laya)**: mở site → vào sảnh → vào bàn dùng chung →
+  xếp chip → xác nhận. Không đọc kết quả, không dự đoán, không sổ lãi/lỗ.
 - `ui/` Electron; renderer chỉ gọi qua `preload.js`.
 - `tools/` script chạy tay. `tests/` unittest + node.

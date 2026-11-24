@@ -211,7 +211,7 @@ class LobbyAbsorbTests(unittest.TestCase):
 class WMPageDetectionTests(unittest.TestCase):
     def test_table_tab_is_found_after_lobby_tab(self):
         from unittest.mock import patch
-        from aibcr.live import wm_reader
+        from aibcr.adapters import wm_pages
 
         class FakeSocket:
             def __init__(self, kind):
@@ -233,9 +233,9 @@ class WMPageDetectionTests(unittest.TestCase):
         ]
         sockets = {"ws://lobby": FakeSocket("lobby"),
                    "ws://table": FakeSocket("table")}
-        with patch.object(wm_reader, "list_pages", return_value=pages), \
+        with patch.object(wm_pages, "list_pages", return_value=pages), \
                 patch("websocket.create_connection", side_effect=lambda endpoint, **_kw: sockets[endpoint]):
-            page, detect = wm_reader.find_wm_page(9222)
+            page, detect = wm_pages.find_wm_page(9222)
 
         self.assertEqual(page["url"], "https://wm.example/table")
         self.assertEqual(detect["kind"], "table")

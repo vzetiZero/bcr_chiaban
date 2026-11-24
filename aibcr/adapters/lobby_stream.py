@@ -17,6 +17,7 @@ from aibcr.adapters import browser as BR
 from aibcr.adapters import human_mouse as HM
 from aibcr.adapters import table_bets as TB
 from aibcr.adapters import wm as WM
+from aibcr.adapters.dg_pages import find_dg_page, table_id_from_url
 
 HISTORY_TYPES = ("lobby.histories", "lobby.historyUpdated")
 SIDE_BY_COLOR = {"R": "B", "B": "P"}
@@ -557,6 +558,8 @@ class LobbyStream:
         self.favorite_mode = ""
         # "evo" hoặc "petalive"; đặt lại mỗi lần _lobby_context đọc được danh sách bàn.
         self.lobby_kind = ""
+        # Bàn DG đang mở, đọc từ URL tab ('' = đang ở sảnh DG).
+        self.dg_table_id = ""
 
     def _reset(self):
         self.contexts, self.histories, self._seq = [], {}, 0
@@ -923,6 +926,61 @@ class LobbyStream:
         self.note = "Quét %d bước cuộn · %d bàn Petalive · cầu đọc từ ô bàn." % (steps, len(rows))
         return rows
 
+    def _sweep_dg(self):
+        """Quét sảnh DG (Laya) lấy danh sách bàn thật (``60101``…).
+
+        Sảnh DG không có ô bàn DOM/iframe: toàn bộ lưới bàn do Laya vẽ trên canvas,
+        nên các nhánh cuộn-DOM/WebSocket của EVO, Petalive và WM đều không thấy gì.
+        Danh sách bàn đọc bằng chính adapter DG (bóc cây Laya), và sảnh DG **không**
+        gửi lịch sử cầu đầy đủ trong sảnh nên ``letters`` để rỗng thay vì bịa.
+        """
+        # DG không có khái niệm "bàn Ưa thích" trong sảnh Laya.
+        if favorites_only:
+            self.favorite_mode = "unsupported"
+        driver = getattr(self.session, "driver", None)
+        if driver is None:
+            self.last_error = ("Chưa gắn Chrome nên chưa đọc được sảnh DG; "
+                               "bấm “Mở Chrome” rồi thử lại.")
+            return []
+        try:
+            from aibcr.adapters import febet as FEBET
+
+            data = FEBET.lobby_tables(driver, wait=12.0)
+        except Exception as exc:
+            self.last_error = "Không quét được sảnh DG (%s)." % type(exc).__name__
+            return []
+        if not data.get("ok"):
+            self.last_error = data.get("error") or "Chưa đọc được danh sách bàn DG."
+            return []
+        now = time.time()
+        rows = []
+        for row in data.get("tables") or []:
+            table_id = str(row.get("table_id") or "").strip()
+            if not table_id:
+                continue
+            rows.append({
+                "table_id": table_id,
+                "label": str(row.get("name") or ("Bàn " + table_id)).strip(),
+                "letters": "",
+                "game_type": "baccarat",
+                # Cầu chỉ có từ bộ đọc khung của bàn đang mở; sảnh không có lịch sử.
+                "read_error": "",
+                "source": "dg-laya-lobby",
+                "ws_hands": 0,
+                "road_match": False,
+                "observed_at": now,
+                "messages": 0,
+                "favorite": False,
+            })
+        rows.sort(key=lambda r: r["label"].casefold())
+        self.diag = {"lobby": "dg", "tables": len(rows),
+                     "in_table": bool(data.get("in_table")),
+                     "favorites_only": bool(favorites_only),
+                     "favorite_mode": self.favorite_mode}
+        self.note = ("Sảnh DG · %d bàn thật. Cầu của bàn đang mở do bộ đọc khung đọc."
+                     % len(rows))
+        return rows
+
     def _sweep_wm(self, ws, context_id, snapshot, max_seconds, favorites_only):
         """Quét sảnh WM: ô bàn đọc từ DOM, cầu/lá bài đọc từ protocol 26.
 
@@ -1026,6 +1084,14 @@ class LobbyStream:
         self._reset()
         self.note = ""
         ws = None
+        # DG: sảnh Laya không có ô bàn DOM/iframe như EVO/Petalive/WM nên phải đọc
+        # danh sách bàn bằng chính adapter DG (bóc từ cây Laya).
+        try:
+            dg_page = find_dg_page(getattr(BR, "CDP_PORT", 9222))
+        except Exception:
+            dg_page = None
+        if dg_page is not None:
+            return self._sweep_dg()
         try:
             self._ensure_wm_page()
             page = self.session._cdp_page()
@@ -1227,6 +1293,23 @@ class LobbyStream:
             return False, "Mã bàn không hợp lệ."
         ws = None
         self._reset()
+        # DG: lưới bàn do Laya vẽ nên không có ô bàn DOM để bấm; adapter DG đổi bàn
+        # bằng chính đường của game (loader/tableId) rồi chờ màn cược xác nhận.
+        try:
+            dg_page = find_dg_page(getattr(BR, "CDP_PORT", 9222))
+        except Exception:
+            dg_page = None
+        if dg_page is not None and getattr(self.session, "driver", None) is not None:
+            from aibcr.adapters import febet as FEBET
+
+            reply = FEBET.sync_table(self.session.driver, table_id, wait=20.0,
+                                     settle=max(30.0, float(wait_seconds) * 4))
+            if reply.get("ok") and reply.get("in_table"):
+                self.lobby_kind = "dg"
+                self.dg_table_id = table_id
+                self.note = "Đã vào bàn DG %s." % table_id
+                return True, "Đã mở bàn %s trong sảnh DG." % table_id
+            return False, reply.get("error") or ("Chưa mở được bàn DG %s." % table_id)
         try:
             self._ensure_wm_page()
             page = self.session._cdp_page()
@@ -1447,6 +1530,24 @@ class LobbyStream:
         tới đó là EVO trả "User authentication failed (EV.7)".
         """
         import websocket
+
+        # DG: tab Laya không có nút X/không dùng hash như EVO — rời bàn bằng cách bỏ
+        # ``tableId`` trên URL của chính tab (giữ token phiên trong tab, không log).
+        try:
+            dg_page = find_dg_page(getattr(BR, "CDP_PORT", 9222))
+        except Exception:
+            dg_page = None
+        if dg_page is not None and getattr(self.session, "driver", None) is not None:
+            from aibcr.adapters import febet as FEBET
+
+            reply = FEBET.leave_table(self.session.driver,
+                                     wait=max(8.0, float(wait_seconds) * 0.6))
+            if reply.get("ok"):
+                self.lobby_kind = "dg"
+                self.dg_table_id = ""
+                self.note = "Đã về sảnh DG."
+                return True, "Đã rời bàn · lưới bàn DG hiển thị trở lại."
+            return False, reply.get("error") or "Chưa về được sảnh DG."
 
         ws = None
         try:
@@ -1692,6 +1793,21 @@ class LobbyStream:
             return False, "Không đọc được danh sách tab Chrome CDP 9222 (%s)." % type(exc).__name__
         lobbies = [page for page in pages if (BR.is_lobby_url(page.get("url"))
                                               or BR.is_petalive_table_url(page.get("url")))]
+        # Sảnh DG (Laya) chạy trong tab ddnewpc/ddnewwap: Laya dựng cả sảnh lẫn bàn
+        # trên canvas, không có iframe/ô bàn DOM nên các nhánh quét ở dưới không thấy.
+        # Nhận tab DG trước để "mở site → vào sảnh" đi đúng đường DG.
+        try:
+            dg_page = find_dg_page(getattr(BR, "CDP_PORT", 9222))
+        except Exception:
+            dg_page = None
+        if dg_page is not None:
+            self.lobby_kind = "dg"
+            self.dg_table_id = table_id_from_url(dg_page.get("url") or "")
+            self.note = "Đã nhận tab sảnh DG."
+            if self.dg_table_id:
+                return True, ("Đã nhận tab sảnh DG · đang ở bàn %s; bấm “Quay lại sảnh” "
+                              "nếu muốn quét lại danh sách." % self.dg_table_id)
+            return True, "Đã nhận tab sảnh DG · %s" % BR._safe_url(dg_page.get("url"))
         # Sảnh WM (M88) chạy trong iframe của một tab có URL bất kỳ: dò cấu trúc
         # iframe_109/iframe_101 trước, vì đây là sảnh người dùng đang dùng.
         for page in reversed(pages):

@@ -780,38 +780,26 @@ function stopGroupBetting(note, error = true) {
   groupStatus(note, error);
 }
 
-function normalizedWinner(states) {
-  const winners = states.map((state) => state.winner);
-  return winners.length && winners[0] && winners.every((winner) => winner === winners[0])
-    ? winners[0] : '';
-}
-
-async function settleGroupRound(states, placed) {
-  if (!placed || placed.settled) return false;
-  const winner = normalizedWinner(states);
-  if (!winner) return false;
-  const updates = await Promise.allSettled(placed.indices.map((index, offset) => {
-    const outcome = winner === 'T' ? 'PUSH' : winner === placed.sides[offset] ? 'WIN' : 'LOSS';
-    return profileEngine(index).call('bet.ladder.result', { outcome }, 30000);
-  }));
-  if (updates.some((entry) => entry.status !== 'fulfilled' || !entry.value?.ok)) {
-    stopGroupBetting('Kết quả ván đã đọc được nhưng chưa cập nhật được mọi dãy cược; đã dừng nhóm.', true);
-    return false;
-  }
-  placed.settled = true;
+// Đếm một ván ĐÃ ĐẶT khi bàn đã sang mã ván kế.
+//
+// Không đọc kết quả thắng/thua và không đổi mức cược: ván chỉ cần được xếp chip
+// xong là tính một vòng, rồi nhóm xoay bàn theo lịch đã cấu hình.
+async function countPlacedRound(placed) {
+  if (!placed || placed.counted) return false;
+  placed.counted = true;
   groupBetting.totalWagered += placed.stakes.reduce((sum, stake) => sum + stake, 0);
   if (sharedHop?.active) {
     sharedHop.rounds += 1;
     const threshold = sharedHop.schedule[sharedHop.hops % sharedHop.schedule.length];
-    groupStatus(`Đã xác nhận kết quả ván ${sharedHop.rounds}/${threshold}; tổng cược ${groupBetting.totalWagered}k.`);
+    groupStatus(`Đã đặt xong ván ${placed.roundId} · ${sharedHop.rounds}/${threshold} ván · tổng cược ${groupBetting.totalWagered}k.`);
     if (sharedHop.config.total_bet > 0 && !sharedHop.targetNotified
         && groupBetting.totalWagered >= sharedHop.config.total_bet) {
       sharedHop.targetNotified = true;
-      groupStatus(`Đã đạt mục tiêu tổng cược ${groupBetting.totalWagered}/${sharedHop.config.total_bet}k.`);
+      groupStatus(`Đã đạt mốc tổng cược ${groupBetting.totalWagered}/${sharedHop.config.total_bet}k.`);
     }
     if (sharedHop.rounds >= threshold) await rotateSharedProfiles();
   } else {
-    groupStatus(`Đã quyết toán ván ${placed.roundId}; kết quả ${winner}.`);
+    groupStatus(`Đã đặt xong ván ${placed.roundId}.`);
   }
   return true;
 }
@@ -848,7 +836,7 @@ async function groupBettingTick() {
     }
     groupBetting.skippedRound = '';
     if (groupBetting.lastPlaced && groupBetting.lastPlaced.roundId !== roundId
-        && !groupBetting.lastPlaced.settled) {
+        && !groupBetting.lastPlaced.counted) {
       const prior = groupBetting.lastPlaced;
       const confirmFlags = states.map((state, offset) =>
         Number(state.confirmed?.[prior.sides[offset]] || 0) >= prior.stakes[offset]);
@@ -859,11 +847,7 @@ async function groupBettingTick() {
         return;
       }
       prior.partialSince = 0;
-      const settled = await settleGroupRound(states, prior);
-      if (!settled) {
-        stopGroupBetting('Không xác nhận được kết quả ván trước từ Laya; đã dừng để không đoán bước dãy cược.', true);
-        return;
-      }
+      await countPlacedRound(prior);
       if (!groupBetting.active || sharedHop?.busy
           || groupBetting.tableId !== String(states[0].table_id)) return;
     }
@@ -879,9 +863,6 @@ async function groupBettingTick() {
       }
       placed.partialSince = 0;
       placed.confirmed = confirmationFlags.every(Boolean);
-      if (!states.some((state) => state.bet_open) && !placed.settled) {
-        await settleGroupRound(states, placed);
-      }
       return;
     }
     if (!states.every((state) => state.bet_open)) {
@@ -905,7 +886,7 @@ async function groupBettingTick() {
       const diagnostics = states.map((state, offset) => {
         const index = groupBetting.indices[offset];
         if (!state?.ok) return `P${index}: không đọc được trạng thái chip (${state?.error || 'chưa sẵn sàng'})`;
-        return `P${index}: scale=${state.scale ?? '?'}, floor_src=${state.floor_source || '?'}, raw_min=${state.raw_min ?? '?'}, screen_min=${state.screen_floor ?? '?'}, table_min=${state.min_k ?? '?'}k, table_max=${state.max_k || '?'}k, balance=${state.balance_k ?? '?'}k, chips=[${(state.denominations_k || []).join(',')}]`;
+        return `P${index}: scale=${state.scale ?? '?'}, floor_src=${state.floor_source || '?'}, raw_min=${state.raw_min ?? '?'}, screen_min=${state.screen_floor ?? '?'}, table_min=${state.min_k ?? '?'}k, table_max=${state.max_k || '?'}k, balance=${state.balance_known ? `${state.balance_k ?? '?'}k` : 'chưa đọc được'}, chips=[${(state.denominations_k || []).join(',')}]`;
       }).join(' · ');
       appendActivityLog({ source: 'kiểm tra chip', level: 'error',
         text: `Không tìm thấy mức chung không vượt ${targetStake}k. ${diagnostics}` });
@@ -933,7 +914,7 @@ async function groupBettingTick() {
       return;
     }
     groupBetting.lastPlaced = { roundId, indices: [...groupBetting.indices], sides, stakes,
-      confirmed: replies.every((reply) => reply.confirmed === true), settled: false };
+      confirmed: replies.every((reply) => reply.confirmed === true), counted: false };
     groupStatus(replies.every((reply) => reply.confirmed)
       ? `Đã xếp và xác nhận chip cho ${replies.length} profile ở ván ${roundId}.`
       : `Đã xếp chip cho ${replies.length} profile ở ván ${roundId}; chờ xác nhận trên từng bàn.`);

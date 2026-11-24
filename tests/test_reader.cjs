@@ -53,6 +53,20 @@ test('returns no common stake when chip values cannot reach the table minimum', 
   ]), 0);
 });
 
+test('ignores an unread balance so the table limits decide the stake', () => {
+  // Đo trên bàn 60101: ``playerInfo.balance`` trả 0 dù bàn có tiền; nếu lấy 0 làm
+  // trần thì mức cược bị kéo về 1k và không bao giờ khớp dãy đã cấu hình.
+  assert.equal(commonReachableStake(260, [
+    {denominations_k: [100, 50], balance_k: 0, balance_known: false},
+    {denominations_k: [100, 50], balance_k: 0, balance_known: false}
+  ]), 250);
+  // Đọc được số dư thật thì vẫn tôn trọng số dư đó.
+  assert.equal(commonReachableStake(260, [
+    {denominations_k: [100, 50], balance_k: 100, balance_known: true},
+    {denominations_k: [100, 50], balance_k: 100, balance_known: true}
+  ]), 100);
+});
+
 test('uses result array order, red=Banker, blue=Player, includes ties', () => {
   const result = scan([canvas(history)]);
   assert.equal(result.tables[0].letters, 'BPTTB');

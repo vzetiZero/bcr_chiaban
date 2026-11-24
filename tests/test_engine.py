@@ -12,7 +12,6 @@ Không cần Chrome: bàn/Chrome được thay bằng đối tượng giả. M�
 
 import json
 import pathlib
-import threading
 import tempfile
 import time
 import unittest
@@ -71,14 +70,16 @@ class DispatchTests(unittest.TestCase):
         self.assertEqual(service.config["hop_rounds"], [3, 4, 2])
         self.assertEqual(service.config["hop_max"], 2)
 
-    def test_verified_bet_result_advances_the_configured_ladder(self):
+    def test_configured_ladder_keeps_the_first_stake(self):
+        """Chỉ đặt cược: không có lệnh nào đổi mức theo thắng/thua."""
         service = make_service()
         service.bet_ladder_config_set({"stakes": "10 20 30", "min_t": 1,
                                        "max_t": 100, "side": "P"})
-        self.assertEqual(service.bet_ladder_result({"outcome": "LOSS"})["stake"], 20)
-        self.assertEqual(service.bet_ladder_result({"outcome": "PUSH"})["stake"], 20)
-        self.assertEqual(service.bet_ladder_result({"outcome": "WIN"})["stake"], 10)
-        self.assertFalse(service.bet_ladder_result({"outcome": "UNKNOWN"})["ok"])
+        self.assertEqual(service.bet_ladder.step, 0)
+        self.assertEqual(service.bet_ladder.current_stake, 10)
+        result, error = service.dispatch("bet.ladder.result", {"outcome": "LOSS"})
+        self.assertIsNone(result)
+        self.assertIn("không hỗ trợ", error)
 
     def test_ping_and_state_are_answered(self):
         service = make_service()
@@ -141,7 +142,7 @@ class DispatchTests(unittest.TestCase):
         self.assertTrue(reply["ok"])
         self.assertEqual(methods, ["cancel"])
 
-    def test_dispatch_exposes_bet_and_key_commands_without_leaking_the_key(self):
+    def test_dispatch_exposes_bet_config(self):
         service = make_service()
         reply, error = engine.dispatch(service, "bet.config", {"side": "B", "stake": 180})
         self.assertIsNone(error)
@@ -149,9 +150,8 @@ class DispatchTests(unittest.TestCase):
         self.assertEqual(service.bet_config, {"side": "B", "stake": 180.0})
 
         reply, error = engine.dispatch(service, "ai.key.set", {"key": "dummy-ram-only"})
-        self.assertIsNone(error)
-        self.assertTrue(reply["ok"], reply)
-        self.assertTrue(reply["has_key"])
+        self.assertIsNone(reply)
+        self.assertIn("không hỗ trợ", error)
 
         snapshot, error = engine.dispatch(service, "state", {})
         self.assertIsNone(error)
@@ -271,39 +271,15 @@ class BaccaratEnterValidTests(unittest.TestCase):
     def service(self, letters=None, config=None):
         return make_service(config=config, letters=letters or self.VALID, source="evo-bead")
 
-    def test_live_reader_switches_to_wm_when_chrome_navigates_there(self):
-        from unittest.mock import patch
+    def test_live_reader_helpers_are_gone_with_the_prediction_stack(self):
         from aibcr.controllers import baccarat as BC
 
         service = self.service()
-
-        class FakeReader:
-            def __init__(self):
-                self.started = False
-                self.alive = True
-
-            def is_alive(self):
-                return self.alive
-
-            def start(self):
-                self.started = True
-
-            def join(self, timeout=None):
-                self.alive = False
-
-        old_reader, new_reader = FakeReader(), FakeReader()
-        old_stop = threading.Event()
-        service.live_session = object()
-        service.live_reader = old_reader
-        service.live_stop_event = old_stop
-        service.live_reader_probe_at = 0
-        service._make_live_reader = lambda _session, wm_detected=None: new_reader
-        with patch.object(BC, "find_wm_page", return_value=({"id": "wm"}, {"kind": "table"})):
-            service._refresh_live_reader_kind()
-
-        self.assertTrue(old_stop.is_set())
-        self.assertIs(service.live_reader, new_reader)
-        self.assertTrue(new_reader.started)
+        for name in ("_make_live_reader", "_refresh_live_reader_kind", "live_start",
+                     "live_stop", "ai_check"):
+            self.assertFalse(hasattr(service, name), name)
+        self.assertFalse(hasattr(BC, "find_wm_page"))
+        self.assertTrue(hasattr(BC, "find_dg_page"))
 
     def prime(self, service, letters=None):
         """Giả lập: đã bấm ô bàn và cầu trong bàn đã xác nhận cùng shoe."""
@@ -524,10 +500,9 @@ class BaccaratNoFilterTests(unittest.TestCase):
 
     def test_new_session_keeps_the_bet_order(self):
         service = self.service(self.LEAD4)
-        self.assertTrue(service.session_new({"capital": 2500, "bet_side": "T",
-                                             "bet_stake": 75})["ok"])
+        self.assertTrue(service.session_new({"bet_side": "T", "bet_stake": 75})["ok"])
         self.assertEqual(service.bet_config, {"side": "T", "stake": 75.0})
-        self.assertEqual(service.sim.money.unit, 75.0)
+        self.assertEqual(service.sim.unit, 75.0)
 
 
 class ChromeClosedRecoveryTests(unittest.TestCase):

@@ -49,7 +49,7 @@ def parse_hop_rounds(value, fallback=(2,)):
 
 
 class BetLadder:
-    """Win resets, loss advances one step, and a push keeps the current step."""
+    """Dãy cược cố định: chỉ chọn mức đang dùng, không tiến/lùi theo kết quả ván."""
 
     def __init__(self, stakes=DEFAULT_STAKES, min_stake=20, max_stake=10000, step=0):
         self.configure(stakes, min_stake, max_stake, step=step)
@@ -65,13 +65,3 @@ class BetLadder:
     def current_stake(self):
         value = self.stakes[self.step]
         return min(self.max_stake, max(self.min_stake, value))
-
-    def on_result(self, result):
-        outcome = str(result or "").strip().upper()
-        if outcome in ("WIN", "WON"):
-            self.step = 0
-        elif outcome in ("LOSE", "LOSS", "LOST"):
-            self.step = min(self.step + 1, len(self.stakes) - 1)
-        elif outcome not in ("TIE", "PUSH", "SKIP", ""):
-            return self.current_stake
-        return self.current_stake

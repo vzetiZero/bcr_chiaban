@@ -71,10 +71,9 @@ def card_label(card_id):
 
 
 def canonical_card(card_id):
-    """Đổi id WM sang id 1..52 kiểu Petalive (rank-major) để dùng chung bộ bài.
+    """Đổi id WM sang id 1..52 rank-major (id = (rank - 1) * 4 + chất + 1).
 
-    ``aibcr.live.cards`` xếp id = (rank - 1) * 4 + chất + 1, nên giữ nguyên rank và
-    chất là đủ; nhờ vậy shoe/predict của AI đọc đúng điểm và đếm bài còn lại.
+    Giữ nguyên rank và chất là đủ để mọi nơi đọc cùng một chuẩn id lá bài.
     """
     return (card_rank(card_id) - 1) * 4 + (card_suit(card_id) % 4) + 1
 

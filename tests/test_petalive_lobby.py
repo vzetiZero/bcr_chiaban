@@ -45,24 +45,6 @@ class PetaliveUrlTests(unittest.TestCase):
         self.assertEqual(LS.lobby_list_url(EVO).split("#")[0], EVO.split("#")[0])
 
 
-class LiveReaderTabTests(unittest.TestCase):
-    def test_reader_skips_lobby_and_prefers_table_tab(self):
-        from aibcr.live import reader as LR
-        pages = [
-            {"id": "lobby", "type": "page", "url": LOBBY},
-            {"id": "other", "type": "page", "url": "https://example.com/live-games/x"},
-            {"id": "table", "type": "page", "url": TABLE},
-        ]
-        with patch.object(LR, "list_pages", return_value=pages):
-            self.assertEqual(LR.find_table_page()["id"], "table")
-
-    def test_reader_returns_none_when_only_lobby_is_open(self):
-        from aibcr.live import reader as LR
-        with patch.object(LR, "list_pages", return_value=[
-                {"id": "lobby", "type": "page", "url": LOBBY}]):
-            self.assertIsNone(LR.find_table_page())
-
-
 class FakeStream(LS.LobbyStream):
     """Chỉ thay phần nói chuyện với CDP; giữ nguyên logic gom ô bàn."""
 

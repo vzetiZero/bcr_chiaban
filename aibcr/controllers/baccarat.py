@@ -1,21 +1,18 @@
 # -*- coding: utf-8 -*-
-"""Tầng Controller · Baccarat: đọc bàn, AI dự đoán, nhận lệnh cược từ UI, đặt chip.
+"""Tầng Controller · Baccarat: vào site → sảnh → bàn DG → xếp chip theo cấu hình.
 
-Chỉ điều phối Model (``aibcr.models``) và Adapter (``aibcr.adapters``); không dùng tkinter
-và không biết gì về Electron. Tầng transport (``aibcr.service.engine``) gọi
+Chỉ điều phối Model (``aibcr.models``) và Adapter (``aibcr.adapters``); không dùng
+tkinter và không biết gì về Electron. Tầng transport (``aibcr.service.engine``) gọi
 ``dispatch`` để phục vụ giao diện Electron.
 
-Không còn phương pháp 3-3/3-2, thang cược hay khối mạnh/yếu. Mỗi tay người dùng cấu
-hình cửa + số chip trên UI (hoặc chọn “theo AI”), rồi bấm “Tự đặt cược”: controller
-chốt lệnh, chờ ván mới rồi bấm chip thật và đối chiếu xác nhận.
+Phạm vi: **chỉ đặt cược**. Không đọc kết quả ván, không tính thắng/thua, không đổi
+mức cược theo kết quả, không AI/dự đoán, không đồng bộ ví. Mỗi ván nhóm profile cấu
+hình sẵn chia P/B đối lập và xếp cùng một mức cược.
 
 Trách nhiệm:
-    - mở/gắn Chrome (CDP 9222), nút “VÀO BÀN HỢP LỆ”, quét sảnh, theo dõi bàn
-    - chạy luồng live Petalive + AI (xác suất/EV do ``predict`` tính, AI chỉ giải thích)
-    - nhận lệnh ``bet.config`` / ``bet.place`` từ UI và tự đặt chip thật
-    - ghi lãi/lỗ, chốt lời, lưu/khôi phục phiên
-
-API key AI chỉ nằm trong RAM (``ai.key.set``), không ghi vào state file hay snapshot.
+    - mở/gắn Chrome, mở site, nhận tab sảnh, mở bàn
+    - đọc danh sách bàn + trạng thái cược của bàn DG
+    - xếp chip (staging) và xác nhận theo lệnh của UI
 """
 
 import collections
@@ -29,6 +26,7 @@ from aibcr.adapters import browser as BR
 from aibcr.adapters import febet as FEBET
 from aibcr.adapters import lobby_stream as LS
 from aibcr.adapters import table_bets as TB
+from aibcr.adapters.dg_pages import find_dg_page
 from aibcr.adapters.wm_bet import WMBet
 from aibcr.models import fingerprint as FP
 from aibcr.controllers.sites.e3951 import E3951EntryController
@@ -38,11 +36,7 @@ from aibcr.controllers.sites.vnwtop import VNWTopEntryController
 from aibcr.config import *  # noqa: F401,F403
 from aibcr.models.bet_ladder import (BetLadder, DEFAULT_STAKES,
                                      parse_hop_rounds, parse_stakes)
-from aibcr.live.reader import LiveReader
-from aibcr.live.session import LiveSession
-from aibcr.live.dg_reader import DGReader, find_dg_page
-from aibcr.live.wm_reader import WMReader, find_wm_page, find_wm_table
-from aibcr.live import ai as LIVE_AI
+from aibcr.adapters.wm_pages import find_wm_table
 from aibcr.models import engine as E
 from aibcr.models import money as M
 from aibcr.models.live_sim import (LiveSimulation, compare_chips, table_is_clear,
@@ -50,19 +44,18 @@ from aibcr.models.live_sim import (LiveSimulation, compare_chips, table_is_clear
 
 # Cấu hình mặc định của tab Baccarat (đơn vị VN2 như hiển thị trên sàn).
 DEFAULT_CONFIG = {
-    "capital": 3000.0,          # vốn phiên (VN2)
-    "take_profit_pct": 25.0,    # chốt lời % vốn
     "favorites_only": True,
     "human_mouse": True,
     "auto_place": True,         # cho phép bấm chip thật khi bấm “Tự đặt cược”
     "auto_hunt": True,
-    "auto_recover": True,
-    "tables_to_play": 1,
+    # Xác nhận cược ngay sau khi xếp đủ chip (DG: bấm nút xác nhận trong bàn).
+    # Tắt thì chip chỉ treo trên ô và người dùng tự bấm xác nhận.
+    "auto_confirm": True,
     # Dấu vết thiết bị Android riêng của profile; sinh tự động ở lần cấu hình đầu.
     "fingerprint": None,
-    # Lệnh cược mặc định; cửa luôn do người dùng chọn trực tiếp.
-    "bet_side": "P",            # P | B | T; wagering never follows AI output
-    # 10 đơn vị = 10.000đ (WM in khay chip theo nghìn đồng, 1 đv = 1.000đ).
+    # Mức cược hiện tại; cửa luôn do người dùng (hoặc nhóm P/B) chọn trực tiếp.
+    "bet_side": "P",            # P | B | T
+    # 10 đơn vị = 10.000đ (DG/WM in khay chip theo nghìn đồng, 1 đv = 1.000đ).
     "bet_stake": float(DEFAULT_STAKES[0]),
     "stakes": list(DEFAULT_STAKES),
     "min_t": 20,
@@ -75,20 +68,8 @@ DEFAULT_CONFIG = {
     "hop_min": "2",
     "hop_rounds": [2],
     "hop_max": 5,
-    "ladder_step": 0,
     "start_url": BR.START_URL,
     "chrome_window": {"width": 900, "height": 1200, "percent": 60, "fullscreen": False},
-    # AI live (site Petalive): off | local | api. Key AI CHỈ đọc từ env BCR_AI_KEY.
-    "ai_mode": "api",
-    "ai_url": "https://api.vilao.ai/v1/chat/completions",
-    "ai_model": "chib/deepseek-v4.1-flash",
-    "ai_every": 5,          # gọi AI mỗi N ván
-    "ai_timeout": 8,        # ngắn hơn cửa cược ~25s
-    "live_decks": 8,
-    "live_trials": 20000,
-    "live_markov_weight": 0.15,
-    # Vòng tự săn bàn dừng sau N lượt quét không thành công để không treo UI vô hạn.
-    "cycle_max_attempts": CYCLE_MAX_ATTEMPTS,
 }
 
 
@@ -119,7 +100,7 @@ def _finite(value, fallback=0.0):
 
 
 class BaccaratController:
-    """Điều phối một phiên Baccarat: Chrome → sảnh → bàn → cược → chuyển bàn."""
+    """Điều phối một profile: Chrome → site → sảnh → bàn → xếp chip."""
 
     def __init__(self, state_path, emit, interval=2.0):
         self.state_path = pathlib.Path(state_path)
@@ -147,27 +128,18 @@ class BaccaratController:
         self._stop = threading.Event()
         self._thread = None
 
-        # Luồng AI live (WebSocket Petalive) — chạy riêng, không chặn _loop().
-        self.live_session = None
-        self.live_reader = None
-        self.live_stop_event = threading.Event()
-        self.live_reader_probe_at = 0.0
-        self.live_hand = 0
-        # API key nhập từ UI: CHỈ RAM. Không đưa vào self.config, state file hay snapshot.
-        self.ai_key_override = ""
         self.bet_ladder = BetLadder(self.config["stakes"], self.config["min_t"],
-                                    self.config["max_t"], self.config["ladder_step"])
+                                    self.config["max_t"])
         self.bet_config = {"side": self.config["bet_side"],
                            "stake": self.config["bet_stake"]}
 
-        # cờ bận cho các thao tác web (giống controller Tk)
+        # cờ bận cho các thao tác web
         self.chrome_busy = False
         self.scan_busy = False
         self.sweep_busy = False
         self.open_table_busy = False
         self.chip_busy = False
         self.place_busy = False
-        self.recover_busy = False
         # Đã báo "Chrome đã đóng" chưa (tránh spam log mỗi 2 giây khi mất kết nối).
         self.offline_noted = False
         # Đã từng kết nối Chrome trong phiên này chưa (phân biệt "chưa mở" với "vừa đóng").
@@ -177,7 +149,6 @@ class BaccaratController:
         self.chip_live = None
         self.chip_read_at = 0.0
         self.place_status = {"ok": None, "note": ""}
-        self.wallet_text = "Số dư ví trên web: chưa đọc được"
         self.sweep_note = "Mở Chrome, vào sảnh Baccarat rồi bấm “VÀO BÀN HỢP LỆ”."
         self.connection_text = "Chưa kết nối Chrome."
 
@@ -186,7 +157,6 @@ class BaccaratController:
         self.cycle_attempts = 0
         self.cycle_retry_at = 0.0
         self.cycle_table_key = None
-        self.tables_done = 0
 
         # bàn vừa mở, chờ đọc được cầu rồi theo dõi
         self.auto_start_key = None
@@ -199,28 +169,21 @@ class BaccaratController:
         self.auto_start_deadline = 0.0
 
         self.session_lost = False
-        self.recover_attempts = 0
         # Chế độ một nút: “Chạy tool” = tự vào bàn + tự đặt cược từng tay. Biến này giữ
         # cầu của tay đã arm để không arm lặp lại cùng một tay.
         self.auto_bet_letters = None
         self.auto_bet_key = None
         self.auto_bet_hand = 0
         self.auto_bet_note = ""
-        # Mốc Chrome rời bàn (về sảnh/đăng nhập) trong khi sim vẫn bám bàn cũ: quá
-        # ngưỡng thì rời bàn để tool tự vào lại, thay vì treo ở "chờ dữ liệu WS".
-        self.lobby_since = None
         # Lệnh vừa đặt gần nhất (side/stake). Giữa hai ván chip trên bàn thuộc lệnh này,
         # không phải lệnh tay kế (chưa bấm) — dùng để không báo "SAI CỬA" oan.
         self.last_order = None
         # (table_key, số tay) đã chốt lệnh — chặn đặt trùng khi nguồn phát lại một ván.
         self.placed_signatures = set()
-        # Cầu của bộ đọc WebSocket khi AI live đang chạy. Lượt quét CDP có thể trả về
-        # bản cũ (bắt đầu trước khi ván mới về); không được để nó ghi đè/đảo cầu live.
-        self.live_road = ""
         # Chưa có bàn (Chrome vừa mở/chưa đăng nhập) thì thử lại theo nhịp này.
         self.tool_retry_at = 0.0
 
-        self.log("Engine Baccarat sẵn sàng (đọc live + AI · tự đặt cược theo lệnh UI).")
+        self.log("Engine Baccarat sẵn sàng (vào bàn · xếp chip theo cấu hình).")
 
     # ------------------------------------------------------------- cấu hình
     def _load_config(self):
@@ -243,13 +206,17 @@ class BaccaratController:
         # Dọn config của phiên cũ: không để 3-3/3-2 sống sót qua file state.
         for key in ("profile", "ladder", "ladder_mode", "ladder_base", "block_mode",
                     "live_exit_streak", "auto_cycle", "min_hands", "max_hands",
-                    "max_streak", "min_lead", "max_lead", "tie_side"):
+                    "max_streak", "min_lead", "max_lead", "tie_side",
+                    # Khoá của các khối đã bị bỏ khỏi dự án (AI, dự đoán, vốn/chốt
+                    # lời, đồng bộ ví, số bàn mỗi phiên); xoá khỏi state cũ để file
+                    # lưu không còn rác cấu hình chết.
+                    "ai_mode", "ai_url", "ai_model", "ai_every", "ai_timeout",
+                    "live_decks", "live_trials", "live_markov_weight",
+                    "capital", "take_profit_pct", "auto_recover", "tables_to_play",
+                    "cycle_max_attempts", "ladder_step"):
             config.pop(key, None)
         legacy_ai_side = str(config.get("bet_side") or "").strip().upper() == "AUTO"
-        config["capital"] = max(1.0, _as_float(config.get("capital"), DEFAULT_CONFIG["capital"]))
-        config["take_profit_pct"] = max(1.0, _as_float(config.get("take_profit_pct"),
-                                                       DEFAULT_CONFIG["take_profit_pct"]))
-        for key in ("favorites_only", "human_mouse", "auto_place", "auto_hunt", "auto_recover"):
+        for key in ("favorites_only", "human_mouse", "auto_place", "auto_hunt"):
             config[key] = bool(config.get(key, DEFAULT_CONFIG[key]))
         if legacy_ai_side:
             config["auto_place"] = False
@@ -266,21 +233,6 @@ class BaccaratController:
         config["hop_min"] = str(config.get("hop_min") or "2").strip()[:120] or "2"
         config["hop_rounds"] = parse_hop_rounds(config["hop_min"])
         config["hop_max"] = min(48, max(1, _as_int(config.get("hop_max"), 5)))
-        config["ladder_step"] = min(len(config["stakes"]) - 1, max(
-            0, _as_int(config.get("ladder_step"), 0)))
-        config["tables_to_play"] = max(1, _as_int(config.get("tables_to_play"), 1))
-        mode = str(config.get("ai_mode") or "off").strip().lower()
-        config["ai_mode"] = mode if mode in ("off", "local", "api") else "off"
-        ai_url = str(config.get("ai_url") or "").strip()[:300]
-        config["ai_url"] = ai_url if (not ai_url or
-                                      ai_url.startswith(("http://", "https://"))) else ""
-        config["ai_model"] = str(config.get("ai_model") or "").strip()[:80]
-        config["ai_every"] = min(60, max(1, _as_int(config.get("ai_every"), 5)))
-        config["ai_timeout"] = min(30, max(2, _as_int(config.get("ai_timeout"), 8)))
-        config["live_decks"] = min(16, max(1, _as_int(config.get("live_decks"), 8)))
-        config["live_trials"] = min(200000, max(100, _as_int(config.get("live_trials"), 20000)))
-        config["live_markov_weight"] = max(0.0, min(1.0, _as_float(
-            config.get("live_markov_weight"), DEFAULT_CONFIG["live_markov_weight"])))
         url = config.get("start_url")
         config["start_url"] = url if isinstance(url, str) and BR.valid_site_url(url.strip()) \
             else BR.START_URL
@@ -293,38 +245,14 @@ class BaccaratController:
         return config
 
     def _build_sim(self):
-        config = self.config
-        book = M.MoneyBook(capital=config["capital"], unit=config["bet_stake"],
-                           take_profit_pct=config["take_profit_pct"])
-        sim = LiveSimulation(book, unit=config["bet_stake"])
-        # Khôi phục sổ vốn + lịch sử tay của phiên trước (nếu có).
-        saved = getattr(self, "_saved_session", {}) or {}
-        if saved.get("format") == "live-v2-engine":
-            money = saved.get("money") or {}
-            for key in ("balance", "hands_played", "wins", "losses", "pushes", "ties_bet",
-                        "total_staked", "total_returned", "peak", "max_drawdown",
-                        "loss_streak"):
-                if key in money:
-                    try:
-                        setattr(book, key, float(money[key]))
-                    except (TypeError, ValueError):
-                        pass
-            if isinstance(saved.get("log"), list):
-                sim.log = list(saved["log"])
-        return sim
+        return LiveSimulation(unit=self.config["bet_stake"])
 
     def _save_state(self):
         with self.lock:
-            book = self.sim.money
             data = {
-                "format": "live-v2-engine",
+                "format": "bet-only-v1",
                 "game": "baccarat",
                 "settings": dict(self.config),
-                "money": {key: getattr(book, key) for key in
-                          ("start_capital", "balance", "hands_played", "wins", "losses",
-                           "pushes", "ties_bet", "total_staked", "total_returned",
-                           "peak", "max_drawdown", "loss_streak")},
-                "log": self.sim.log[-500:],
             }
         try:
             self.state_path.parent.mkdir(parents=True, exist_ok=True)
@@ -392,12 +320,6 @@ class BaccaratController:
                 else "CHROME · %d × %d · tỉ lệ %d%%" % (window["width"], window["height"],
                                                         window["percent"]))
 
-    def _tables_target(self):
-        return max(1, _as_int(self.config.get("tables_to_play"), 1))
-
-    def _session_complete(self):
-        return self.tables_done >= self._tables_target()
-
     # ---------------------------------------------------------------- snapshot
     def table_rows(self):
         """Danh sách bàn đọc được (không còn chấm điều kiện lọc cầu)."""
@@ -450,7 +372,7 @@ class BaccaratController:
         return rows
 
     def _resolve_order(self, params=None):
-        """Resolve the explicit user-selected side; prediction output never selects a wager."""
+        """Resolve the explicit user-selected side; nothing else selects a wager."""
         params = params or {}
         side = str(params.get("side", self.bet_config["side"])).strip().upper()
         stake = _as_float(params.get("stake", self.bet_config["stake"]),
@@ -460,23 +382,12 @@ class BaccaratController:
                 "reason": "Lệnh do người dùng chọn"}
 
     def _process_sim(self, row):
-        """Process one road update and advance this account's ladder on settled bets."""
-        start = len(self.sim.log)
-        changed = self.sim.process(row)
-        if not changed:
-            return False
-        for entry in self.sim.log[start:]:
-            outcome = str(entry.get("outcome") or "").lower()
-            if outcome not in ("win", "loss", "push"):
-                continue
-            stake = self.bet_ladder.on_result(outcome)
-            self.config["ladder_step"] = self.bet_ladder.step
-            self.config["bet_stake"] = stake
-            self.bet_config["stake"] = stake
-            self.log("Dãy cược: %s · mức %d/%d · %s đv." % (
-                outcome.upper(), self.bet_ladder.step + 1, len(self.bet_ladder.stakes),
-                M.fmt_money(stake)), "info")
-        return True
+        """Đưa cầu mới của bàn đang theo dõi vào sim.
+
+        Chỉ cập nhật cầu và vòng đời lệnh cược; không đọc kết quả và không đổi mức
+        cược, nên không có bước tiến/lùi dãy cược ở đây.
+        """
+        return self.sim.process(row)
 
     def _plan(self):
         """Current wager plan based on the explicit user choice."""
@@ -494,36 +405,7 @@ class BaccaratController:
 
     def snapshot(self):
         with self.lock:
-            book = self.sim.money
             sim = self.sim
-            decisive = book.wins + book.losses
-            money = {
-                "capital": _finite(book.start_capital),
-                "balance": _finite(book.balance),
-                "profit": _finite(book.profit),
-                "roi": _finite((book.profit / book.start_capital * 100)
-                               if book.start_capital else 0.0),
-                "wins": int(book.wins),
-                "losses": int(book.losses),
-                "pushes": int(book.pushes),
-                "hands": int(book.hands_played),
-                "drawdown": _finite(book.max_drawdown),
-                "win_rate": _finite((book.wins / decisive * 100) if decisive else 0.0),
-                "blocked": list(book.blocked) if book.blocked else None,
-            }
-            history = [{
-                "time": _finite(entry.get("time")),
-                "at": time.strftime("%H:%M:%S", time.localtime(_finite(entry.get("time"),
-                                                                      time.time()))),
-                "table": str(entry.get("table") or ""),
-                "hand": int(_finite(entry.get("hand"))),
-                "bet": str(entry.get("bet") or ""),
-                "result": str(entry.get("result") or ""),
-                "stake": _finite(entry.get("stake")),
-                "delta": _finite(entry.get("delta")),
-                "outcome": str(entry.get("outcome") or ""),
-                "balance_after": _finite(entry.get("balance_after")),
-            } for entry in sim.log[-200:]]
             plan = self._plan()
             chip_check = self.chip_check() if self.sim.table_key else None
             now = time.time()
@@ -542,14 +424,11 @@ class BaccaratController:
                     "place": self.place_busy, "chip": self.chip_busy,
                 },
                 "sweep_note": self.sweep_note,
-                "wallet_text": self.wallet_text,
                 "cycle": {
                     "waiting": bool(self.cycle_waiting),
                     "attempts": self.cycle_attempts,
                     "retry_in": max(0.0, (self.cycle_retry_at or 0) - now),
                 },
-                "tables_done": self.tables_done,
-                "tables_target": self._tables_target(),
                 "enter_valid": {
                     "active": bool(self.enter_valid),
                     "checked": bool(self.valid_check_done),
@@ -562,13 +441,10 @@ class BaccaratController:
                     "name": sim.table_name,
                     "letters": sim.letters,
                     "hands": len(sim.letters or ""),
-                    "hand": max(len(sim.letters or ""),
-                                int(getattr(self, "live_hand", 0) or 0)),
+                    "hand": len(sim.letters or ""),
                     "running": sim.running,
                     "entry_waiting": sim.entry_waiting,
                     "note": sim.note,
-                    "place_skips": sim.place_skips,
-                    "take_profit_done": bool(sim.take_profit_done),
                     "auto_note": self.auto_bet_note,
                 },
                 "plan": plan,
@@ -584,7 +460,6 @@ class BaccaratController:
                     "min": self.bet_ladder.min_stake,
                     "max": self.bet_ladder.max_stake,
                 },
-                "money": money,
                 "chips": {
                     "live": self.chip_live,
                     "check": chip_check,
@@ -592,10 +467,7 @@ class BaccaratController:
                 },
                 "place": dict(self.place_status),
                 "tables": self.table_rows(),
-                "live": self.live_snapshot(),
                 "config": json.loads(json.dumps(self.config)),
-                "history": history,
-                "log_tail": list(sim.log[-15:]),
             }
 
     def _push_state(self):
@@ -732,10 +604,6 @@ class BaccaratController:
         if params.get("close"):
             self.tool_running = False
             try:
-                self.live_stop()
-            except Exception:
-                pass
-            try:
                 self.browser.stop()
             except Exception as exc:
                 return {"ok": False, "error": "Không đóng được Chrome profile (%s)." % type(exc).__name__}
@@ -759,10 +627,6 @@ class BaccaratController:
                 return {"ok": False, "error": "Proxy profile không hợp lệ."}
 
         self.tool_running = False
-        try:
-            self.live_stop()
-        except Exception:
-            pass
         try:
             self.browser.stop()
         except Exception as exc:
@@ -871,22 +735,6 @@ class BaccaratController:
                 self.browser.driver, params.get("side"), params.get("amount_k"),
                 params.get("round_id"), confirm=bool(params.get("confirm")), wait=0.0)
 
-    def bet_ladder_result(self, params):
-        """Advance the configured ladder from a verified, settled table result."""
-        outcome = str((params or {}).get("outcome") or "").strip().upper()
-        if outcome not in ("WIN", "LOSS", "PUSH"):
-            return {"ok": False, "error": "Kết quả phải là WIN, LOSS hoặc PUSH."}
-        with self.lock:
-            stake = self.bet_ladder.on_result(outcome)
-            self.config["ladder_step"] = self.bet_ladder.step
-            self.config["bet_stake"] = stake
-            self.bet_config["stake"] = stake
-            step = self.bet_ladder.step
-        self._save_state()
-        self._push_state()
-        return {"ok": True, "outcome": outcome, "step": step,
-                "steps": len(self.bet_ladder.stakes), "stake": stake}
-
     def chrome_attach(self):
         if self.chrome_busy:
             return {"ok": False, "error": "Đang bận thao tác Chrome."}
@@ -969,7 +817,6 @@ class BaccaratController:
             return {"ok": False, "error": self.sweep_note}
         self.sweep_busy = True
         self.session_lost = False
-        self.recover_attempts = 0
         self.sweep_note = "Đang tìm tab sảnh Baccarat bạn đã tự mở…"
 
         def work():
@@ -1134,16 +981,6 @@ class BaccaratController:
                                    "read_error": "", "conflict": False, "source": "live-ws",
                                    "ts": time.time(), "stable": 2}
                             self.tables[key] = row
-                        if not row.get("letters"):
-                            # Cầu có thể chưa về (mới gắn WS giữa shoe): lấy từ bộ đọc
-                            # live nếu đã có, không thì để trống rồi để live đồng bộ sau.
-                            live = (self.live_snapshot()
-                                    if self.live_session is not None else {})
-                            live_table = str(live.get("table") or "").replace("WM ", "").strip()
-                            if live.get("running") and live_table == open_key \
-                                    and live.get("history"):
-                                row["letters"] = live["history"]
-                                row["ts"] = time.time()
                         self.events.put(("table_opened", (
                             True, "Đang ở trong bàn %s · theo dõi tiếp." % row["label"], key)))
                         return
@@ -1179,11 +1016,10 @@ class BaccaratController:
             socket.start()
         self.log("WM: đã cài hook WebSocket · cược sẽ đi qua WS khi bàn mở cược.")
 
-    def leave_table(self, take_profit=False):
-        """Rời bàn hiện tại về sảnh; take_profit=True nghĩa là đã chốt lời."""
-        take_profit = bool(take_profit or getattr(self.sim, "take_profit_done", False))
-        if not take_profit and not self.tool_running:
-            return {"ok": False, "error": "Chưa chốt lời và tool chưa chạy nên không tự rời bàn."}
+    def leave_table(self):
+        """Rời bàn hiện tại về sảnh."""
+        if not self.tool_running:
+            return {"ok": False, "error": "Tool chưa chạy nên không tự rời bàn."}
         self.cycle_waiting = True
         self.cycle_attempts = 0
         self.cycle_table_key = self.sim.table_key
@@ -1217,14 +1053,8 @@ class BaccaratController:
                     self.sim.start(row)
                 self.valid_check_done = False
                 self.valid_note = "Tool đang chạy · " + self.sim.note
-        self.log("Chạy tool: tự vào bàn, phân tích và đặt cược từng tay.")
+        self.log("Chạy tool: tự vào bàn, theo dõi và đặt cược từng tay.")
         self._push_state()
-        # Tự bật bộ đọc lá bài để có dự đoán ngay — người dùng không phải bấm thêm nút.
-        if self.live_reader is None:
-            try:
-                self.live_start()
-            except Exception as exc:
-                self.log("Không bật được AI live (%s)." % type(exc).__name__, "warn")
         # Chưa có bàn: tự gắn/mở Chrome rồi tìm bàn hợp lệ (không cần bấm thêm nút nào).
         self.tool_retry_at = time.time() + 15.0
         if not self.sim.table_key and not self.enter_valid:
@@ -1352,10 +1182,51 @@ class BaccaratController:
         if getattr(self.browser, "wm_page_id", None):
             # WM: đọc chip của CHÍNH MÌNH đang treo trên từng cửa (mybet_money).
             return WMBet(self.browser).read_bets()
+        if self._dg_mode():
+            return self._dg_read_chips()
         try:
             return TB.read(self.browser, unit=TB.DEFAULT_CHIP_UNIT)
         except Exception as exc:
             return {"ok": False, "error": type(exc).__name__}
+
+    def _dg_mode(self):
+        """Chrome đang ở sảnh DG (``ddnewpc``/``ddnewwap``) chứ không phải WM/EVO."""
+        if getattr(self.browser, "wm_page_id", None):
+            return False
+        try:
+            return find_dg_page(getattr(BR, "CDP_PORT", 9222)) is not None
+        except Exception:
+            return False
+
+    def _dg_read_chips(self):
+        """Chip của chính mình đang treo trên bàn DG, đúng định dạng ``table_bets.read``.
+
+        DG báo tiền theo ``betMoneyTmp`` (chip đã xếp, chờ xác nhận) và ``betMoneyTrue``
+        (đã xác nhận). ``table_is_clear`` cần biết cả hai nên cộng lại; nếu chỉ đọc
+        ``True`` thì lúc chip đang chờ sẽ bị coi là "bàn trống" và lệnh sau bấm chồng.
+        """
+        try:
+            state = FEBET.bet_state(self.browser.driver, wait=0.0)
+        except Exception as exc:
+            return {"ok": False, "error": type(exc).__name__, "spots": {}, "unit": 1,
+                    "denominations": [], "ts": time.time()}
+        if not state.get("ok"):
+            return {"ok": False, "error": state.get("error") or "Chưa đọc được bàn DG.",
+                    "spots": {}, "unit": 1, "denominations": [], "ts": time.time()}
+        pending = state.get("pending") or {}
+        confirmed = state.get("confirmed") or {}
+        spots = {}
+        for side in ("B", "P", "T"):
+            amount = float(pending.get(side) or 0) + float(confirmed.get(side) or 0)
+            spots[side] = {"amount": amount, "amount_vnd": amount, "chips": 0}
+        total = sum(item["amount"] for item in spots.values())
+        return {"ok": True, "error": "", "source": "dg", "spots": spots,
+                "total": total, "total_units": total,
+                "denominations": state.get("denominations_k") or [],
+                "unit": 1, "wallet": "", "countdown": state.get("countdown") or "",
+                "open_result": not bool(state.get("bet_open")),
+                "ts": time.time(),
+                "note": "Chip của bạn đang treo trên bàn DG (1 đv = 1.000đ)."}
 
     # ------------------------------------------------------- đặt chip tự động
     def _tool_retry_enter(self, now):
@@ -1373,34 +1244,13 @@ class BaccaratController:
         self.tool_retry_at = now + 15.0
         self.enter_valid_table()
 
-    def _live_bound(self, live=None):
-        """Bộ đọc live đang bám đúng bàn theo dõi (không phải bàn vừa rời).
-
-        Sau khi mở bàn mới, ``WMReader`` chuyển bàn trong vài giây; trước đó snapshot
-        vẫn là cầu/số tay của bàn cũ, không được dùng để chốt lệnh cho bàn mới.
-        """
-        if not isinstance(live, dict):
-            if self.live_session is None:
-                return False
-            try:
-                live = self.live_snapshot()
-            except Exception:
-                return False
-        if not live.get("running"):
-            return False
-        key = str(self.sim.table_key or "")
-        table = str(live.get("table") or "").replace("WM ", "").strip()
-        if not key or not table:
-            return False
-        return key == table or key.endswith(table) or table.endswith(key)
-
     def _auto_bet_tick(self):
-        """Place the explicitly selected side once per hand while the tool is running."""
+        """Xếp chip cho cửa đã chọn, mỗi ván một lần, khi tool đang chạy."""
         if not self.tool_running:
             return
         if not self.sim.running:
             # Sim bị pause (dữ liệu cũ / không đặt được chip): hiện đúng lý do pause,
-            # không để ghi chú "chờ WebSocket" cũ treo trên UI gây hiểu lầm.
+            # không để ghi chú cũ treo trên UI gây hiểu lầm.
             if self.sim.table_key and self.sim.note:
                 self.auto_bet_note = self.sim.note
             return
@@ -1410,38 +1260,19 @@ class BaccaratController:
             return
         if not self.sim.table_key:
             return
-        # Chưa bám đúng bàn (vừa mở bàn khác): chờ WebSocket nạp cầu bàn mới thay vì
-        # đặt theo số tay/xác suất của bàn vừa rời.
-        live = {}
-        if self.live_session is not None:
-            try:
-                live = self.live_snapshot()
-            except Exception:
-                live = {}
-        if not self._live_bound(live):
-            live_table = str(live.get("table") or "").replace("WM ", "").strip()
-            note = ("Đang chờ dữ liệu bàn mới từ WebSocket · chưa đặt tay nào."
-                    if live_table else
-                    "Chưa thấy bàn WM trong Chrome (có thể mất đăng nhập) · chưa đặt tay nào.")
-            if note != self.auto_bet_note:
-                self.auto_bet_note = note
-                self.log(note, "info")
-            return
         letters = self.sim.letters
         if letters == self.auto_bet_letters and self.sim.table_key == self.auto_bet_key:
             return
-        # Số tay thật của lệnh sắp đặt (không dùng len(cầu): cầu đã bị cắt bớt khi
-        # shoe dài hơn giới hạn lưu lịch sử).
-        hand_no = self._next_hand_no(len(letters) + 1, live)
+        # Số tay của lệnh sắp đặt: đếm theo cầu đã đọc của bàn (không cần bộ đọc khung).
+        hand_no = len(letters) + 1
         # Số tay phải tăng dần trong một bàn: bản phát lại/lịch sử về muộn không được
-        # arm lệnh cho tay cũ hơn tay đã chốt (tránh đặt trùng hai lệnh một cửa sổ cược).
+        # arm lệnh cho tay cũ hơn tay đã chốt.
         if self.sim.table_key == self.auto_bet_key and self.auto_bet_hand \
                 and hand_no <= self.auto_bet_hand:
             self.auto_bet_letters = letters
             self.auto_bet_note = "Tay này đã được xử lý · chờ tay kế."
             return
-        # Chốt an toàn chống đặt trùng: nếu sổ đã có tay này cho cùng bàn thì không đặt lại
-        # (bảo vệ khi nguồn dữ liệu phát lại cùng một ván).
+        # Chốt an toàn chống đặt trùng cho cùng một tay của cùng một bàn.
         signature = (self.sim.table_key, hand_no)
         if signature in self.placed_signatures:
             self.auto_bet_letters = letters
@@ -1452,10 +1283,7 @@ class BaccaratController:
         order = self._resolve_order()
         side = order.get("side")
         if not side:
-            # Chưa có xác suất (dự đoán đang chạy/nạp lịch sử): KHÔNG khoá tay này,
-            # tick sau thử lại ngay khi predict xong — nhờ vậy tay đầu tiên sau khi
-            # nạp cầu cũ vẫn được đặt trong cửa sổ cược hiện tại.
-            note = "Chua chon duoc cua; will retry on the next tick."
+            note = "Chưa chọn được cửa; sẽ thử lại ở nhịp sau."
             if note != self.auto_bet_note:
                 self.auto_bet_note = note
                 self.log(note, "info")
@@ -1475,30 +1303,6 @@ class BaccaratController:
             M.fmt_money(order["stake"]), order["reason"])
         self.log(self.auto_bet_note, "info")
         self._place_armed_bet(pending)
-
-    def _next_hand_no(self, fallback, live=None):
-        """Số tay của lệnh sắp đặt, lấy từ bộ đọc live (số tay thật của bàn).
-
-        Kết quả ván vừa rồi có ``result_hand``; nếu 21/38 đã báo vòng đang mở cược
-        (BETTING) thì chính vòng đó mới là tay sẽ nhận kết quả.
-        """
-        if not isinstance(live, dict):
-            live = {}
-            if self.live_session is not None:
-                try:
-                    live = self.live_snapshot()
-                except Exception:
-                    live = {}
-        result_hand = int(live.get("result_hand") or 0)
-        state = str(live.get("state") or "")
-        betting = int(live.get("hand") or 0)
-        if state == "BETTING" and betting > result_hand:
-            return betting
-        if result_hand:
-            return result_hand + 1
-        if betting:
-            return betting + 1
-        return fallback
 
     def _place_armed_bet(self, plan):
         """Đặt chip thật theo lệnh đã chốt (chạy ở thread nền)."""
@@ -1551,6 +1355,33 @@ class BaccaratController:
                     self.events.put(("placed", (bool(result.get("ok")), note, plan)))
                     return
 
+                if self._dg_mode():
+                    # DG: chip được xếp đúng mệnh giá, đọc lại từng bước bên trong Laya
+                    # rồi mới xác nhận, nên không bao giờ đặt thiếu/lệch mệnh giá.
+                    round_id = ""
+                    try:
+                        state = FEBET.bet_state(self.browser.driver, wait=0.0)
+                        round_id = str(state.get("round_id") or "")
+                    except Exception:
+                        round_id = ""
+                    if not round_id:
+                        self.events.put(("placed", (
+                            False, "Không đọc được mã ván DG; chưa bấm chip.", plan)))
+                        return
+                    result = FEBET.stage_bet(
+                        self.browser.driver, side, int(round(stake)), round_id,
+                        confirm=bool(self.config.get("auto_confirm", True)),
+                        wait=BET_GATE_TIMEOUT)
+                    if result.get("ok") and result.get("confirmed"):
+                        plan["placed_at"] = time.time()
+                    note = result.get("error") or ""
+                    if not note:
+                        note = ("Đã xếp và xác nhận %sk vào %s ở ván %s."
+                                % (int(round(stake)), E.SIDE_NAME.get(side, side), round_id))
+                    self.events.put(("placed", (bool(result.get("ok")
+                                                     and result.get("confirmed")), note, plan)))
+                    return
+
                 def record_click():
                     plan["placed_at"] = time.time()
 
@@ -1566,7 +1397,20 @@ class BaccaratController:
         threading.Thread(target=work, daemon=True, name="ba-place").start()
 
     def _wait_for_next_hand(self, timeout=BET_GATE_TIMEOUT, poll=BET_GATE_POLL):
-        """Chờ bàn gom hết chip ván trước rồi mới bấm (tránh bấm chồng ván cũ)."""
+        """Chờ bàn gom hết chip ván trước rồi mới bấm (tránh bấm chồng ván cũ).
+
+        DG khác WM/EVO: cổng cược được bảo vệ bằng ``stateId``/``countDown`` và mã ván
+        ngay trong Laya (``stage_bet`` từ chối khi ván đã đổi), còn chip chờ xác nhận
+        được đọc lại từng mệnh giá. Vì vậy ở đây chỉ cần xác nhận còn đọc được bàn;
+        dùng ``table_is_clear`` cho DG sẽ chặn oan vì DG giữ chip đã xác nhận trên ô
+        suốt ván.
+        """
+        if self._dg_mode():
+            state = self._read_chip_state()
+            if state.get("ok"):
+                return True, ""
+            return False, ("Không tự đặt: chưa đọc được bàn DG (%s)."
+                           % (state.get("error") or "no_read"))
         deadline = time.monotonic() + timeout
         last_error = ""
         while time.monotonic() < deadline:
@@ -1590,7 +1434,7 @@ class BaccaratController:
         with self.lock:
             config = dict(self.config)
             for key in ("favorites_only", "human_mouse", "auto_place",
-                        "auto_hunt", "auto_recover"):
+                        "auto_hunt", "auto_confirm"):
                 if key in params:
                     config[key] = bool(params[key])
                     changed.append(key)
@@ -1598,48 +1442,14 @@ class BaccaratController:
                 if key in params:
                     config[key] = params[key]
                     changed.append(key)
-            if "tables_to_play" in params:
-                config["tables_to_play"] = params["tables_to_play"]
-                changed.append("tables_to_play")
             if "start_url" in params:
                 config["start_url"] = params["start_url"]
                 changed.append("start_url")
-            for key in ("ai_mode", "ai_url", "ai_model"):
-                if key in params:
-                    config[key] = params[key]
-                    changed.append(key)
-            for key in ("ai_every", "ai_timeout", "live_decks", "live_trials",
-                        "live_markov_weight"):
-                if key in params:
-                    config[key] = params[key]
-                    changed.append(key)
 
             normalized = self._normalize_config(config)
-            # đổi vốn / chốt lời chỉ khi chưa có tay nào, tránh làm sai lãi/lỗ
-            for key in ("capital", "take_profit_pct"):
-                if key in params:
-                    value = _as_float(params[key], normalized[key])
-                    if self.sim.money.hands_played and abs(value - float(self.config[key])) >= 0.005:
-                        return {"ok": False,
-                                "error": "Phiên đã có %d tay; không đổi %s giữa phiên. "
-                                         "Dùng “Phiên mới” nếu muốn áp dụng."
-                                         % (self.sim.money.hands_played,
-                                            "vốn" if key == "capital" else "chốt lời")}
-                    normalized[key] = value
-                    changed.append(key)
-
             self.config = normalized
             self.bet_config = {"side": normalized["bet_side"], "stake": normalized["bet_stake"]}
-            book = self.sim.money
-            book.take_profit_pct = normalized["take_profit_pct"]
-            if not book.hands_played:
-                book.unit = float(normalized["bet_stake"])
-                book.capital = book.start_capital = book.balance = normalized["capital"]
-                book.peak = normalized["capital"]
-                book.max_drawdown = 0.0
-            book.check_limits()
             self.stream.human_mouse = normalized["human_mouse"]
-            self._apply_live_config()
             self._save_state()
 
         self.log("Đã lưu cấu hình: %s." % (", ".join(sorted(set(changed))) or "không đổi"))
@@ -1648,29 +1458,26 @@ class BaccaratController:
 
     # ---------------------------------------------------------------- phiên
     def session_reset(self):
-        """Reset phiên: xoá lịch sử tay, giữ cấu hình và lệnh cược hiện tại."""
+        """Reset phiên: quên bàn đang theo dõi, giữ cấu hình và lệnh cược hiện tại."""
         with self.lock:
-            book = M.MoneyBook(capital=self.config["capital"], unit=self.config["bet_stake"],
-                               take_profit_pct=self.config["take_profit_pct"])
-            sim = LiveSimulation(book, unit=self.config["bet_stake"])
-            self.sim = sim
-            self.tables_done = 0
+            self.sim = self._build_sim()
             self.cycle_waiting = False
             self.cycle_retry_at = 0.0
             self.cycle_table_key = None
             self.auto_start_key = None
             self.chip_live = None
+            self.placed_signatures = set()
         self._save_state()
-        self.log("Đã reset phiên Baccarat (vốn %s VN2)." % M.fmt_money(self.config["capital"]))
+        self.log("Đã reset phiên Baccarat.")
         self._push_state()
         return {"ok": True, "note": "Đã reset phiên."}
 
     def session_new(self, params):
-        """Tạo phiên mới từ vốn/chốt lời/lệnh cược mới (lưu bản sao state cũ)."""
+        """Tạo phiên mới từ lệnh cược mới (lưu bản sao state cũ)."""
         params = params or {}
         with self.lock:
             config = dict(self.config)
-            for key in ("capital", "take_profit_pct", "bet_side", "bet_stake"):
+            for key in ("bet_side", "bet_stake"):
                 if key in params:
                     config[key] = params[key]
             config = self._normalize_config(config)
@@ -1685,57 +1492,18 @@ class BaccaratController:
                 pass
             self.config = config
             self.bet_config = {"side": config["bet_side"], "stake": config["bet_stake"]}
-            book = M.MoneyBook(capital=config["capital"], unit=config["bet_stake"],
-                               take_profit_pct=config["take_profit_pct"])
-            sim = LiveSimulation(book, unit=config["bet_stake"])
-            self.sim = sim
-            self.tables_done = 0
+            self.sim = self._build_sim()
             self.cycle_waiting = False
             self.cycle_retry_at = 0.0
             self.chip_live = None
             self.last_order = None
+            self.placed_signatures = set()
         self._save_state()
-        self.log("Đã tạo phiên mới: vốn %s VN2 · chốt lời %.0f%% · cược %s." % (
-            M.fmt_money(self.config["capital"]), self.config["take_profit_pct"],
-            self.config["bet_side"]))
+        self.log("Đã tạo phiên mới: cược %s %s đv." % (
+            self.config["bet_side"], M.fmt_money(self.config["bet_stake"])))
         self._push_state()
         return {"ok": True, "note": "Đã tạo phiên mới."}
 
-    def session_recover(self):
-        if self.recover_busy:
-            return {"ok": False, "error": "Đang phục hồi phiên."}
-        if not self.config["auto_recover"]:
-            return {"ok": False, "error": "Đang tắt tự phục hồi phiên."}
-        self._try_recover_session(force=True)
-        return {"ok": True, "note": "Đang mở lại EVO…"}
-
-    def _try_recover_session(self, force=False):
-        if not force and (self.recover_busy or not self.config["auto_recover"]):
-            return
-        if self.recover_attempts >= 3:
-            self.sweep_note = ("Đã tự mở lại EVO 3 lần nhưng phiên vẫn bị văng. Hãy đăng nhập lại "
-                               "trang gốc rồi bấm “VÀO BÀN HỢP LỆ”.")
-            self._push_state()
-            return
-        self.recover_busy = True
-        self.recover_attempts += 1
-        self.sweep_note = "Phát hiện văng phiên · đang tự mở lại EVO (lần %d/3)…" % self.recover_attempts
-
-        def work():
-            try:
-                ok, note = self.stream.open_lobby_from_portal()
-                if not ok:
-                    reloaded, reload_note = self.stream.reload_portal()
-                    if reloaded:
-                        ok, note = self.stream.open_lobby_from_portal()
-                    else:
-                        note = reload_note or note
-            except Exception as exc:
-                ok, note = False, "Không mở lại được EVO (%s)." % type(exc).__name__
-            self.events.put(("recovered", (ok, note)))
-
-        threading.Thread(target=work, daemon=True, name="ba-recover").start()
-        self._push_state()
 
     # ----------------------------------------------------------------- vòng
     def start(self):
@@ -1849,19 +1617,6 @@ class BaccaratController:
             self.place_status = {"ok": bool(ok), "note": note}
             self.log(("Đặt chip OK: " + note) if ok else ("Chưa đặt được chip: " + note),
                      "win" if ok else "error")
-        elif kind == "recovered":
-            self.recover_busy = False
-            ok, note = data
-            if ok:
-                self.session_lost = False
-                self.recover_attempts = 0
-                self.sweep_note = "Đã mở lại EVO · quét sảnh để tìm bàn…"
-                self.lobby_sweep()
-            else:
-                self.sweep_note = "Tự phục hồi chưa xong: " + note
-                self.cycle_waiting = True
-                self.cycle_retry_at = time.time() + CYCLE_RETRY_SECONDS
-                self.log(self.sweep_note, "error")
         elif kind == "window_applied":
             self.chrome_busy = False
             ok, note = data
@@ -1905,57 +1660,19 @@ class BaccaratController:
 
     def _on_cycle_back(self, ok, note):
         self.sweep_note = note
-        take_profit = bool(getattr(self.sim, "take_profit_done", False))
-        if take_profit:
-            if ok:
-                self.cycle_waiting = False
-                self.cycle_retry_at = 0.0
-                self.cycle_table_key = None
-                self.tables_done += 1
-                with self.lock:
-                    self.sim.table_key = None
-                    self.sim.table_name = "Chưa chọn bàn"
-                    self.sim.letters = ""
-                    self.sim.take_profit_done = False
-                if self._session_complete():
-                    self.sweep_note = ("Đã đạt mục tiêu lãi %.0f%% vốn (%s) · đã đóng bàn và dừng "
-                                       "phiên (xong %d/%d bàn)." % (
-                                           self.sim.money.take_profit_pct,
-                                           M.fmt_money(self.sim.money.profit),
-                                           self.tables_done, self._tables_target()))
-                    self.log(self.sweep_note, "win")
-                else:
-                    self._start_next_table()
-            elif self._auth_blame():
-                self._session_lost(note)
-            else:
-                self.cycle_waiting = True
-                self.cycle_retry_at = time.time() + CYCLE_RETRY_SECONDS
-                self.sweep_note = "%s · sẽ thử đóng bàn lại sau %d giây." % (note, CYCLE_RETRY_SECONDS)
-            return
         if ok:
+            self.cycle_waiting = False
+            self.cycle_retry_at = 0.0
+            self.cycle_table_key = None
+            with self.lock:
+                self.sim.detach("Đã rời bàn · đang ở sảnh.")
             self.lobby_sweep()
         elif self._auth_blame():
             self._session_lost(note)
         else:
-            self._schedule_cycle_retry(note)
-
-    def _start_next_table(self):
-        book = self.sim.money
-        balance = book.rebase_to_balance()
-        with self.lock:
-            self.config["capital"] = float(balance)
-        self.sim.take_profit_done = False
-        self.sim.note = "Bàn trước đã chốt lời · vốn mới %s · đang tìm bàn kế tiếp." % \
-                        M.fmt_money(balance)
-        self.cycle_waiting = True
-        self.cycle_attempts = 0
-        self.cycle_retry_at = 0.0
-        self.cycle_table_key = None
-        self.sweep_note = "Bàn %d/%d đã chốt lời · vốn mới %s · đang quét tìm bàn kế tiếp…" % (
-            self.tables_done, self._tables_target(), M.fmt_money(balance))
-        self._save_state()
-        self.lobby_sweep()
+            self.cycle_waiting = True
+            self.cycle_retry_at = time.time() + CYCLE_RETRY_SECONDS
+            self.sweep_note = "%s · sẽ thử đóng bàn lại sau %d giây." % (note, CYCLE_RETRY_SECONDS)
 
     def _session_lost(self, note):
         self.session_lost = True
@@ -1965,15 +1682,14 @@ class BaccaratController:
         self.cycle_table_key = None
         self.auto_start_key = None
         with self.lock:
-            self.sim.pause("Sảnh báo phiên Evolution không còn hợp lệ. Đăng nhập lại trang gốc, "
-                           "bấm thẻ Evolution một lần rồi bấm “VÀO BÀN HỢP LỆ”.")
+            self.sim.pause("Sảnh báo phiên đăng nhập không còn hợp lệ. Đăng nhập lại trang gốc "
+                           "rồi bấm “VÀO BÀN HỢP LỆ”.")
         self.auto_bet_letters = None
         self.auto_bet_key = None
         self.auto_bet_hand = 0
         self.auto_bet_note = "Mất phiên đăng nhập · đã dừng đặt. Đăng nhập lại rồi chạy tool."
         self.sweep_note = note
         self.log("Mất phiên: " + note, "error")
-        self._try_recover_session()
 
     def cancel_enter_valid(self):
         """Huỷ “vào bàn hợp lệ” khi người dùng bấm Dừng (không đụng phiên đang chạy)."""
@@ -2020,8 +1736,7 @@ class BaccaratController:
                                "Mở sảnh và chọn bàn thủ công, hoặc bấm lại “TÌM BÀN”." % self.cycle_attempts)
             self.log(self.sweep_note, "error")
             return False
-        hunting = not getattr(self.sim, "take_profit_done", False)
-        first_attempt = hunting and self.cycle_attempts == 0
+        first_attempt = self.cycle_attempts == 0
         self.cycle_attempts += 1
         wait = 0 if first_attempt else CYCLE_RETRY_SECONDS
         self.cycle_retry_at = time.time() + wait
@@ -2045,12 +1760,13 @@ class BaccaratController:
             if not isinstance(table_id, str) or not table_id or len(table_id) > 80:
                 table_id = ""
             key = "id:" + table_id if table_id else "".join(label.split()).casefold()
-            if (self.live_road and key == self.sim.table_key
-                    and not letters.startswith(self.live_road)):
+            if key == self.sim.table_key:
                 # Lượt quét CDP bắt đầu trước khi ván mới về sẽ trả cầu ngắn hơn cầu
-                # WebSocket. Nhận nó là "Cầu đổi nguồn" oan → huỷ lệnh đang chờ chip;
-                # nên khi live đang chạy, cầu live là chuẩn cho bàn đang theo dõi.
-                letters = self.live_road
+                # đang theo dõi. Nhận nó là "Cầu đổi nguồn" oan → huỷ lệnh đang chờ chip;
+                # nên với bàn đang theo dõi, giữ cầu đã biết nếu bản mới ngắn hơn.
+                known = str((self.tables.get(key) or {}).get("letters") or "")
+                if known and len(letters) < len(known) and known.startswith(letters):
+                    letters = known
             previous = incoming.get(key)
             old = self.tables.get(key)
             conflict = bool(previous and previous["letters"] != letters)
@@ -2086,7 +1802,7 @@ class BaccaratController:
         """Mở bàn đầu tiên có mã bàn — không còn điều kiện lọc cầu."""
         if self._busy_chrome() or not (self.tool_running or self.enter_valid):
             return
-        if self.sim.running or getattr(self.sim, "take_profit_done", False):
+        if self.sim.running:
             return
         candidates = [row for row in self.tables.values()
                       if row.get("table_id") and row["key"] != exclude_key]
@@ -2142,10 +1858,7 @@ class BaccaratController:
             self.sweep_note = self.valid_note
             self.log(self.valid_note, "win")
             return
-        # Đồng bộ vốn theo số dư THẬT trước khi bắt đầu theo dõi: sau khi start, vốn bị
-        # khoá để giữ đúng lãi/lỗ. Thiếu bước này phiên dùng vốn mặc định và bị chặn
-        # "hết vốn" ngay từ tay đầu. (Đọc CDP ngoài lock để không chặn vòng quét.)
-        self._wallet_sync_once()
+        # Vào bàn xong là theo dõi luôn; không đồng bộ ví, không chặn theo vốn.
         with self.lock:
             started = self.sim.start(row)
             note = self.sim.note
@@ -2170,21 +1883,15 @@ class BaccaratController:
             self.auto_open_table(allow_sweep=True, exclude_key=key)
 
     def _resume_cycle_hunt(self, now):
-        take_profit = bool(getattr(self.sim, "take_profit_done", False))
         manual_enter = bool(self.enter_valid)
-        if not (self.cycle_waiting and (self.config["auto_hunt"] or manual_enter or take_profit)
+        if not (self.cycle_waiting and (self.config["auto_hunt"] or manual_enter)
                 and self.cycle_retry_at and now >= self.cycle_retry_at):
             return
         self.cycle_retry_at = 0.0
         if self.sim.running or self.auto_start_key:
             return
-        if take_profit:
-            self.leave_table(take_profit=True)
-            return
         if self.session_lost:
-            self._try_recover_session()
-            if self.session_lost:
-                self.cycle_retry_at = now + CYCLE_RETRY_SECONDS
+            self.cycle_retry_at = now + CYCLE_RETRY_SECONDS
             return
         if self._busy_chrome() or not self._cdp_available():
             self.cycle_retry_at = now + CYCLE_RETRY_SECONDS
@@ -2219,7 +1926,6 @@ class BaccaratController:
                 self.sim.pause("Mất kết nối/đọc cầu lỗi. Hãy đối chiếu lại trước khi tiếp tục.")
             return
         self.session_lost = False
-        self._sync_wallet(reports)
         rows = []
         for report in reports:
             for table in report.get("tables", []):
@@ -2238,125 +1944,9 @@ class BaccaratController:
             changed = self._process_sim(self.tables.get(self.sim.table_key))
         if changed:
             self._save_state()
-            if self.sim.cycle_done:
-                self.sim.cycle_done = False
-                self.leave_table(take_profit=self.sim.take_profit_done)
-
-    def _wallet_sync_once(self):
-        """Đọc số dư thật một lần rồi đồng bộ vốn phiên (dùng khi bật tool)."""
-        try:
-            if getattr(self.browser, "wm_page_id", None):
-                wallet = self.browser.read_wm_wallet()
-            else:
-                wallet = {}
-            if wallet.get("ok"):
-                with self.lock:
-                    self._apply_wallet(wallet["value"], wallet.get("text") or "")
-                self._push_state()
-        except Exception:
-            pass
-
-    def _sync_wallet(self, reports):
-        text = next((str((report.get("page") or {}).get("wallet_balance") or "").strip()
-                     for report in reports
-                     if (report.get("page") or {}).get("wallet_balance")), "")
-        if not text and getattr(self.browser, "wm_page_id", None):
-            # WM: số dư thật nằm trong iframe bàn (#userBalanceBox), không nằm ở trang.
-            wallet = self.browser.read_wm_wallet()
-            if wallet.get("ok"):
-                self._apply_wallet(wallet["value"], wallet.get("text") or "")
-            return
-        if not text:
-            return
-        try:
-            value = M.parse_money(text)
-        except (TypeError, ValueError):
-            self.wallet_text = "Số dư ví trên web: không đọc được giá trị"
-            return
-        self._apply_wallet(value, text)
-
-    def _apply_wallet(self, value, raw):
-        """Đồng bộ vốn phiên theo số dư thật đọc được trên web.
-
-        CHỈ đồng bộ khi phiên chưa theo dõi và chưa có tay nào. Nếu đồng bộ giữa phiên,
-        số dư sổ sách bị ghi đè bằng số dư ví sau mỗi lần đặt cược → lãi/lỗ hiển thị sai
-        và trông như "tiền bốc hơi". Trong phiên chỉ cập nhật nhãn hiển thị.
-        """
-        self.wallet_text = "Số dư ví: %s đv (= %sđ)" % (
-            M.fmt_money(value), M.fmt_money(value * 1000))
-        book = self.sim.money
-        if self.sim.running or book.hands_played:
-            return
-        ok, _note = book.sync_capital(value)
-        if not ok:
-            return
-        self.config["capital"] = float(value)
-        # Đơn vị cược phải ≤ số dư thật, nếu không phiên bị chặn "hết vốn" ngay.
-        stake = float(self.bet_config["stake"] or 10.0)
-        if stake > value:
-            stake = max(1.0, float(int(value)))
-            self.bet_config["stake"] = stake
-            self.config["bet_stake"] = stake
-        book.unit = stake
-        self.sim.unit = stake
-        self.wallet_text += " · vốn phiên đã đồng bộ"
-        self._save_state()
-
-    def _watch_live_reader(self):
-        """Bộ đọc live chết vì lỗi CDP/mạng: gắn lại bộ đọc mới, giữ nguyên cầu."""
-        reader = self.live_reader
-        session = self.live_session
-        if reader is None or session is None or reader.is_alive() \
-                or self.live_stop_event.is_set():
-            return
-        self.log("AI live: bộ đọc đã dừng (%s) · tự gắn lại."
-                 % (getattr(reader, "last_error", "") or "thread"), "warn")
-        with self.lock:
-            self.live_reader = self._make_live_reader(session)
-            reader = self.live_reader
-        reader.start()
-
-    def _refresh_live_reader_kind(self):
-        """Switch live decoders when Chrome changes between WM and other sites.
-
-        The reader is selected when AI live starts. A still-alive Petalive reader
-        would otherwise keep running forever if WM opens afterward.
-        """
-        reader = self.live_reader
-        session = self.live_session
-        if reader is None or session is None or not reader.is_alive() \
-                or self.live_stop_event.is_set():
-            return
-        now = time.monotonic()
-        if now < self.live_reader_probe_at:
-            return
-        self.live_reader_probe_at = now + 3.0
-        try:
-            page, _detect = find_wm_page(getattr(BR, "CDP_PORT", 9222))
-        except Exception:
-            return
-        wants_wm = page is not None
-        if wants_wm == isinstance(reader, WMReader):
-            return
-
-        # The replacement owns a fresh event so a slow old CDP shutdown cannot
-        # stop the new reader.
-        old_stop = self.live_stop_event
-        new_stop = threading.Event()
-        old_stop.set()
-        with self.lock:
-            if self.live_reader is not reader or self.live_session is not session:
-                return
-            self.live_stop_event = new_stop
-            replacement = self._make_live_reader(session, wm_detected=wants_wm)
-            self.live_reader = replacement
-        replacement.start()
-        reader.join(timeout=0.2)
-        self.log("AI live: đã chuyển bộ đọc theo tab Chrome đang mở.", "info")
 
     def _tick(self):
         self._drain()
-        self._watch_live_reader()
         if not self.browser.connected:
             # Nút “VÀO BÀN HỢP LỆ” gắn Chrome ở thread riêng: lần đầu chưa có kết nối là
             # bình thường, không được coi là "Chrome đã đóng" rồi huỷ chế độ vừa bật.
@@ -2364,7 +1954,6 @@ class BaccaratController:
                 self._on_chrome_lost()
         else:
             self._on_chrome_ready()
-            self._refresh_live_reader_kind()
             if self.enter_valid:
                 self._watch_enter_valid(time.time())
             if self.tool_running or self.enter_valid or self.valid_check_done:
@@ -2378,8 +1967,6 @@ class BaccaratController:
                     self.chip_read_at = now
                     self.chips_read()      # đọc chip ở thread riêng, không chặn vòng chính
                 self._auto_start_verified_table()
-                self._follow_open_table()
-                self._recover_from_lobby()
                 self._auto_bet_tick()
                 self._tool_retry_enter(now)
                 self._resume_cycle_hunt(now)
@@ -2407,7 +1994,6 @@ class BaccaratController:
         self.chip_live = None
         self.chip_read_at = 0.0
         self.auto_start_key = None
-        self.live_road = ""
         if self.enter_valid:
             self.enter_valid = False
             self.valid_note = "Chrome đã đóng · huỷ tìm bàn hợp lệ."
@@ -2420,7 +2006,6 @@ class BaccaratController:
         self.auto_bet_key = None
         self.auto_bet_hand = 0
         self.auto_bet_note = "Chrome đã đóng/mất kết nối · đã dừng đặt. Mở Chrome rồi chạy tool."
-        self.lobby_since = None
         self.sweep_note = getattr(self.browser, "note", "") or \
             "Chrome đã đóng · bấm “Mở Chrome” để mở lại."
         self.connection_text = self.sweep_note
@@ -2432,295 +2017,6 @@ class BaccaratController:
         if self.offline_noted:
             self.offline_noted = False
             self.next_scan = 0.0
-
-    # ------------------------------------------------------------- AI live
-    def _live_cfg(self):
-        """Config an toàn, được trả về snapshot/UI — KHÔNG chứa API key."""
-        cfg = self.config
-        return {
-            "decks": cfg["live_decks"],
-            "trials": cfg["live_trials"],
-            "markov_weight": cfg["live_markov_weight"],
-            "ai_mode": cfg["ai_mode"],
-            "ai_url": cfg["ai_url"],
-            "ai_model": cfg["ai_model"],
-            "ai_every": cfg["ai_every"],
-            "ai_timeout": cfg["ai_timeout"],
-        }
-
-    def _live_cfg_private(self):
-        """Chỉ dùng khi tạo/cấu hình LiveSession; key không bao giờ ra snapshot."""
-        cfg = self._live_cfg()
-        cfg["ai_key"] = self.ai_key_override
-        return cfg
-
-    def _apply_live_config(self):
-        if self.live_session is not None:
-            self.live_session.configure(**self._live_cfg_private())
-
-    def live_snapshot(self):
-        if self.live_session is None:
-            return {
-                "ok": False, "running": False, "table": "", "rounds": 0,
-                "prediction": None, "analysis": None,
-                "ai": {"mode": self.config["ai_mode"], "available": False,
-                       "busy": False, "error": ""},
-                "config": self._live_cfg(),
-                "note": "Chưa bật AI live — bấm “Bật AI live” để đọc bàn đang mở (WM/Petalive).",
-            }
-        return self.live_session.snapshot()
-
-    def _follow_open_table(self):
-        """Chrome đang ở bàn khác bàn theo dõi: chuyển theo đúng bàn thật đang mở.
-
-        Xảy ra khi người dùng tự đổi bàn trong Chrome hoặc ô bấm mở nhầm bàn. Nếu
-        không đổi theo, lệnh treo mãi ở "chờ dữ liệu bàn mới" vì bộ đọc live bám bàn
-        khác bàn đang theo dõi. Chỉ đổi khi CDP xác nhận bàn đang mở khớp bộ đọc.
-        """
-        if self.live_session is None or not self.sim.table_key or self.place_busy:
-            return
-        try:
-            live = self.live_snapshot()
-        except Exception:
-            return
-        if not live.get("running"):
-            return
-        table = str(live.get("table") or "").replace("WM ", "").strip()
-        wm_key = str(getattr(self.browser, "wm_open_key", "") or "")
-        if not table or table != wm_key:
-            return
-        key = "id:" + table
-        if key == self.sim.table_key:
-            return
-        letters = str(live.get("history") or "")
-        with self.lock:
-            row = self.tables.get(key)
-            if row is None:
-                row = {"key": key, "label": str(live.get("table") or ("WM " + table)),
-                       "letters": letters, "table_id": table, "game_type": "baccarat",
-                       "read_error": "", "conflict": False, "source": "live-ws",
-                       "ts": time.time(), "stable": 2}
-                self.tables[key] = row
-            elif letters:
-                row["letters"] = letters
-                row["ts"] = time.time()
-            self.sim.bind(row)
-            self.sim.start(row)
-        self.auto_bet_letters = None
-        self.auto_bet_key = None
-        self.auto_bet_hand = 0
-        self.last_order = None
-        self.chip_live = None
-        self.chip_read_at = 0.0
-        self.log("Đã chuyển theo bàn đang mở %s." % row["label"], "info")
-        self._push_state()
-
-    def _recover_from_lobby(self):
-        """Chrome rời bàn (về sảnh/đăng nhập) quá lâu: rời bàn để tool tự vào lại.
-
-        Không có bước này thì sim vẫn bám bàn cũ trong khi bộ đọc không còn dữ liệu
-        bàn đó, khiến ghi chú treo mãi ở "chờ dữ liệu bàn mới từ WebSocket". Xử lý cả
-        khi sim đã bị pause (dữ liệu cũ) chứ không chỉ khi đang chạy: pause + vẫn bám
-        bàn là trạng thái treo mà ``_tool_retry_enter`` không tự thoát được.
-        """
-        if not self.tool_running or not self.sim.table_key:
-            self.lobby_since = None
-            return
-        if self.sim.money.blocked or self.sim.take_profit_done:
-            self.lobby_since = None
-            return
-        if not self.browser.connected:
-            self.lobby_since = None
-            return
-        wm_key = str(getattr(self.browser, "wm_open_key", "") or "")
-        if wm_key:
-            self.lobby_since = None
-            # Chrome còn trong bàn nhưng sim bị pause vì dữ liệu cũ: chạy lại tiếp.
-            if not self.sim.running and wm_key == self.sim.table_key.replace("id:", ""):
-                row = self.tables.get(self.sim.table_key)
-                if row is not None:
-                    self.sim.start(row)
-                    self.auto_bet_note = self.sim.note
-                    self.log("Tiếp tục theo dõi bàn %s sau khi dữ liệu bị ngắt." % row["label"])
-            return
-        now = time.monotonic()
-        if self.lobby_since is None:
-            self.lobby_since = now
-            return
-        if now - self.lobby_since < 20.0:
-            return
-        self.lobby_since = None
-        self.sim.detach("Chrome không còn trong bàn WM (về sảnh/đăng nhập) · tìm bàn lại.")
-        self.auto_bet_letters = None
-        self.auto_bet_key = None
-        self.auto_bet_hand = 0
-        self.auto_bet_note = self.sim.note
-        self.last_order = None
-        self.chip_live = None
-        self.chip_read_at = 0.0
-        self.log(self.sim.note, "warn")
-        self._push_state()
-
-    def _sync_live_to_sim(self, live):
-        """Đưa cầu đọc được từ WebSocket vào bàn đang theo dõi ngay lập tức.
-
-        Trước đây cầu chỉ cập nhật theo nhịp quét sảnh nên UI chậm 2 tay so với bàn
-        thật. WebSocket là nguồn realtime, nên mỗi ván về là ghi thẳng vào bàn.
-        """
-        if not isinstance(live, dict):
-            return False
-        letters = str(live.get("history") or "")
-        key = self.sim.table_key
-        if not key:
-            if live.get("running"):
-                self.live_hand = int(live.get("hand") or 0)
-            self.live_road = ""
-            return False
-        # Chỉ nhận cầu live làm chuẩn khi bộ đọc đang chạy và đã có cầu của đúng bàn.
-        live_table = str(live.get("table") or "").replace("WM ", "").strip()
-        same_table = bool(live.get("running")) and (
-            not live_table or key.endswith(live_table) or live_table.endswith(key))
-        if same_table:
-            # Live là nguồn số tay thật của bàn đang mở; gán (không lấy max) để khi
-            # đổi bàn số tay không dính bàn cũ.
-            self.live_hand = int(live.get("hand") or 0)
-        self.live_road = letters if same_table else ""
-        if not letters:
-            return False
-        with self.lock:
-            row = self.tables.get(key)
-            if row is None:
-                row = {"key": key, "label": self.sim.table_name, "letters": "",
-                       "table_id": "", "game_type": "baccarat", "read_error": "",
-                       "conflict": False, "source": "live-ws"}
-                self.tables[key] = row
-            if row.get("letters") == letters:
-                return False
-            row["letters"] = letters
-            row["ts"] = time.time()
-            row["stable"] = max(2, int(row.get("stable") or 0))
-            row["source"] = "live-ws"
-            row["read_error"] = ""
-            row["conflict"] = False
-            changed = self._process_sim(row)
-        if changed:
-            self._save_state()
-        return bool(changed)
-
-    def _emit_live(self, data=None):
-        live = data if isinstance(data, dict) else self.live_snapshot()
-        try:
-            changed = self._sync_live_to_sim(live)
-        except Exception:
-            changed = False
-        try:
-            self.emit.event("live_prediction", live)
-        except Exception:
-            pass
-        if changed:
-            self._push_state()
-
-    def _make_live_reader(self, session, wm_detected=None):
-        """Chọn bộ đọc theo tab đang mở: DG (protobuf), WM (nhị phân), Petalive (text)."""
-        port = getattr(BR, "CDP_PORT", 9222)
-        if wm_detected is None:
-            try:
-                wm_page, _detect = find_wm_page(port)
-            except Exception:
-                wm_page = None
-            wm_detected = wm_page is not None
-        if wm_detected:
-            return WMReader(on_round=session.on_round, on_state=session.on_state,
-                            on_status=lambda text, level="info":
-                            self.log("AI live: %s" % text, level),
-                            port=port, stop=self.live_stop_event)
-        # Sảnh DG (GK881) là mục tiêu chính: tab ``ddnewpc``/``ddnewwap`` không khớp
-        # mẫu URL của Petalive, nên không chọn riêng thì bộ đọc Petalive chạy mãi mà
-        # không bao giờ có dữ liệu.
-        try:
-            dg_page = find_dg_page(port)
-        except Exception:
-            dg_page = None
-        if dg_page is not None:
-            return DGReader(on_round=session.on_round, on_state=session.on_state,
-                            on_status=lambda text, level="info":
-                            self.log("AI live: %s" % text, level),
-                            port=port, stop=self.live_stop_event)
-        return LiveReader(on_round=session.on_round, on_state=session.on_state,
-                          on_status=lambda text, level="info":
-                          self.log("AI live: %s" % text, level),
-                          port=port, stop=self.live_stop_event)
-
-    def live_start(self):
-        with self.lock:
-            if self.live_reader is not None:
-                return {"ok": True, "note": "AI live đã chạy."}
-            self.live_stop_event.clear()
-            self.live_reader_probe_at = 0.0
-            session = LiveSession(
-                on_prediction=self._emit_live,
-                on_status=lambda text, level="info": self.log("AI live: %s" % text, level),
-                **self._live_cfg_private())
-            session.running = True
-            reader = self._make_live_reader(session)
-            boot_note = ("Đã bật AI live · đọc bàn WM qua WebSocket."
-                         if isinstance(reader, WMReader)
-                         else "Đã bật AI live · chờ tab bàn Petalive.")
-            self.live_session = session
-            self.live_reader = reader
-        reader.start()
-        self.log("AI live: đang đọc lá bài từ tab bàn qua CDP.", "info")
-        self._push_state()
-        return {"ok": True, "note": boot_note}
-
-    def live_stop(self):
-        with self.lock:
-            reader = self.live_reader
-            session = self.live_session
-            self.live_reader = None
-            self.live_session = None
-        self.live_stop_event.set()
-        if reader is not None:
-            reader.join(timeout=2)
-        if session is not None:
-            session.running = False
-        self._emit_live(self.live_snapshot())
-        self._push_state()
-        return {"ok": True, "note": "Đã tắt AI live."}
-
-    def live_state(self):
-        return self.live_snapshot()
-
-    def live_analyze(self):
-        with self.lock:
-            session = self.live_session
-        if session is None:
-            return {"ok": False, "error": "Chưa bật AI live."}
-        result = session.analyze_now()
-        self._emit_live(self.live_snapshot())
-        return result
-
-    def ai_key_set(self, params):
-        """Nhận API key từ UI: chỉ lưu RAM, không ghi file/log/snapshot."""
-        params = params or {}
-        key = str(params.get("key") or "").strip()[:300]
-        with self.lock:
-            self.ai_key_override = key
-            self._apply_live_config()
-        return {"ok": True, "has_key": bool(key),
-                "note": "Đã lưu API key trong phiên này (chỉ RAM)." if key
-                        else "Đã xoá API key tuỳ biến; dùng BCR_AI_KEY nếu có."}
-
-    def ai_check(self, params):
-        """Probe the currently entered provider settings without saving the key."""
-        params = params or {}
-        cfg = {
-            "mode": params.get("mode") or self.config.get("ai_mode"),
-            "url": params.get("url") or self.config.get("ai_url"),
-            "model": params.get("model") or self.config.get("ai_model"),
-            "key": params.get("key") or self.ai_key_override,
-        }
-        return LIVE_AI.check_model(cfg)
 
     def bet_config_set(self, params):
         """Configure the next hand using an explicit P/B/T choice and fixed stake."""
@@ -2754,7 +2050,6 @@ class BaccaratController:
                     config[key] = params[key]
             if "hop_min" in params:
                 config["hop_min"] = params["hop_min"]
-            config["ladder_step"] = 0
             normalized = self._normalize_config(config)
             side = str(params.get("side", self.bet_config["side"])).strip().upper()
             if side not in ("P", "B", "T"):
@@ -2792,7 +2087,7 @@ class BaccaratController:
                 return {"ok": False, "error": "Đang chờ tay hiện tại kết thúc; thử lại khi bàn sẵn sàng."}
             order = self._resolve_order()
             if not order["side"]:
-                return {"ok": False, "error": "Chưa có cửa để đặt: hãy chọn P/B/T hoặc bật AI live."}
+                return {"ok": False, "error": "Chưa có cửa để đặt: hãy chọn P/B/T trong cấu hình cược."}
             pending = self.sim.set_order(order["side"], order["stake"], reason=order["reason"])
             if pending is None:
                 return {"ok": False, "error": "Lệnh cược không hợp lệ."}
@@ -2838,7 +2133,7 @@ class BaccaratController:
             "table.select": lambda p: self.select_table(p.get("key") or ""),
             "table.enterValid": lambda p: self.enter_valid_table(),
             "table.cancelEnter": lambda p: self.cancel_enter_valid(),
-            "table.leave": lambda p: self.leave_table(take_profit=bool(p.get("take_profit"))),
+            "table.leave": lambda p: self.leave_table(),
             "tool.start": lambda p: self.tool_start(),
             "tool.stop": lambda p: self.tool_stop(),
             "scan": lambda p: self.scan_now(),
@@ -2847,18 +2142,9 @@ class BaccaratController:
             "config.set": self.config_set,
             "session.reset": lambda p: self.session_reset(),
             "session.new": self.session_new,
-            "session.recover": lambda p: self.session_recover(),
             "log.clear": lambda p: {"ok": True},
-            "export": lambda p: {"log": list(self.sim.log)},
-            "live.start": lambda p: self.live_start(),
-            "live.stop": lambda p: self.live_stop(),
-            "live.state": lambda p: self.live_state(),
-            "live.analyze": lambda p: self.live_analyze(),
-            "ai.check": self.ai_check,
-            "ai.key.set": self.ai_key_set,
             "bet.config": self.bet_config_set,
             "bet.ladder.configure": self.bet_ladder_config_set,
-            "bet.ladder.result": self.bet_ladder_result,
             "bet.place": lambda p: self.bet_place(),
             "febet.betState": self.febet_bet_state,
             "febet.stageBet": self.febet_stage_bet,
@@ -2875,10 +2161,6 @@ class BaccaratController:
 
     def shutdown(self):
         self.stop()
-        try:
-            self.live_stop()
-        except Exception:
-            pass
         try:
             self._save_state()
         except Exception:

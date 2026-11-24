@@ -1326,7 +1326,7 @@ function updateBetPreview() {
   const first = config.stakes[0] || config.min_t || 0;
   const initial = Math.max(config.min_t || 1, Math.min(config.max_t || first, first));
   $('#bet-stake-preview').textContent = config.stakes.length
-    ? `Dãy ${config.stakes.length} mức · mức đầu ${initial.toLocaleString('vi-VN')}k · thắng về mức đầu, thua tiến một mức, hòa giữ nguyên.`
+    ? `Dãy ${config.stakes.length} mức · mức cược mỗi ván ${initial.toLocaleString('vi-VN')}k · giữ nguyên mức đã cấu hình, không đổi theo thắng/thua.`
     : 'Nhập ít nhất một mức cược hợp lệ.';
 }
 

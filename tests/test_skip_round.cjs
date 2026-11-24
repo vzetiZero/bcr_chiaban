@@ -68,7 +68,17 @@ test('structural problems still stop the group', () => {
   // Closed profiles, changed tables and mismatched round ids remain hard stops.
   assert.match(tick, /Danh s\u00e1ch profile \u0111\u00e3 \u0111\u1ed5i/);
   assert.match(tick, /Ch\u1ec9 m\u1ed9t ph\u1ea7n profile x\u00e1c nh\u1eadn/);
-  assert.match(tick, /Kh\u00f4ng x\u00e1c nh\u1eadn \u0111\u01b0\u1ee3c k\u1ebft qu\u1ea3 v\u00e1n tr\u01b0\u1edbc/);
+  assert.match(tick, /ch\u01b0a \u0111\u1ed3ng b\u1ed9 c\u00f9ng m\u00e3 v\u00e1n/);
+});
+
+test('a placed round is counted without reading the result', () => {
+  const tick = extract('groupBettingTick');
+  assert.doesNotMatch(tick, /bet\.ladder\.result/);
+  assert.doesNotMatch(tick, /settleGroupRound/);
+  assert.match(tick, /countPlacedRound\(prior\)/);
+  const count = extract('countPlacedRound');
+  assert.match(count, /sharedHop\.rounds \+= 1/);
+  assert.doesNotMatch(count, /winner/);
 });
 
 test('skip state is initialised when the group starts', () => {

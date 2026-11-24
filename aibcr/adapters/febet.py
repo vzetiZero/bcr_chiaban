@@ -528,6 +528,10 @@ return (() => {
     min_k:scale ? Math.ceil(floorRaw / scale) : 0,
     max_k:scale && rawMax ? Math.floor(rawMax / scale) : 0,
     balance_k:scale ? Number(player.balance || 0) / scale : null,
+    // ``balance_k`` = 0 vừa có thể là "hết tiền" vừa là "chưa đọc được chỗ khác"
+    // (đo trên 60101: ``playerInfo.balance`` = 0 trong khi bàn in "Balance 0.00").
+    // ``balance_known`` để UI phân biệt: chỉ chặn cược khi đã đọc được số dư thật.
+    balance_known:Number.isFinite(Number(player.balance)) && Number(player.balance) > 0,
     denominations_k:[...new Set(denoms)].sort((a,b)=>b-a),
     pending:{P:values(tmp,['Player','player','PLAYER','xian','Xian','1']) / (scale || 1),
              B:values(tmp,['Banker','banker','BANKER','zhuang','Zhuang','2']) / (scale || 1),
@@ -618,7 +622,13 @@ const autoConfirm = Boolean(arguments[3]);
   if (minK && amountK < minK) return {ok:false,error:`Mức ${amountK}k thấp hơn sàn bàn ${minK}k.`};
   if (maxK && amountK > maxK) return {ok:false,error:`Mức ${amountK}k vượt trần bàn ${maxK}k.`};
   const balK = Number(player.balance || 0) / scale;
-  if (Number.isFinite(balK) && balK > 0 && amountK > balK)
+  // Đo trên bàn 60101: ``playerInfo.balance = 0`` và bàn in "Balance(VND2) 0.00";
+  // ``checkBet`` của Laya chặn ngay khi ``balance == 0`` nên mọi cú bấm chip chỉ
+  // bật hộp "NoBalance" và ``betMoneyTmp`` đứng yên. Số dư đọc được là 0 thì **không**
+  // chặn cứng ở đây (có build chỉ điền số dư sau ván đầu), nhưng phải nhớ để khi
+  // chip không lên thì báo đúng nghi phạm thay vì đổ lỗi cho mệnh giá chip.
+  const balanceUnread = !(Number.isFinite(balK) && balK > 0);
+  if (!balanceUnread && amountK > balK)
     return {ok:false,error:`Số dư bàn không đủ (${Math.floor(balK)}k).`};
   const readTmp = (s) => {
     const names = s === 'P' ? ['Player','player','PLAYER','xian','Xian','1']
@@ -652,57 +662,88 @@ const autoConfirm = Boolean(arguments[3]);
   let spot = null;
   for (const source of sources) if (source) for (const key of aliases) if (source[key]) { spot=source[key];break; }
   if (!spot) return {ok:false,error:`Không tìm được ô ${side} của bàn DG.`};
-  const invokeOnce = (node, args) => {
-    if (node?.clickHandler && typeof node.clickHandler.run === 'function') { node.clickHandler.run(); return true; }
-    if (node?.clickHandler && typeof node.clickHandler.runWith === 'function') { node.clickHandler.runWith(args); return true; }
-    if (node && typeof node.event === 'function') { node.event('mousedown');node.event('mouseup');node.event('click');return true; }
-    return false;
-  };
   const chipValue = (chip) => Number(chip?.chipNum||chip?.value||chip?.amount||0);
+  // Đo trên bàn 60101 (Laya của DG):
+  //   * tự phát sự kiện chuột vào node chip/ô cược **không** đổi
+  //     ``playerInfo.selectChip`` / ``betMoneyTmp`` — Laya chỉ chạy hit-test rồi mới
+  //     phát sự kiện cấp view, nên gọi ``event`` trên node là vô hiệu;
+  //   * ``chipMan.selectChipHandler(chip)`` đổi đúng ``playerInfo.selectChip``;
+  //   * ``view.betHandler({buttonName:'Player'|'Banker'})`` là chính handler mà view
+  //     gắn cho ô cược (đúng chữ ký ``betHandler(e){... e.buttonName ...}``);
+  //   * mọi đường đều bị ``checkBet`` chặn khi ``playerInfo.balance == 0``.
+  // Vì vậy bấm chip = gọi handler của view, và **luôn đọc lại** trạng thái sau mỗi
+  // bước; lệch là dừng ngay, không bấm lại để khỏi cộng dồn sai tiền.
+  const selectedChip = () => Number(view.playerInfo?.selectChip
+    || view.chipMan?.currentChip?.chipNum || 0);
+  const selectChip = async (chip) => {
+    const want = chipValue(chip);
+    if (selectedChip() === want) return true;
+    if (typeof view.chipMan?.selectChipHandler === 'function') {
+      try { view.chipMan.selectChipHandler(chip); } catch (error) { return false; }
+      await sleep(60);
+    }
+    return selectedChip() === want;
+  };
+  const placeChip = async (denom) => {
+    const name = side === 'P' ? 'Player' : 'Banker';
+    if (typeof view.betHandler !== 'function') return false;
+    const before = readTmp(side);
+    try { view.betHandler({buttonName:name}); } catch (error) { return false; }
+    await sleep(120);
+    return readTmp(side) - before === denom * scale;
+  };
   let stagedRaw = 0;
   for (const denom of best[amountK].sort((a,b)=>b-a)) {
     const chip = chips.find(c=>chipValue(c) === denom * scale);
-    if (!chip || !invokeOnce(chip,[chip]))
-      return {ok:false,staged_k:stagedRaw/scale,error:'Không kích hoạt được chip; dừng, không thử click lại.'};
-    await sleep(80);
-    const selected = view.chipMan?.selectChip || view.chipMan?.curChip;
-    const selectedRaw = Number(selected?.chipNum||selected?.value||selected?.amount||player.selectChip||0);
-    if (selected !== chip && selectedRaw !== denom * scale)
-      return {ok:false,staged_k:stagedRaw/scale,error:'Không xác nhận được mệnh giá chip đang chọn; dừng trước khi đặt.'};
-    const before = readTmp(side);
-    if (!invokeOnce(spot,[spot]))
-      return {ok:false,staged_k:stagedRaw/scale,error:'Không kích hoạt được ô cược; dừng, không click lại.'};
-    const expectedDelta = denom * scale;
-    const verifyDeadline = Date.now() + 2000;
-    let after = readTmp(side);
-    while (after - before !== expectedDelta && Date.now() < verifyDeadline) {
-      await sleep(100);
-      after = readTmp(side);
-    }
-    if (after - before !== expectedDelta) {
-      const detail = `cần +${denom}k; đọc được +${((after-before)/scale).toFixed(3)}k `
-        + `(ô ${ (before/scale).toFixed(3)}→${(after/scale).toFixed(3)}k, scale=${scale})`;
+    if (!chip) return {ok:false,staged_k:stagedRaw/scale,error:'Khay chip không còn mệnh giá cần dùng; dừng.'};
+    if (!await selectChip(chip))
       return {ok:false,staged_k:stagedRaw/scale,
-        error:`Số chip trên ô không tăng đúng mệnh giá sau khi chờ cập nhật; đã dừng, không bấm lại (${detail}).`};
+        error:`Không chọn được chip ${denom}k trong khay; dừng, không thử lại.`};
+    const before = readTmp(side);
+    if (!await placeChip(denom)) {
+      const after = readTmp(side);
+      const detail = `cần +${denom}k; đọc được +${((after-before)/scale).toFixed(3)}k `
+        + `(ô ${(before/scale).toFixed(3)}→${(after/scale).toFixed(3)}k, scale=${scale})`;
+      const hint = balanceUnread ? ' Số dư bàn DG đọc được là 0 — kiểm tra "Balance" trong bàn; '
+        + 'DG sẽ từ chối mọi cú bấm chip khi số dư bằng 0.' : '';
+      return {ok:false,staged_k:stagedRaw/scale,
+        error:`Số chip trên ô không tăng đúng mệnh giá sau khi bấm; đã dừng, không bấm lại (${detail}).${hint}`};
     }
     stagedRaw += denom * scale;
   }
-  if (stagedRaw !== amountK * scale)
-    return {ok:false,staged_k:stagedRaw/scale,error:'Tổng chip đã xếp không khớp mức yêu cầu.'};
   if (!autoConfirm) return {ok:true,staged:true,confirmed:false,round_id:roundId,side,amount_k:amountK};
+  // Đo trên bàn 60101: ``betBtnMan.confirmBtn.event('click')`` không chạy vì Laya chỉ
+  // phát sự kiện qua hit-test; còn ``view.confirmBet()`` (chính handler mà
+  // ``addAllEvent`` gắn cho ``confirmBtn``) là đường xác nhận thật của view.
   const manager = view.betBtnMan || {};
-  const confirm = manager.sureBtn || manager.confirmBtn || manager.btnSure || manager.okBtn || manager.btnOk
-    || view.sureBtn || view.confirmBtn || view.btnSure || view.okBtn || view.btnOk;
-  if (!confirm || !invokeOnce(confirm,[{}]))
+  const confirmBtn = manager.confirmBtn || manager.sureBtn || manager.btnSure
+    || manager.okBtn || view.confirmBtn || view.sureBtn || view.btnSure;
+  let confirmed = false;
+  if (typeof view.confirmBet === 'function') {
+    try { view.confirmBet(); confirmed = true; } catch (error) { confirmed = false; }
+  } else if (confirmBtn && typeof view.betBtnMan?.clickHandler === 'function'
+             && confirmBtn.buttonName) {
+    try { view.betBtnMan.clickHandler(String(confirmBtn.buttonName)); confirmed = true; }
+    catch (error) { confirmed = false; }
+  }
+  if (!confirmed)
     return {ok:false,staged:true,confirmed:false,round_id:roundId,side,amount_k:amountK,
       error:'Chip đã xếp nhưng không tìm thấy nút xác nhận; không thử click lại.'};
-  await sleep(250);
+  await sleep(400);
   const real = view.betMoneyTrue || {};
-  const realAmount = readTmp(side) === 0 ? Number(real[side === 'P' ? 'Player' : 'Banker']
-    || real[side === 'P' ? 'player' : 'banker'] || 0) : 0;
-  if (realAmount < amountK * scale)
+  const readReal = () => Number(real[side === 'P' ? 'Player' : 'Banker']
+    || real[side === 'P' ? 'player' : 'banker'] || 0) / scale;
+  // DG ghi tiền vào ``betMoneyTrue`` sau khi server nhận cược, không tức thì; đọc một
+  // lần ở 400ms là chưa đủ nên phải chờ tới ~2s như bản WM.
+  const confirmDeadline = Date.now() + 2000;
+  let realSide = readReal();
+  while (realSide < amountK && Date.now() < confirmDeadline) {
+    await sleep(150);
+    realSide = readReal();
+  }
+  if (realSide < amountK)
     return {ok:false,staged:true,confirmed:false,round_id:roundId,side,amount_k:amountK,
-      error:'Chip đã xếp nhưng chưa xác nhận được cược từ trạng thái DG.'};
+      error:`Đã bấm xác nhận nhưng DG chỉ ghi nhận ${realSide.toFixed(3)}k thay vì ${amountK}k.`};
   return {ok:true,staged:true,confirmed:true,round_id:roundId,side,amount_k:amountK};
 })().then(done).catch(error=>done({ok:false,error:'Lỗi Laya khi đặt chip ('+(error?.name||'Error')+').' }));
 """
@@ -1269,6 +1310,72 @@ def lobby_tables(driver, wait=25.0):
             time.sleep(0.25)
     except Exception as exc:
         return {"ok": False, "error": "Không quét được sảnh DG (%s)." % type(exc).__name__}
+
+
+def _lobby_url_from(location):
+    """URL sảnh của chính tab DG: bỏ ``tableId`` nhưng giữ nguyên token phiên."""
+    parsed = urlsplit(location or "")
+    query = parse_qs(parsed.query, keep_blank_values=True)
+    query.pop("tableId", None)
+    door = (query.get("door") or query.get("Door") or [""])[0]
+    path = parsed.path
+    if "ddnewwap" in (location or "").lower():
+        if not path.lower().endswith(".html"):
+            path = path.rsplit("/", 1)[0] + "/index.html"
+    elif "direct1.html" not in path:
+        path = path.rsplit("/", 1)[0] + "/direct1.html"
+    if door and "door" not in {key.lower() for key in query}:
+        query["door"] = [door]
+    return urlunsplit((parsed.scheme, parsed.netloc, path,
+                       urlencode(query, doseq=True), ""))
+
+
+def leave_table(driver, wait=20.0):
+    """Đưa tab DG về sảnh của chính nó (bỏ ``tableId``), chờ Laya vẽ lại lưới bàn.
+
+    Không trả URL ra ngoài: URL mang token phiên. Chỉ báo trạng thái/đếm bàn.
+    """
+    if driver is None:
+        return {"ok": False, "error": "Mở profile Chrome trước khi rời bàn DG."}
+    try:
+        ctx = _dg_context(driver, wait=5.0)
+        if ctx is None:
+            return {"ok": False, "error": "Chưa thấy màn DG để rời bàn."}
+        state = driver.execute_script(_DG_STATE_JS) or {}
+        if not state.get("in_table"):
+            return {"ok": True, "lobby": True, "in_table": False,
+                    "note": "Đã ở sảnh DG sẵn."}
+        if ctx["mode"] != "tab":
+            # Iframe của site: trả iframe về tài liệu sảnh của chính nó.
+            path = tuple(ctx.get("path") or (ctx.get("index"),))
+            driver.switch_to.default_content()
+            _enter_path(driver, path[:-1])
+            index = path[-1]
+            lobby_url = _lobby_url_from(ctx.get("location") or "")
+            script = ("return (() => { const f = document.querySelectorAll('iframe,frame')[%d];"
+                      " if (!f) return {ok: false}; f.src = %s; return {ok: true}; })()"
+                      % (index, json.dumps(lobby_url)))
+            landed = driver.execute_script(script) or {}
+            if not landed.get("ok"):
+                return {"ok": False, "error": "Không đưa được iframe DG về sảnh."}
+        else:
+            lobby_url = _lobby_url_from(ctx.get("location") or "")
+            if not navigate_top(driver, lobby_url):
+                return {"ok": False, "error": "Không điều hướng được tab DG về sảnh."}
+        deadline = time.monotonic() + max(0.0, float(wait))
+        while time.monotonic() < deadline:
+            time.sleep(0.5)
+            if _dg_context(driver, wait=0) is None:
+                continue
+            probe = driver.execute_script(_DG_STATE_JS) or {}
+            if not probe.get("in_table") and (probe.get("lobby") or probe.get("ready")):
+                return {"ok": True, "lobby": True, "in_table": False,
+                        "tables": int(probe.get("table_cards") or 0),
+                        "note": "Đã về sảnh DG."}
+        return {"ok": False,
+                "error": "Đã bỏ mã bàn nhưng %d giây chưa thấy lại lưới bàn DG." % int(wait)}
+    except Exception as exc:
+        return {"ok": False, "error": "Không rời bàn DG được (%s)." % type(exc).__name__}
 
 
 def sync_table(driver, table_id, wait=30.0, settle=120.0):
