@@ -175,6 +175,14 @@ class LobbyScriptTest(unittest.TestCase):
         self.assertIn("enterMC", js)
         self.assertIn("table_cards", js)
 
+    def test_mobile_table_screen_is_recognised(self):
+        """The phone table screen has no ``banker`` node, only a bet view."""
+        js = GK.DG._DG_STATE_JS
+        self.assertIn("betBtn", js)
+        self.assertIn("betHandler", js)
+        # A lobby that still reports cards must not win over a real bet view.
+        self.assertIn("&& !inTable", js)
+
 
 class MobileTableTest(unittest.TestCase):
     """The phone loader is ``ddnewwap`` and the card id lives on the node."""
@@ -186,11 +194,26 @@ class MobileTableTest(unittest.TestCase):
     def test_loader_keeps_the_phone_folder(self):
         url = GK.DG._loader_url(
             "https://m.gk881.vip/Account/LoginToSupplier?SupplierType=DG",
-            "https://new-dd-cn.example.com/ddnewwap/direct1.html?token=T",
+            "https://new-dd-cn.example.com/ddnewwap/index.html?token=T",
             "60102")
-        self.assertIn("/ddnewwap/direct1.html", url)
+        self.assertIn("/ddnewwap/index.html", url)
+        self.assertNotIn("direct1.html", url)
         self.assertIn("tableId=60102", url)
-        self.assertNotIn("tableId=60101", url)
+
+    def test_phone_loader_is_never_rewritten_to_direct1(self):
+        """Measured live: ``ddnewwap/direct1.html`` is a 404 page with no Laya."""
+        lobby = ("https://new-dd-cn.example.com/ddnewwap/index.html"
+                 "?token=T&language=vi&tableId=&backUrl=x")
+        url = GK.DG._loader_url(lobby, "", "60101")
+        self.assertIn("/ddnewwap/index.html", url)
+        self.assertNotIn("direct1.html", url)
+        self.assertIn("tableId=60101", url)
+
+    def test_desktop_loader_still_uses_direct1(self):
+        url = GK.DG._loader_url(
+            "https://new-dd-cn.example.com/ddnewpc/index.html?token=T", "", "60103")
+        self.assertIn("/ddnewpc/direct1.html", url)
+        self.assertIn("tableId=60103", url)
 
     def test_laya_enter_matches_the_table_id_attribute(self):
         js = GK.DG._LAYA_ENTER_JS

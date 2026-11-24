@@ -408,14 +408,20 @@ return (() => {
     // có 'enterMC', nên chỉ kiểm tra enterMC thì sảnh mobile bị coi là chưa tải.
     if (name === 'tableMC' || name === 'roadMC') lobby = true;
     if (n.tableId !== undefined && n.tableId !== null && String(n.tableId) !== '') cards++;
+    // Màn hình bàn thật: bản desktop có node 'banker'; bản mobile không có node
+    // tên đó mà dựng view cược với betBtn/betHandler (đo trực tiếp: sau khi vào
+    // bàn mobile, _DG_STATE_JS cũ trả in_table=false trong khi view cược đã có).
+    // Dùng cùng dấu hiệu với _DG_BET_STATE_JS để hai hàm không mâu thuẫn.
     if (name.toLowerCase() === 'banker' && n.visible) inTable = true;
+    if (n.betBtn && (typeof n.betHandler === 'function' || n.betBtnMan
+        || n.baccaratLimit || n.tableInfoMan)) inTable = true;
     const t = typeof n.text === 'string' ? n.text.trim() : '';
     if (!label && t && t.length <= 30 && /(RB|S|SB)[0-9]+/.test(t)) label = t;
     for (let i = 0; i < (n.numChildren || 0); i++) walk(n.getChildAt(i), d + 1);
   };
   walk(Laya.stage, 0);
-  return {ready: true, lobby: lobby || cards > 0, in_table: inTable, label: label,
-          table_cards: cards,
+  return {ready: true, lobby: (lobby || cards > 0) && !inTable, in_table: inTable,
+          label: label, table_cards: cards,
           url_table: (location.href.match(/tableId=([0-9]+)/) || [])[1] || ''};
 })()
 """
@@ -1107,14 +1113,20 @@ def _laya_enter_table(driver, table_id, name=""):
 
 
 def _loader_url(location, src, table_id):
-    # The desktop build uses ``ddnewpc`` and the phone build ``ddnewwap``; both
-    # load a table through ``direct1.html`` in their own folder.
+    # The desktop build (``ddnewpc``) loads a table through ``direct1.html``.
+    # The phone build (``ddnewwap``) has no such file — measured live, requesting
+    # ``ddnewwap/direct1.html`` returns a 404 page with no Laya at all. Phone
+    # tables open from ``index.html?tableId=<id>``, so its own file name must be
+    # kept instead of forcing the desktop loader.
     base = src if "ddnew" in (src or "").lower() else location
     parsed = urlsplit(base)
     query = parse_qs(parsed.query, keep_blank_values=True)
     query["tableId"] = [table_id]
     path = parsed.path
-    if "direct1.html" not in path:
+    if "ddnewwap" in base.lower():
+        if not path.lower().endswith(".html"):
+            path = path.rsplit("/", 1)[0] + "/index.html"
+    elif "direct1.html" not in path:
         path = path.rsplit("/", 1)[0] + "/direct1.html"
     return urlunsplit((parsed.scheme, parsed.netloc, path, urlencode(query, doseq=True), ""))
 
