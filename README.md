@@ -45,11 +45,28 @@ Ba lỗi thật đã đo trực tiếp trên `m.gk881.vip` (Chrome Android qua C
 | Vào bàn thì tab trắng **404 Not Found** (`ddnewwap/direct1.html`) | `_loader_url` áp loader của bản desktop (`direct1.html`) cho **cả** bản điện thoại; `ddnewwap` không có file đó — đo trực tiếp: trang 404, `typeof Laya === 'undefined'` | `_loader_url` giữ nguyên `index.html` khi URL thuộc `ddnewwap` và chỉ đặt `tableId=<id>`; `direct1.html` chỉ dùng cho `ddnewpc`. Đo lại: `ddnewwap/index.html?tableId=60101` → Laya mount, `in_table=true` |
 | Đã ở trong bàn mà `dg.table`/`dg.syncTable` vẫn báo `in_table=false` | `_DG_STATE_JS` chỉ nhận màn hình bàn qua node tên `banker` (chỉ có ở bản desktop). Bản mobile dựng view cược với `betBtn`/`betHandler`, nên `bet_state` bảo đã vào bàn còn `_DG_STATE_JS` thì không | `_DG_STATE_JS` dùng **cùng dấu hiệu** với `_DG_BET_STATE_JS` (`betBtn` + `betHandler`/`betBtnMan`/`baccaratLimit`/`tableInfoMan`); `lobby` chỉ còn `true` khi **chưa** ở trong bàn (`&& !inTable`) |
 
-Khi profile **chưa đăng nhập**, site đá sang `/Account/Login?loginToGame=…`. Trang này
-có ô mật khẩu và (đo thực tế) đứng yên, nên sau `_LOGIN_WALL_GRACE` (10 s) flow dừng và
-báo thẳng *"Profile chưa đăng nhập GK881…"* thay vì chờ hết 120 s rồi báo lỗi chung.
-Trang chuyển tiếp `/Account/LoginToSupplier?SupplierType=DG` **không** bị coi là tường
-đăng nhập (nó là trang bàn giao DG, có thể tự mount sảnh Laya cho cả profile chưa đăng nhập).
+Khi profile **chưa đăng nhập**, site đá sang `/Account/Login?loginToGame=…`. Trước đây
+flow dừng sau 10 s và báo *"Profile chưa đăng nhập GK881…"*, tức là bỏ dở một lượt chạy
+mà người dùng sẵn sàng đăng nhập tay. Giờ flow **chờ** thay vì bỏ cuộc:
+
+| Việc | Hành vi |
+| --- | --- |
+| Phát hiện màn hình đăng nhập | `_login_page_state()` chỉ tính là "tường" khi có `input[type=password]` **hiển thị** hoặc route `/account/login`/`/maintenance`; `/Account/LoginToSupplier?SupplierType=DG` là trang bàn giao DG, **không** phải tường |
+| Chờ người dùng | `login_gate()` chạy **trong** vòng poll (không chặn), nên một redirect tự hết (`?loginToGame=…` → `LoginToSupplier`) vẫn được nhận là bình thường. Tường thật phải đứng yên `_LOGIN_GRACE` (8 s) mới báo *"Hãy đăng nhập trong cửa sổ Chrome; tool sẽ chờ tối đa 300 giây"* |
+| Không ăn ngân sách | Thời gian chờ người được **cộng lại** vào `deadline`/`poll`, nên các bước sau (thẻ DG, sảnh Laya) vẫn còn đủ thời gian thay vì chết ngay sau khi đăng nhập xong |
+| Hết giờ chờ | Sau `_LOGIN_WAIT` (300 s) mới trả lỗi nêu đúng nguyên nhân đăng nhập |
+
+Phiên đăng nhập được **lưu và khôi phục** (`aibcr/adapters/session_store.py`):
+
+| Việc | Hành vi |
+| --- | --- |
+| Lưu | `gk881.openDG` gọi `session_store.save()` trong `finally` (kể cả khi flow lỗi), chỉ giữ cookie thuộc `gk881` + localStorage, ghi `chrome_profile*/session-gk881.json` — nằm trong `.gitignore`, không bao giờ commit |
+| Khôi phục | `session_store.restore()` nạp cookie trước khi chạy; **chỉ điều hướng** khi tab còn trắng (`about:blank`), vì WebDriver từ chối mọi cookie trên origin trắng và `driver.get()` sẽ phá mất sảnh DG đang mở |
+| Không lộ bí mật | `describe()` chỉ trả số cookie, tên miền và thời điểm lưu — không có giá trị token/cookie, nên log/UI không thể rò rỉ |
+
+Đo thật (Chrome 157, profile `chrome_profile`): mở → lưu **7 cookie / 8 khoá localStorage**
+→ `quit()` Chrome → mở lại → khôi phục `ok=True, cookies=7` → vẫn `signed_in=True`, không
+hiện lại form đăng nhập.
 
 
 > **BẮT BUỘC — push GitHub sau MỖI lần cập nhật hoặc sửa đổi**
@@ -420,6 +437,7 @@ python -m unittest tests.test_enter_valid_flow -v # harness pipeline chọn bàn
 python -m unittest tests.test_live_ai -v          # AI, key RAM, bet.place, chặn override
 python -m unittest tests.test_lobby_promote -v    # tách iframe sảnh DG ra URL trang (GK881 mobile)
 python -m unittest tests.test_gk881_mobile_flow -v # lớp che CDK, thẻ DG, sảnh Laya bản điện thoại
+python -m unittest tests.test_session_store -v    # lưu/khôi phục phiên đăng nhập (cookie + localStorage)
 python -m unittest tests.test_architecture -v     # ranh giới tầng MVC, không LONG-LONG
 node tests/test_reader.cjs                        # test logic đọc bàn (node --test)
 node tests/test_profile_subtabs.cjs               # tab Profiles: Chrome / OmniLogin / Hidemium

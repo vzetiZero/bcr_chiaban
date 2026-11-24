@@ -299,14 +299,105 @@ def _is_login_wall(driver):
     return bool(data.get("password"))
 
 
-_LOGIN_HINT = ("Profile chưa đăng nhập GK881: sau khi chọn DG, trang dừng ở màn hình "
-               "đăng nhập. Hãy đăng nhập trên profile rồi chạy lại.")
+_LOGIN_HINT = ("Profile chưa đăng nhập GK881: trang đang dừng ở màn hình đăng nhập. "
+               "Hãy đăng nhập trên cửa sổ Chrome rồi chạy lại.")
 
 # A rendered password box only exists on the real login screen; the DG hand-off
 # page (``LoginToSupplier``) has none. Measured on the live site, the login page
-# never resolves by itself, so a short grace is enough to tell the two apart and
-# spares the operator a full 120 s wait before the real cause is named.
-_LOGIN_WALL_GRACE = 10.0
+# does not resolve by itself, so it needs a human — but aborting immediately
+# throws away a run the operator is willing to finish by hand. The flow
+# therefore hands control over and waits for the sign-in to complete.
+_LOGIN_WAIT = 300.0          # how long to let the operator sign in
+_LOGIN_POLL = 1.0
+# A measured run showed ``/Account/Login?loginToGame=…`` resolving by itself into
+# the DG hand-off page, while a really signed-out profile stays on the form. The
+# route alone is therefore not proof of a wall: it must persist for this grace
+# before the operator is asked to type anything.
+_LOGIN_GRACE = 8.0
+
+
+def _login_page_state(driver):
+    """Snapshot used while waiting for a human to finish signing in.
+
+    Returns ``{"wall": bool, "signed_in": bool, "reason": str}``. ``signed_in``
+    is deliberately conservative: it only counts when the login form is gone
+    *and* the page is no longer the site's login/maintenance route.
+    """
+    try:
+        data = driver.execute_script(r"""
+          const path = String(location.pathname || '').toLowerCase();
+          const visible = (node) => {
+            try {
+              const rect = node.getBoundingClientRect();
+              const style = getComputedStyle(node);
+              return rect.width > 0 && rect.height > 0
+                && style.visibility !== 'hidden' && style.display !== 'none';
+            } catch (error) { return false; }
+          };
+          const password = [...document.querySelectorAll('input[type="password"]')]
+            .some(visible);
+          const loginRoutes = /\/account\/login|\/maintenance/;
+          return {
+            path: path,
+            password: password,
+            onLoginRoute: loginRoutes.test(path),
+            handoff: /logintosupplier/.test(path),
+            hasUserBox: [...document.querySelectorAll(
+              'input[name*="user" i], input[name*="account" i], input[id*="user" i]')]
+              .some(visible),
+          };
+        """) or {}
+    except Exception:
+        return {"wall": False, "signed_in": False, "reason": "script-error"}
+    if data.get("handoff"):
+        return {"wall": False, "signed_in": True, "reason": "handoff"}
+    wall = bool(data.get("password")) or bool(data.get("onLoginRoute"))
+    return {"wall": wall, "signed_in": not wall,
+            "reason": "form" if data.get("password") else ("route" if wall else "ok"),
+            "user_box": bool(data.get("hasUserBox"))}
+
+
+def wait_for_login(driver, report=None, timeout=None, log=None, grace=None):
+    """Wait for the operator to sign in on the site's login screen.
+
+    The user asked for exactly this: when the site shows a login form, wait
+    (while the element exists) instead of failing the run. Returns
+    ``{"ok": True}`` as soon as the form is gone, otherwise ``{"ok": False,
+    "error": ...}`` after ``timeout``. Nothing is typed or submitted here: the
+    profile keeps its own credentials and the human stays in control.
+
+    A redirect that resolves by itself (measured:
+    ``/Account/Login?loginToGame=…`` → ``/Account/LoginToSupplier``) is not a
+    wall, so the form must persist for ``grace`` seconds before the wait (and
+    its log line) even starts.
+    """
+    def say(message, level="info"):
+        if report is not None:
+            report(message, level)
+
+    grace = _LOGIN_GRACE if grace is None else max(0.0, float(grace))
+    limit = _LOGIN_WAIT if timeout is None else max(1.0, float(timeout))
+    wall_since = None
+    started = None
+    while True:
+        state = _login_page_state(driver)
+        if not state.get("wall"):
+            if started is not None:
+                waited = time.monotonic() - started
+                say("Đã đăng nhập xong sau %.0f giây; chạy tiếp." % waited)
+                return {"ok": True, "waited": waited}
+            return {"ok": True, "waited": 0.0}
+        if wall_since is None:
+            wall_since = time.monotonic()
+        if (started is None and time.monotonic() - wall_since >= grace):
+            started = time.monotonic()
+            say("GK881 đang ở màn hình đăng nhập. Hãy đăng nhập trong cửa sổ Chrome; "
+                "tool sẽ chờ tối đa %d giây rồi tự chạy tiếp." % int(limit))
+        if started is not None and time.monotonic() - started >= limit:
+            say("Hết thời gian chờ đăng nhập (%.0f giây)." % limit, "error")
+            return {"ok": False, "error": _LOGIN_HINT,
+                    "waited": time.monotonic() - started}
+        time.sleep(_LOGIN_POLL)
 
 
 def close_mobile_popups(driver, rounds=6, require_clear=True):
@@ -421,11 +512,17 @@ def open_dg(driver, wait=120.0, log=None):
 
     ``log`` is an optional callback used by the desktop controller to expose a
     sanitized trace in its activity log. Existing callers remain compatible.
+
+    Waiting for a human to sign in is *not* charged to ``wait``: the timeout is
+    the site's own budget, and a login screen has to stay open until the operator
+    finishes. ``deadline`` is therefore extended whenever the flow waits for a
+    sign-in, so the remaining steps still get their full allowance.
     """
     from selenium.webdriver.common.by import By
     from selenium.webdriver.support.ui import WebDriverWait
 
-    deadline = time.monotonic() + max(1.0, float(wait))
+    budget = max(1.0, float(wait))
+    deadline = time.monotonic() + budget
     stage = "khởi tạo"
 
     def report(message, level="info"):
@@ -437,6 +534,42 @@ def open_dg(driver, wait=120.0, log=None):
 
     def remain(maximum=20.0):
         return max(0.1, min(float(maximum), deadline - time.monotonic()))
+
+    # Watched *without blocking*: a measured redirect
+    # (/Account/Login?loginToGame=… → /Account/LoginToSupplier) resolves by
+    # itself while the normal lobby polling is what discovers it. Blocking the
+    # poll to "wait for login" would mistake that redirect for a real wall.
+    watch = {"since": None, "started": None}
+
+    def login_gate():
+        """Return False only after the operator was asked for too long."""
+        nonlocal deadline
+        state = _login_page_state(driver)
+        now = time.monotonic()
+        if not state.get("wall"):
+            if watch["started"] is not None:
+                report("Đã đăng nhập xong; chạy tiếp.")
+                deadline += now - watch["started"]
+            watch["since"] = watch["started"] = None
+            return True
+        watch["since"] = watch["since"] or now
+        if watch["started"] is None and now - watch["since"] >= _LOGIN_GRACE:
+            watch["started"] = now
+            report("GK881 đang ở màn hình đăng nhập. Hãy đăng nhập trong cửa sổ "
+                   "Chrome; tool sẽ chờ tối đa %d giây rồi tự chạy tiếp."
+                   % int(_LOGIN_WAIT))
+        if (watch["started"] is not None
+                and now - watch["started"] >= _LOGIN_WAIT):
+            report("Hết thời gian chờ đăng nhập (%.0f giây)." % _LOGIN_WAIT, "error")
+            return False
+        # While the operator is signing in, the loop budget must not drain: the
+        # remaining steps still need their full allowance afterwards.
+        if watch["started"] is not None:
+            deadline += _LOGIN_POLL
+        return True
+
+    def waiting_for_login():
+        return watch["started"] is not None
 
     def visible(element):
         try:
@@ -532,6 +665,10 @@ def open_dg(driver, wait=120.0, log=None):
                 report("Trang hiện tại là trang tổng hợp link, không có menu Casino.", "error")
                 return {"ok": False, "site_id": "gk881",
                         "error": "GK881 mobile đang ở trang tổng hợp link; hãy mở link casino chính thức rồi chạy lại."}
+            # A signed-out profile is parked on the login form before it can even
+            # show the category strip. The gate below runs inside every polling
+            # loop instead of blocking one, so a redirect that resolves by itself
+            # is never mistaken for a real login wall.
             # Open the Casino category, then wait for the DG provider card.
             nav = driver.execute_script(_MOBILE_CATEGORY_JS, "casino") or {}
             if nav.get("ok"):
@@ -548,18 +685,14 @@ def open_dg(driver, wait=120.0, log=None):
             # so the layers are cleared again on every pass before tapping.
             dg_deadline = min(deadline, time.monotonic() + remain(45.0))
             tapped = {}
-            wall_since = None
             while time.monotonic() < dg_deadline:
-                # Keep looking even while the login form is up; a signed-out
-                # profile stays there, so name that cause after a short grace
-                # instead of burning the whole card budget first.
-                if _is_login_wall(driver):
-                    wall_since = wall_since or time.monotonic()
-                    if time.monotonic() - wall_since >= _LOGIN_WALL_GRACE:
-                        report("GK881 dừng ở màn hình đăng nhập nên không có thẻ DG.", "error")
-                        return {"ok": False, "site_id": "gk881", "error": _LOGIN_HINT}
-                else:
-                    wall_since = None
+                # A login form may appear here when the site re-checks the session
+                # on the card tap. Keep polling and let the operator sign in.
+                before_gate = time.monotonic()
+                if not login_gate():
+                    return {"ok": False, "site_id": "gk881", "error": _LOGIN_HINT}
+                if waiting_for_login() or time.monotonic() - before_gate > 1.5:
+                    dg_deadline += max(1.0, time.monotonic() - before_gate)
                 clear_mobile_layers()
                 tapped = driver.execute_script(_MOBILE_DG_CARD_JS) or {}
                 if tapped.get("ok"):
@@ -568,42 +701,31 @@ def open_dg(driver, wait=120.0, log=None):
                 time.sleep(1.0)
             if not tapped.get("ok"):
                 report("Chưa thấy thẻ DreamGaming trên mobile.", "error")
-                if _is_login_wall(driver):
-                    return {"ok": False, "site_id": "gk881", "error": _LOGIN_HINT}
                 details = tapped.get("labels") or []
                 return {"ok": False, "site_id": "gk881",
                         "error": "GK881 mobile chưa hiển thị thẻ DreamGaming sau khi chọn Casino."
                                  + (" Thẻ đang thấy: %s." % ", ".join(details[:6])
                                     if details else "")}
             # Wait for the DG lobby to mount. Announcement dialogs can reappear on
-            # the hand-off page as well, so keep clearing them while polling.
+            # the hand-off page as well, so keep clearing them while polling. A
+            # login form that shows up here also waits for the operator.
             lobby = {}
-            wall_since = None
             poll = min(deadline, time.monotonic() + remain(75.0))
             while time.monotonic() < poll:
-                # Keep polling even while the login form is up: the measured
-                # redirect resolves by itself into the DG hand-off page, and only
-                # a form that stays put is a real wall.
-                if _is_login_wall(driver):
-                    wall_since = wall_since or time.monotonic()
-                else:
-                    wall_since = None
+                before_gate = time.monotonic()
+                if not login_gate():
+                    return {"ok": False, "site_id": "gk881", "error": _LOGIN_HINT}
+                if waiting_for_login() or time.monotonic() - before_gate > 1.5:
+                    poll += max(1.0, time.monotonic() - before_gate)
                 clear_mobile_layers()
                 lobby = DG.lobby_tables(driver, wait=2.0)
                 if lobby.get("ok"):
                     break
-                if (wall_since is not None
-                        and time.monotonic() - wall_since >= _LOGIN_WALL_GRACE):
-                    # Measured: a signed-out profile parks on the login form and
-                    # never leaves it, so stop early and name the real cause
-                    # instead of waiting out the whole lobby budget.
-                    report("GK881 dừng ở màn hình đăng nhập nên sảnh DG không mở.", "error")
-                    return {"ok": False, "site_id": "gk881", "error": _LOGIN_HINT}
                 time.sleep(1.0)
             if not lobby.get("ok"):
                 error = lobby.get("error") or "Sảnh DG chưa tải xong."
-                if _is_login_wall(driver):
-                    report("GK881 dừng ở màn hình đăng nhập nên sảnh DG không mở.", "error")
+                if watch["started"] is not None:
+                    # Still on the login form at the end: name the real cause.
                     return {"ok": False, "site_id": "gk881", "error": _LOGIN_HINT}
                 report("Sảnh DG mobile chưa sẵn sàng: %s" % error, "error")
                 return {"ok": False, "site_id": "gk881", "error": error}

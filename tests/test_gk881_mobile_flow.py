@@ -22,6 +22,7 @@ REAL failures found by driving a live ``m.gk881.vip`` profile through CDP:
 """
 
 import inspect
+import threading
 import time
 import unittest
 
@@ -63,6 +64,10 @@ class MobileSiteDriver:
         if "isHub" in script:
             return {"isHub": False, "categories": self.categories,
                     "providers": [], "dgText": True}
+        # ``_login_page_state`` (wait-for-operator) asks for the same route/password
+        # facts but with its own field names; ``_is_login_wall`` keeps the old one.
+        if "onLoginRoute" in script:
+            return self._login_page_state()
         if "getComputedStyle(node)" in script and "maintenance" in script:
             return self._wall_state()
         if "via: 'category-item'" in script:
@@ -92,6 +97,15 @@ class MobileSiteDriver:
         return {"path": low, "password": self._on_login(),
                 "maintenance": "/maintenance" in low,
                 "handoff": "logintosupplier" in low}
+
+    def _login_page_state(self):
+        path = self.current_url.split("?")[0]
+        path = path[path.find("/", 8):] if path.startswith("http") else path
+        low = path.lower()
+        return {"path": low, "password": self._on_login(),
+                "onLoginRoute": "/account/login" in low or "/maintenance" in low,
+                "handoff": "logintosupplier" in low,
+                "hasUserBox": self._on_login()}
 
     def _close_layers(self):
         self.close_calls += 1
@@ -255,11 +269,15 @@ class MobileFlowTest(unittest.TestCase):
     def setUp(self):
         self.original_lobby = GK.DG.lobby_tables
         self.original_promote = GK.DG.promote_lobby_to_tab
+        self.original_wait = GK._LOGIN_WAIT
+        self.original_grace = GK._LOGIN_GRACE
         GK.DG.promote_lobby_to_tab = lambda *a, **k: {"ok": False}
 
     def tearDown(self):
         GK.DG.lobby_tables = self.original_lobby
         GK.DG.promote_lobby_to_tab = self.original_promote
+        GK._LOGIN_WAIT = self.original_wait
+        GK._LOGIN_GRACE = self.original_grace
 
     def _lobby_after(self, taps, tables=None):
         driver_box = {}
@@ -282,17 +300,51 @@ class MobileFlowTest(unittest.TestCase):
         # The backdrop was gone before the successful card tap.
         self.assertGreaterEqual(driver.close_before_tap[-1], 3)
 
-    def test_login_wall_is_named_instead_of_a_generic_timeout(self):
-        """A run that never leaves the login form must say so, and quickly."""
+    def test_login_wall_waits_for_the_operator_then_continues(self):
+        """A login form must be waited on, not turned into a hard failure."""
         driver = MobileSiteDriver(dialogs=0, card_after=0, login_after=1)
+        GK._LOGIN_WAIT = 6.0
+        GK._LOGIN_GRACE = 0.2
+        GK.DG.lobby_tables = self._lobby_after(1)
+
+        def sign_in_later():
+            # The operator signs in after ~2 s; the run must then continue.
+            time.sleep(2.0)
+            driver.current_url = ("https://m.gk881.vip/Account/LoginToSupplier"
+                                  "?SupplierType=DG")
+
+        threading.Thread(target=sign_in_later, daemon=True).start()
+        result = GK.open_dg(driver, wait=60)
+        self.assertTrue(result["ok"], result.get("error"))
+        self.assertEqual(result["layout"], "mobile")
+        self.assertEqual(result["tables"][0]["table_id"], "60101")
+
+    def test_login_wait_gives_the_budget_back(self):
+        """Time spent waiting for a human must not eat the site timeout."""
+        driver = MobileSiteDriver(dialogs=0, card_after=0, login_after=1)
+        GK._LOGIN_WAIT = 20.0
+        GK._LOGIN_GRACE = 0.2
+        GK.DG.lobby_tables = self._lobby_after(1)
+
+        def sign_in_slowly():
+            time.sleep(4.0)
+            driver.current_url = ("https://m.gk881.vip/Account/LoginToSupplier"
+                                  "?SupplierType=DG")
+
+        threading.Thread(target=sign_in_slowly, daemon=True).start()
+        # A budget far smaller than the wait: extending it is what lets the run
+        # finish instead of dying on "no provider card" right after sign-in.
+        result = GK.open_dg(driver, wait=4)
+        self.assertTrue(result["ok"], result.get("error"))
+
+    def test_login_timeout_names_the_cause(self):
+        driver = MobileSiteDriver(dialogs=0, card_after=0, login_after=1)
+        GK._LOGIN_WAIT = 2.0
+        GK._LOGIN_GRACE = 0.2
         GK.DG.lobby_tables = self._lobby_after(99)
-        started = time.monotonic()
-        result = GK.open_dg(driver, wait=90)
-        elapsed = time.monotonic() - started
+        result = GK.open_dg(driver, wait=30)
         self.assertFalse(result["ok"])
         self.assertIn("đăng nhập", result["error"])
-        # It must not sit out the whole 75 s lobby budget.
-        self.assertLess(elapsed, GK._LOGIN_WALL_GRACE + 20)
 
     def test_transient_login_redirect_still_reaches_the_lobby(self):
         """``/Account/Login?loginToGame=…`` resolves by itself; keep waiting."""
@@ -345,7 +397,7 @@ class ClosePopupTest(unittest.TestCase):
     def test_open_dg_still_keeps_the_desktop_entry(self):
         source = inspect.getsource(GK.open_dg)
         self.assertIn('_MOBILE_CATEGORY_JS, "casino"', source)
-        self.assertIn("_is_login_wall", source)
+        self.assertIn("login_gate", source)
 
 
 if __name__ == "__main__":
