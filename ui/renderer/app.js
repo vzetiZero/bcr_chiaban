@@ -25,7 +25,8 @@ function renderActivityLog() {
   $('#activity-log-empty').hidden = activityLogRows.length > 0;
   for (const item of activityLogRows) {
     const row = document.createElement('article');
-    row.className = `activity-log-row ${item.level === 'error' ? 'error' : ''}`;
+    row.className = `activity-log-row ${item.level === 'error' ? 'error' : ''}`
+      + `${item.level === 'action' ? ' action' : ''}`;
     const meta = document.createElement('div');
     meta.className = 'activity-log-meta';
     const time = document.createElement('time');

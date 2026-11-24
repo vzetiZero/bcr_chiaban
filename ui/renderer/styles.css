@@ -1159,6 +1159,10 @@ h2 { margin: 6px 0 0; color: var(--text-strong); font-size: 17px; font-weight: 8
   background: var(--row-bg);
 }
 .activity-log-row.error { border-color: rgba(242, 89, 91, .38); border-left-color: var(--red); background: rgba(242, 89, 91, .1); }
+/* Việc cần người thật làm ngay trên Chrome (captcha thanh trượt, đăng nhập):
+   còi hú như lỗi nhưng màu cảnh báo để không bị nhầm với sự cố tiền/bàn. */
+.activity-log-row.action { border-color: rgba(245, 158, 11, .45); border-left-color: #f59e0b; background: rgba(245, 158, 11, .12); }
+.activity-log-row.action .activity-log-meta { color: #fbbf24; }
 .activity-log-meta { display: flex; justify-content: space-between; gap: 12px; color: var(--muted); font-size: 9px; font-weight: 650; }
 .activity-log-row.error .activity-log-meta { color: var(--danger-text); }
 .activity-log-row p {

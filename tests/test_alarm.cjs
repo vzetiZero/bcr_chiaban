@@ -99,3 +99,38 @@ test('the jump from the info path cannot ring', () => {
   assert.match(body, /return false/);
   assert.match(body, /level/);
 });
+
+test('a captcha that needs the operator rings the siren', () => {
+  // Rule from the user: never solve the slider, but make noise and wait.
+  assert.ok(source.includes("'xác minh an toàn'"), 'missing captcha pattern');
+  assert.ok(source.includes("'kéo thanh trượt'"), 'missing slider pattern');
+  assert.match(source, /actionLevel/);
+  assert.match(source, /=== 'action'/);
+});
+
+test('the group flow raises the siren when a DG lobby is captcha-blocked', () => {
+  const main = fs.readFileSync(path.join(ROOT, 'ui', 'main.js'), 'utf8');
+  // Both deadlocks of the group run must surface as `error` so app.js rings.
+  assert.match(main, /captchaNote/);
+  assert.match(main, /xác minh an toàn\|kéo thanh trượt/i);
+  assert.match(main, /error: Boolean\(captchaNote\)/);
+  assert.match(main, /error: waitCaptcha/);
+});
+
+test('an action-level log row is styled apart from an error', () => {
+  assert.match(css, /\.activity-log-row\.action/);
+  const renderer = fs.readFileSync(path.join(ROOT, 'ui', 'renderer', 'app.js'), 'utf8');
+  assert.match(renderer, /item\.level === 'action'/);
+});
+
+test('the main process lets an action-level log reach the renderer intact', () => {
+  // Bug measured while wiring the captcha alarm: `appendActivityLog` folded
+  // every level except `error` into `info`, so a captcha line could neither be
+  // styled as an action nor ring the siren. The funnel must carry it through
+  // to disk *and* to `activity-log:entry`.
+  const main = fs.readFileSync(path.join(ROOT, 'ui', 'main.js'), 'utf8');
+  const body = main.slice(main.indexOf('function appendActivityLog'));
+  const logBody = body.slice(0, body.indexOf('const PYTHON_CANDIDATES'));
+  assert.match(logBody, /\['error', 'action'\]\.includes\(level\)/);
+  assert.doesNotMatch(logBody, /level === 'error' \? 'error' : 'info'/);
+});

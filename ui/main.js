@@ -24,6 +24,10 @@ function appendActivityLog({ source = 'app', level = 'info', text = '' } = {}) {
   const safeText = String(text).replace(/((?:token|jwt|authorization|cookie|api[_-]?key)=)[^&\s]+/gi, '$1[redacted]')
     .slice(0, 2000);
   if (!safeText) return activityLogQueue;
+  // ``action`` must survive this funnel: it means "the human has to do something
+  // on Chrome right now" (slider captcha, login). Collapsing it to ``info``
+  // would mute the siren the renderer relies on.
+  const safeLevel = ['error', 'action'].includes(level) ? level : 'info';
   activityLogQueue = activityLogQueue.then(async () => {
     let rows = [];
     try {
@@ -31,7 +35,7 @@ function appendActivityLog({ source = 'app', level = 'info', text = '' } = {}) {
       if (Array.isArray(parsed)) rows = parsed;
     } catch { /* nhật ký chưa được tạo */ }
     const row = { time: new Date().toISOString(), source: String(source).slice(0, 80),
-      level: level === 'error' ? 'error' : 'info', text: safeText };
+      level: safeLevel, text: safeText };
     rows.push(row);
     if (rows.length > ACTIVITY_LOG_LIMIT) rows = rows.slice(-ACTIVITY_LOG_LIMIT);
     await fs.promises.writeFile(activityLogPath(), JSON.stringify(rows, null, 2), 'utf8');
@@ -52,7 +56,7 @@ const PYTHON_CANDIDATES = [
 const DEFAULT_SITES = Object.freeze([
   { id: 'e3951', label: 'E3951', url: 'https://www.e3951.com/seamless?gameType=LIVE', chips: 'small', auto: true },
   { id: 'gk881', label: 'GK881', url: 'https://m.gk881.vip/', chips: 'small', auto: true },
-  { id: '888ae66', label: '888AE66', url: 'https://www.888ae66.com/', chips: 'small', auto: false },
+  { id: '888ae66', label: '888AE66', url: 'https://www.888ae66.com/m', chips: 'small', auto: true },
   { id: 'bum123', label: 'BUM123', url: 'https://www.bum123.com/aff/10459', chips: 'small', auto: false },
   { id: 'vnwtop', label: 'VNWTop', url: 'https://vnwtop.com/', chips: 'large', auto: true },
   { id: 'febet', label: 'FEBET Baccarat', url: 'https://febet.kiwi/live-casino/baccarat?a=c76811abcadb64fed7d82b32d7e79f3c&utm_campaign=social&utm_source=aphonso&utm_medium=sale&utm_term=bee&utm_content=KANGIN&event=', chips: 'large', auto: true },
@@ -60,6 +64,17 @@ const DEFAULT_SITES = Object.freeze([
 
 const SITE_ID_RE = /^[a-z0-9][a-z0-9_-]{1,23}$/;
 const SITE_CHIPS = new Set(['small', 'large']);
+
+// Site ids that have a real entry adapter in the Python engine. Kept in one
+// place so the run gate, the run dispatcher and the Config badge cannot drift.
+const AUTOMATED_SITE_IDS = Object.freeze(['febet', 'gk881', 'e3951', 'vnwtop', '888ae66']);
+const SITE_SERVICE_METHODS = Object.freeze({
+  febet: 'febet.openDG',
+  gk881: 'gk881.openDG',
+  e3951: 'e3951.openDG',
+  vnwtop: 'vnwtop.openDG',
+  '888ae66': '888ae66.openDG',
+});
 let sitesCache = null;
 
 function sitesConfigPath() {
@@ -1167,15 +1182,22 @@ async function runDGGroup(count, siteIds, requestedIndices = null) {
   const autoEntryIndices = indicesToUse.filter((index) => {
     const meta = siteMeta(index);
     // Only sites with a registered entry adapter can be automated.
-    return meta?.auto && ['febet', 'gk881', 'e3951', 'vnwtop'].includes(meta.id);
+    return meta?.auto && AUTOMATED_SITE_IDS.includes(meta.id);
   });
   const autoEntryStates = new Map();
+  // Per-site entry budget (seconds) and RPC timeout (milliseconds). 888AE66
+  // needs the most: Dream Gaming opens in a *new tab* that takes ≈24 s, and the
+  // lobby may sit behind a slider captcha that only the operator can clear.
+  // Each captcha wait adds up to 300 s on top of the budget, so the RPC timeout
+  // must be larger than the budget or a healthy flow dies on the client side.
+  const SITE_ENTRY_WAIT = Object.freeze({ gk881: 120, '888ae66': 300 });
+  const SITE_ENTRY_TIMEOUT = Object.freeze({ '888ae66': 1200000 });
   const runSiteEntry = (index) => {
     const siteId = siteFor(index);
-    if (siteId === 'febet') return profileEngine(index).call('febet.openDG', {}, 360000);
-    if (siteId === 'e3951') return profileEngine(index).call('e3951.openDG', { wait: 150 }, 360000);
-    if (siteId === 'vnwtop') return profileEngine(index).call('vnwtop.openDG', { wait: 150 }, 360000);
-    return profileEngine(index).call('gk881.openDG', { wait: 120 }, 360000);
+    const method = SITE_SERVICE_METHODS[siteId] || 'gk881.openDG';
+    const wait = SITE_ENTRY_WAIT[siteId] || 150;
+    const timeout = SITE_ENTRY_TIMEOUT[siteId] || 600000;
+    return profileEngine(index).call(method, { wait }, timeout);
   };
   const rememberSiteEntryResults = (entryIndices, results) => {
     results.forEach((result, offset) => {
@@ -1228,10 +1250,13 @@ async function runDGGroup(count, siteIds, requestedIndices = null) {
     if (!waiting.length) break;
     const waitingDetails = profileStates.filter((profile) => !profile.ready)
       .map((profile) => `P${profile.index}: ${profile.note}`).join(' \u00b7 ');
+    const waitCaptcha = /xác minh an toàn|kéo thanh trượt/i.test(waitingDetails);
     for (let countdown = 5; countdown >= 0; countdown -= 1) {
+      const note = countdown === 0 ? `Đang quét lại sảnh DG cho profile ${waiting.join(', ')}...`
+        : `Profile ${waiting.join(', ')} chưa vào sảnh DG; quét lại sau ${countdown} giây. ${waitingDetails}`;
       sendHopStatus({ active: true, countdown, waiting_indices: waiting, profile_states: profileStates,
-        note: countdown === 0 ? `Đang quét lại sảnh DG cho profile ${waiting.join(', ')}...`
-          : `Profile ${waiting.join(', ')} chưa vào sảnh DG; quét lại sau ${countdown} giây. ${waitingDetails}` });
+        error: waitCaptcha,
+        note: waitCaptcha ? `Sảnh DG đang chặn bằng captcha: hãy tự kéo thanh trượt trong cửa sổ Chrome. ${waitingDetails}` : note });
       if (countdown > 0) await new Promise((resolve) => setTimeout(resolve, 1000));
     }
     const retryIndices = waiting.filter((index) => autoEntryIndices.includes(index));
@@ -1278,10 +1303,19 @@ async function runDGGroup(count, siteIds, requestedIndices = null) {
       .filter(Boolean);
     picked = pickSharedTable(perProfile);
     if (picked.ok) break;
+    // Captcha của sảnh DG (đo trên 888AE66) chặn cả bước quét bàn: không có
+    // profile nào đọc được danh sách bàn nhưng cũng không có lỗi mạng nào để
+    // báo. Phải hú còi để người dùng tự kéo thanh trượt, rồi **vẫn** tiếp tục
+    // quét — tool không bao giờ tự giải captcha.
+    const captchaNote = scanErrors.find((note) => /xác minh an toàn|kéo thanh trượt/i.test(note));
     for (let countdown = 5; countdown >= 0; countdown -= 1) {
+      const base = countdown === 0 ? 'Đang quét lại danh sách bàn của tất cả sảnh DG...'
+        : `Chưa chọn được bàn chung · quét lại sau ${countdown} giây.`;
       sendHopStatus({ active: true, countdown, profile_states: profileStates,
-        note: countdown === 0 ? 'Đang quét lại danh sách bàn của tất cả sảnh DG...'
-          : `Chưa chọn được bàn chung · quét lại sau ${countdown} giây.` });
+        error: Boolean(captchaNote),
+        note: captchaNote
+          ? `Sảnh DG đang chặn bằng captcha: hãy tự kéo thanh trượt trong cửa sổ Chrome. ${captchaNote}`
+          : base });
       if (countdown > 0) await new Promise((resolve) => setTimeout(resolve, 1000));
     }
   }
@@ -1953,7 +1987,9 @@ function publicSites() {
     id, label, url, chips, auto,
     display: siteOptionLabel({ label, chips }),
     // True only when the backend actually has an entry adapter for this id.
-    automation: ['febet', 'gk881', 'e3951', 'vnwtop'].includes(id),
+    // Single source of truth: the same list `runSiteEntry`/`autoEntryIndices`
+    // use, so a new site cannot show "Thủ công" while its adapter runs.
+    automation: AUTOMATED_SITE_IDS.includes(id),
   }));
 }
 

@@ -32,6 +32,10 @@ const ALARM_PATTERNS = [
   'tự động ngắt tk',
   'không xếp đủ chip',
   'dừng hẳn',
+  // Cần người thật thao tác ngay trên Chrome: sảnh DG chặn bằng captcha thanh
+  // trượt. Tool **không bao giờ tự giải**; nó chỉ hú còi để người dùng kéo tay.
+  'xác minh an toàn',
+  'kéo thanh trượt',
 ];
 
 let alarmContext = null;
@@ -173,7 +177,11 @@ function testAlarmSound() {
 const ALARM_PATTERNS_NORMALIZED = ALARM_PATTERNS.map(normalizeForAlarm);
 
 function alarmForMessage(message, { force = false, level = '' } = {}) {
-  if (!force && String(level || '').toLowerCase() !== 'error') return false;
+  // ``action`` = cần người thật thao tác ngay (captcha thanh trượt, đăng nhập).
+  // Vẫn phải khớp mẫu sự cố nên thông báo tiến trình thường không hú.
+  const actionLevel = String(level || '').toLowerCase() === 'action';
+  if (!force && !actionLevel
+      && String(level || '').toLowerCase() !== 'error') return false;
   const text = normalizeForAlarm(message);
   if (!force && !ALARM_PATTERNS_NORMALIZED.some((pattern) => text.includes(pattern))) return false;
   const now = Date.now();

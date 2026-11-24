@@ -403,6 +403,29 @@ return (() => {
   if (typeof Laya === 'undefined' || !Laya.stage) return {ready: false};
   let lobby = false, inTable = false, label = '', cards = 0;
   let viewTable = '', viewName = '';
+  // Bản ``ddnewpc`` dựng nhiều node cùng thoả "có betBtn": một view của bàn đang
+  // chơi và các view phụ trong bảng cầu. Dừng ở node đầu tiên (cách cũ) làm
+  // ``table_name`` ra ``QD07`` và ``table_id`` ra mã bàn khác trong khi người
+  // chơi đang ở RB01 — cùng lỗi đã sửa trong ``_DG_BET_STATE_JS``. Chọn view
+  // bằng điểm đo được: có ``tableInfoMan``, có giới hạn bàn thật, và
+  // ``playerInfo.tableId`` trùng ``gameInfo.tableId``.
+  const viewScore = (node) => {
+    const info = node.gameInfo || (node.tableInfoMan && node.tableInfoMan.gameInfo) || {};
+    const player = node.playerInfo || {};
+    const limit = node.baccaratLimit || {};
+    const infoTable = String(info.tableId === undefined || info.tableId === null
+      ? '' : info.tableId).trim();
+    const playerTable = String(player.tableId === undefined || player.tableId === null
+      ? '' : player.tableId).trim();
+    const minFloor = Number(limit.bpMin || limit.min || 0);
+    const maxFloor = Number(limit.bpMax || limit.max || 0);
+    let score = 0;
+    if (node.tableInfoMan) score += 4;
+    if (infoTable && playerTable && infoTable === playerTable) score += 4;
+    if (minFloor > 0 && maxFloor > 0) score += 2;
+    return score;
+  };
+  let bestScore = -1;
   const walk = (n, d) => {
     if (d > 10) return;
     const name = String(n.name || '');
@@ -419,16 +442,18 @@ return (() => {
     if (n.betBtn && (typeof n.betHandler === 'function' || n.betBtnMan
         || n.baccaratLimit || n.tableInfoMan)) {
       inTable = true;
-      // Mã bàn của **bàn đang chơi**: bản điện thoại vào bàn bằng cách bấm thẻ
-      // thì URL không có tableId (đo trên tab 60101), nên phải đọc từ view cược.
-      const fromView = [n.tableId, n.gameInfo && n.gameInfo.tableId,
-        n.playerInfo && n.playerInfo.tableId, n.tableInfoMan && n.tableInfoMan.tableId]
-        .map((value) => (value === undefined || value === null) ? '' : String(value).trim())
-        .find((value) => /^60\\d{3,}$/.test(value)) || '';
-      if (fromView) viewTable = fromView;
-      if (!viewName) {
+      const score = viewScore(n);
+      if (score > bestScore) {
+        bestScore = score;
+        // Mã bàn của **bàn đang chơi**: bản điện thoại vào bàn bằng cách bấm thẻ
+        // thì URL không có tableId (đo trên tab 60101), nên phải đọc từ view cược.
+        const fromView = [n.tableId, n.gameInfo && n.gameInfo.tableId,
+          n.playerInfo && n.playerInfo.tableId, n.tableInfoMan && n.tableInfoMan.tableId]
+          .map((value) => (value === undefined || value === null) ? '' : String(value).trim())
+          .find((value) => /^60\\d{3,}$/.test(value)) || '';
+        viewTable = fromView || viewTable;
         viewName = String((n.gameInfo && n.gameInfo.tableName)
-          || (n.tableInfoMan && n.tableInfoMan.tableName) || '').trim();
+          || (n.tableInfoMan && n.tableInfoMan.tableName) || '').trim() || viewName;
       }
     }
     const t = typeof n.text === 'string' ? n.text.trim() : '';
@@ -447,11 +472,41 @@ return (() => {
 _DG_BET_STATE_JS = r"""
 return (() => {
   if (typeof Laya === 'undefined' || !Laya.stage) return {ready:false};
+  // Bản ``ddnewpc`` (đo trên 888AE66) dựng **nhiều** node cùng thoả điều kiện
+  // "có betBtn": một view của bàn đang chơi (RB01, gameNo
+  // ``202611240024R1046``) và các view phụ trong bảng cầu (QC03/RB04/QD03/QD01,
+  // gameNo ``2611244161928``). Lấy node đầu tiên — cách cũ — nên ``table_name``
+  // ra ``QD07`` và ``round_id`` sai định dạng, làm ``groupBettingTick`` tưởng hai
+  // profile lệch ván dù cùng bàn.
+  //
+  // Chọn view theo dấu hiệu **đo được**: chỉ view của bàn đang chơi mới có
+  // ``tableInfoMan``, có ``baccaratLimit`` thật (min>0) và có
+  // ``playerInfo.tableId`` trùng ``gameInfo.tableId``.
+  const scoreView = (node) => {
+    const info = node.gameInfo || (node.tableInfoMan && node.tableInfoMan.gameInfo) || {};
+    const player = node.playerInfo || {};
+    const limit = node.baccaratLimit || {};
+    const infoTable = String(info.tableId === undefined || info.tableId === null
+      ? '' : info.tableId).trim();
+    const playerTable = String(player.tableId === undefined || player.tableId === null
+      ? '' : player.tableId).trim();
+    const minFloor = Number(limit.bpMin || limit.min || 0);
+    const maxFloor = Number(limit.bpMax || limit.max || 0);
+    let score = 0;
+    if (node.tableInfoMan) score += 4;
+    if (infoTable && playerTable && infoTable === playerTable) score += 4;
+    if (minFloor > 0 && maxFloor > 0) score += 2;
+    return score;
+  };
   let view = null;
+  let bestScore = -1;
   const walk = (node, depth) => {
-    if (!node || depth > 60 || view) return;
+    if (!node || depth > 60) return;
     if (node.betBtn && (typeof node.betHandler === 'function' || node.betBtnMan
-        || node.baccaratLimit || node.tableInfoMan)) { view = node; return; }
+        || node.baccaratLimit || node.tableInfoMan)) {
+      const score = scoreView(node);
+      if (score > bestScore) { bestScore = score; view = node; }
+    }
     const children = node._children || [];
     for (const child of children) walk(child, depth + 1);
   };
@@ -850,6 +905,129 @@ return (() => {
 # the player over — ``/Account/LoginToSupplier?SupplierType=DG`` — instead of a
 # DG iframe. The lobby is then a Laya stage in the top document, so the frame
 # walkers below would never see it.
+#
+# Sảnh DG có thể chặn bằng captcha "Xác minh an toàn" (đo trên 888AE66: hiện
+# đúng lúc vào bàn, che giữa màn hình). **Không giải captcha** — người dùng tự
+# kéo thanh trượt. Adapter chỉ phát hiện, phát âm thanh báo và chờ.
+
+# Đọc captcha từ **cả** cây node Laya và DOM. Đo trên 888AE66: lúc thanh trượt
+# hiện, ``document.body.innerText`` rỗng và không có ``[class*=captcha]`` nào —
+# toàn bộ là node Laya, nên chỉ soi DOM sẽ báo "không có captcha".
+_DG_CAPTCHA_JS = r"""
+return (() => {
+  const norm = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+  const hits = [];
+  if (typeof Laya !== 'undefined' && Laya.stage) {
+    const walk = (node, depth) => {
+      if (!node || depth > 18 || hits.length >= 12) return;
+      for (const key of ['text', '_text', 'label', '_label']) {
+        try {
+          const value = node[key];
+          if (typeof value === 'string' && value.trim()) hits.push(norm(value));
+        } catch (error) {}
+      }
+      const data = node.dataSource;
+      if (data && typeof data === 'object') {
+        for (const key of ['text', 'label', 'title']) {
+          if (typeof data[key] === 'string' && data[key].trim()) hits.push(norm(data[key]));
+        }
+      }
+      for (let i = 0; i < (node.numChildren || 0); i++) walk(node.getChildAt(i), depth + 1);
+    };
+    walk(Laya.stage, 0);
+  }
+  const domText = norm(document.body ? document.body.innerText : '');
+  const slider = document.querySelector(
+    '[class*=captcha],[id*=captcha],[class*=slider],[id*=slider],[class*=verify]');
+  return {texts: hits, domText: domText.slice(0, 300), slider: !!slider,
+          url: location.pathname};
+})()
+"""
+
+# Captcha "Xác minh thành công" là thông báo thoáng qua; nếu coi nó là "đang bị
+# chặn" thì tool báo động mãi sau khi người dùng đã vượt qua. Chỉ hai câu dưới
+# đây mới là dấu hiệu **đang chặn**.
+_CAPTCHA_BLOCK_RE = re.compile(
+    r"kéo thanh trượt|keo thanh truot|xác minh an toàn|xac minh an toan", re.I)
+_CAPTCHA_PASS_RE = re.compile(
+    r"xác minh thành công|xac minh thanh cong", re.I)
+
+# Bao lâu thì chờ người dùng tự kéo thanh trượt. Captcha hiện lúc sảnh/bàn đang
+# tải, người dùng thường ở ngay màn hình nên 300 giây là đủ; quá hạn thì báo
+# lỗi rõ ràng thay vì treo mãi.
+_CAPTCHA_WAIT = 300.0
+
+
+def captcha_state(driver):
+    """Có captcha đang chặn sảnh DG không — chỉ đọc, không bao giờ giải.
+
+    Trả ``{"blocked": bool, "text": str, "passed": bool}``. Người dùng tự kéo
+    thanh trượt; hàm này chỉ nói cho UI biết để bật còi và hiện hướng dẫn.
+    """
+    if driver is None:
+        return {"blocked": False, "text": "", "passed": False}
+    try:
+        data = driver.execute_script(_DG_CAPTCHA_JS) or {}
+    except Exception:
+        return {"blocked": False, "text": "", "passed": False}
+    texts = [str(item) for item in (data.get("texts") or []) if item]
+    blob = " | ".join(texts + [str(data.get("domText") or "")])
+    blocked_text = ""
+    for text in texts:
+        if _CAPTCHA_BLOCK_RE.search(text):
+            blocked_text = text
+            break
+    if not blocked_text and _CAPTCHA_BLOCK_RE.search(blob):
+        blocked_text = _CAPTCHA_BLOCK_RE.search(blob).group(0)
+    passed = bool(_CAPTCHA_PASS_RE.search(blob)) and not blocked_text
+    return {"blocked": bool(blocked_text), "text": blocked_text,
+            "passed": passed, "slider": bool(data.get("slider")),
+            "url": str(data.get("url") or "")}
+
+
+def wait_for_captcha(driver, report=None, timeout=300.0, poll=2.0):
+    """Chờ người dùng tự vượt captcha; không tự động giải.
+
+    Trả ``{"ok": True, "waited": float}`` khi hết captcha, hoặc
+    ``{"ok": False, "error": ...}`` khi quá hạn. Trong lúc chờ, mỗi lần phát
+    hiện captcha sẽ gọi ``report`` với ``level="action"`` để UI bật còi một lần
+    (không lặp mỗi vòng poll).
+    """
+    def say(message, level="info"):
+        if report is not None:
+            try:
+                report(message, level)
+            except Exception:
+                pass
+
+    limit = max(1.0, float(timeout))
+    started = None
+    announced = False
+    while True:
+        state = captcha_state(driver)
+        if not state.get("blocked"):
+            if started is not None:
+                waited = time.monotonic() - started
+                say("Đã vượt captcha sau %.0f giây; chạy tiếp." % waited)
+                return {"ok": True, "waited": waited}
+            return {"ok": True, "waited": 0.0}
+        if started is None:
+            started = time.monotonic()
+        if not announced:
+            announced = True
+            say("Sảnh DG đang chặn bằng captcha \"%s\". Hãy tự kéo thanh trượt "
+                "trong cửa sổ Chrome của profile này; tool sẽ chờ tối đa %d giây."
+                % (state.get("text") or "xác minh an toàn", int(limit)), "action")
+        if time.monotonic() - started >= limit:
+            say("Hết thời gian chờ captcha (%.0f giây)." % limit, "error")
+            return {"ok": False, "waited": time.monotonic() - started,
+                    "error": "Sảnh DG vẫn đang chờ captcha; hãy kéo thanh trượt "
+                             "trong cửa sổ Chrome rồi chạy lại."}
+        if not state.get("blocked"):
+            continue
+        time.sleep(max(0.2, float(poll)))
+
+
 _TOP_LAYA_JS = r"""
 try {
   if (typeof Laya === 'undefined' || !Laya.stage) return {laya: false};
@@ -1559,11 +1737,24 @@ def current_table(driver, wait=15.0):
         return {"ok": False, "error": "Không đọc được bàn DG (%s)." % type(exc).__name__}
 
 
-def lobby_tables(driver, wait=25.0):
-    """Danh sách bàn thật (tableId 60101…) đọc từ các thẻ sảnh Laya của DG."""
+def lobby_tables(driver, wait=25.0, log=None):
+    """Danh sách bàn thật (tableId 60101…) đọc từ các thẻ sảnh Laya của DG.
+
+    ``log`` (tuỳ chọn) là callback ``(text, level)``: khi có, sảnh DG bị captcha
+    sẽ được báo ngay ở mức ``action`` để UI bật còi và chờ người dùng tự kéo
+    thanh trượt. Không truyền ``log`` (nhịp dò ``dg.table``) thì hàm chỉ đọc một
+    lượt, không bao giờ treo chờ.
+    """
     if driver is None:
         return {"ok": False, "error": "Mở profile Chrome trước khi quét sảnh DG."}
     try:
+        if log is not None:
+            # Sảnh chỉ vẽ lưới bàn **sau** khi captcha được vượt; chờ ở đây để
+            # vòng đọc bên dưới không báo sai "không tìm thấy bàn".
+            gate = wait_for_captcha(driver, log, timeout=_CAPTCHA_WAIT, poll=2.0)
+            if not gate.get("ok"):
+                return {"ok": False, "captcha": True, "error": gate.get("error")}
+            wait = float(wait) + float(gate.get("waited") or 0)
         deadline = time.monotonic() + max(0.0, wait)
         last_data = {"ready": False, "tables": []}
         last_state = {}
@@ -1594,6 +1785,15 @@ def lobby_tables(driver, wait=25.0):
                     return {"ok": True, "in_table": bool(last_state.get("in_table")),
                             "tables": tables}
             if time.monotonic() >= deadline:
+                # Luôn đọc captcha để câu lỗi nói đúng nguyên nhân (UI sẽ hú còi
+                # vì khớp mẫu "xác minh an toàn"); chỉ **chờ** khi caller truyền
+                # ``log``, để nhịp dò 5 giây không bị treo.
+                gate = captcha_state(driver)
+                if gate.get("blocked"):
+                    return {"ok": False, "captcha": True,
+                            "error": "Sảnh DG đang chặn bằng captcha \"%s\"; hãy kéo thanh "
+                                     "trượt trong cửa sổ Chrome của profile này rồi chạy lại."
+                                     % (gate.get("text") or "xác minh an toàn")}
                 if last_data.get("ready"):
                     return {"ok": False,
                             "error": "Laya đã tải nhưng chưa tìm thấy node bàn thật trong sảnh DG.",
@@ -1672,11 +1872,15 @@ def leave_table(driver, wait=20.0):
         return {"ok": False, "error": "Không rời bàn DG được (%s)." % type(exc).__name__}
 
 
-def sync_table(driver, table_id, wait=30.0, settle=120.0):
+def sync_table(driver, table_id, wait=30.0, settle=120.0, log=None):
     """Đưa profile này vào bàn DG mang table_id (mã thật, vd 60101 = RB01).
 
     Nạp qua trang chờ direct1.html với tableId thật: game tự vào thẳng bàn.
     Gán thẳng index.html khiến game thoát iframe; mã sảnh (10101) chỉ ra lưới bàn.
+
+    ``log`` (tuỳ chọn) bật chế độ chờ captcha: sảnh DG có thể chặn bằng thanh
+    trượt "Xác minh an toàn" (đo trên 888AE66) và khi đó việc nạp bàn im lặng
+    thất bại. Không truyền ``log`` để giữ nguyên hành vi cũ cho các caller khác.
     """
     table_id = str(table_id or "").strip()
     if not _is_real_table_id(table_id):
@@ -1684,6 +1888,11 @@ def sync_table(driver, table_id, wait=30.0, settle=120.0):
     if driver is None:
         return {"ok": False, "error": "Mở profile Chrome trước khi đồng bộ bàn DG."}
     try:
+        if log is not None:
+            gate = wait_for_captcha(driver, log, timeout=_CAPTCHA_WAIT, poll=2.0)
+            if not gate.get("ok"):
+                return {"ok": False, "captcha": True, "error": gate.get("error")}
+            wait = float(wait) + float(gate.get("waited") or 0)
         ctx = _dg_context(driver, wait)
         if ctx is None:
             return {"ok": False, "error": "Chưa mở game DG trong profile này; bấm chạy DG trước."}
@@ -1742,6 +1951,7 @@ def sync_table(driver, table_id, wait=30.0, settle=120.0):
         # Mã bàn được đọc từ **view cược** ở mọi chế độ (``view.tableId``), nên
         # không cần phân biệt: bấm thẻ trên bản điện thoại tuy không đổi URL
         # nhưng ``table_id`` vẫn có, còn loader thì có ``tableId`` trong URL.
+        announced_captcha = False
         while time.monotonic() < deadline:
             time.sleep(1.0)
             if _dg_context(driver, wait=0) is None:
@@ -1752,6 +1962,25 @@ def sync_table(driver, table_id, wait=30.0, settle=120.0):
                 return {"ok": True, "table_id": table_id, "in_table": True,
                         "label": landed.get("label") or "",
                         "note": "Đã vào bàn DG %s." % table_id}
+            # Captcha có thể hiện **giữa** lúc nạp bàn (đo trên 888AE66): khi đó
+            # view cược không bao giờ vẽ ra. Báo một lần và nới hạn chờ để người
+            # dùng kịp tự kéo thanh trượt.
+            if log is not None and not announced_captcha:
+                gate = captcha_state(driver)
+                if gate.get("blocked"):
+                    announced_captcha = True
+                    deadline += _CAPTCHA_WAIT
+                    try:
+                        log("Sảnh DG đang chặn bằng captcha \"%s\". Hãy tự kéo thanh "
+                            "trượt trong cửa sổ Chrome của profile này; tool đang chờ."
+                            % (gate.get("text") or "xác minh an toàn"), "action")
+                    except Exception:
+                        pass
+        if log is not None and captcha_state(driver).get("blocked"):
+            return {"ok": False, "table_id": table_id, "in_table": False, "captcha": True,
+                    "error": "Sảnh DG vẫn đang chờ captcha nên chưa vào được bàn %s; "
+                             "hãy kéo thanh trượt trong cửa sổ Chrome rồi chạy lại."
+                             % table_id}
         return {"ok": False, "table_id": table_id, "in_table": False,
                 "error": "Đã yêu cầu vào bàn %s nhưng DG vẫn chưa xác nhận màn hình bàn sau 120 giây." % table_id}
     except Exception as exc:

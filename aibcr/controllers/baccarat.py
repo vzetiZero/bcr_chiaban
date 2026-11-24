@@ -29,6 +29,7 @@ from aibcr.adapters import table_bets as TB
 from aibcr.adapters.dg_pages import find_dg_page
 from aibcr.adapters.wm_bet import WMBet
 from aibcr.models import fingerprint as FP
+from aibcr.controllers.sites.ae888 import AE888EntryController
 from aibcr.controllers.sites.e3951 import E3951EntryController
 from aibcr.controllers.sites.febet import FEBETEntryController
 from aibcr.controllers.sites.gk881 import GK881EntryController
@@ -119,6 +120,7 @@ class BaccaratController:
         self.gk881_entry = GK881EntryController(self)
         self.e3951_entry = E3951EntryController(self)
         self.vnwtop_entry = VNWTopEntryController(self)
+        self.ae888_entry = AE888EntryController(self)
         self.stream = LS.LobbyStream(self.browser, human_mouse=self.config["human_mouse"],
                                      game="baccarat")
         self.sim = self._build_sim()
@@ -722,7 +724,8 @@ class BaccaratController:
     def febet_sync_table(self, params):
         with self.browser.lock:
             return FEBET.sync_table(self.browser.driver, (params or {}).get("table_id"),
-                                    wait=30.0, settle=120.0)
+                                    wait=30.0, settle=120.0,
+                                    log=lambda text, level="info": self.log(text, level))
 
     def febet_bet_state(self, _params=None):
         with self.browser.lock:

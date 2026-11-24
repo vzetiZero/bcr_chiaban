@@ -131,6 +131,60 @@ Phiên đăng nhập được **lưu và khôi phục** (`aibcr/adapters/session
 → `quit()` Chrome → mở lại → khôi phục `ok=True, cookies=7` → vẫn `signed_in=True`, không
 hiện lại form đăng nhập.
 
+### 888AE66 (`https://www.888ae66.com/m`) — site thứ ba, sảnh DG mở thành tab riêng
+
+Bản `/m` là app Vue dựng giao diện điện thoại; đường vào sảnh đo trực tiếp:
+
+1. **`SÒNG BÀI`** = `.nav-item.live` → SPA chuyển sang `/gamelobby/live`.
+2. Danh sách nhà cung cấp là các `li` chứa `<img>`; Dream Gaming là
+   `img[alt=banner-dg]`. Class của `li` chỉ là mã ngôn ngữ (`vi-VN`) nên **không**
+   dùng để nhận diện.
+3. Bấm thẻ DG **không** mở iframe: Chrome mở tab mới `/launchgame`, rồi tab đó mới
+   thành `ddnewpc/index.html?...&token=…` (bản desktop). Vì vậy profile tạm có 2 tab.
+4. **Quy tắc một tab** (yêu cầu của người dùng): giữ tab sảnh DG và **đóng tab site**.
+   Đo sau khi đóng: tab còn lại vẫn nguyên cây Laya (**7979 node**) và còn `token`,
+   tức là không mất phiên, không bị đá về sảnh.
+
+```python
+from aibcr.adapters import ae888
+ae888.open_dg(driver, wait=180, log=print)   # -> {'ok', 'tables', 'tabs'=1, 'in_table'}
+```
+
+Trong lúc chờ tab DG, adapter **không** đóng tab `/launchgame` (nó chưa mang chữ
+`ddnew`) — đóng sớm là giết sảnh trước khi Laya tải xong. Sau khi sảnh đã vẽ xong lưới
+bàn (`lobby_tables` đọc được bàn), adapter chạy **lượt dọn thứ hai** và đóng luôn tab
+redirect còn sót — vì lúc đó nó chỉ là rác, và đúng yêu cầu "chỉ còn duy nhất 1 tab sảnh".
+
+#### Captcha thanh trượt — tool không bao giờ giải
+
+Dream Gaming có thể chặn sảnh bằng **"Xác minh an toàn" / "Kéo thanh trượt sang phải"**.
+Đo trên 888AE66: captcha vẽ bằng **node Laya**, `document.body.innerText` rỗng và không
+có `[class*=captcha]` nào — nên chỉ soi DOM sẽ báo "không có captcha" và tool chờ vô ích.
+
+| Hành vi | Chi tiết |
+| --- | --- |
+| Nhận diện | `febet.captcha_state()` đọc **cả** cây node Laya và DOM; `_CAPTCHA_BLOCK_RE` chỉ khớp câu **đang chặn** ("xác minh an toàn", "kéo thanh trượt"), còn "Xác minh thành công" là `_CAPTCHA_PASS_RE` nên không báo động mãi sau khi đã vượt |
+| Báo động | Log mức `action` → `alarm.js` hú còi (mẫu `'xác minh an toàn'`, `'kéo thanh trượt'`) và dòng nhật ký tô màu cảnh báo riêng. Cả hai chỗ chờ của nhóm (`chờ sảnh`, `quét bàn chung`) đều gửi `error: true` nên không bao giờ treo im lặng |
+| Không giải | Không có `dispatchMouseEvent`/kéo chuột nào trong đường captcha; `wait_for_captcha()` chỉ poll tới khi người dùng kéo tay xong (mặc định 300 giây) rồi chạy tiếp |
+| Chờ đúng chỗ | `lobby_tables(..., log=…)` và `sync_table(..., log=…)` nhận `log` để **chờ** captcha; không truyền `log` (nhịp dò `dg.table` 5 giây) thì chỉ đọc một lượt, không treo nhịp nền |
+
+#### Một bản `ddnewpc` có nhiều "view cược" — bài học đo được
+
+Trên 888AE66, `Laya.stage` chứa **5** node cùng thoả `betBtn`:
+
+| Node | tableId | gameNo | Diễn giải |
+| --- | --- | --- | --- |
+| `stage.0.1.0.0` | 60101 | `202611240024R1050` | **bàn đang chơi** (RB01), có `tableInfoMan` + limit 10–1M |
+| `stage.0.2.1.0.4.0` | 94103 | `2611245132517` | view phụ (QC03) |
+| `stage.0.2.1.0.4.1` | 60104 | `202611240024R4053` | view phụ (RB04) |
+
+Cách cũ lấy node **đầu tiên** khớp nên đọc ra `table_name = "QD07"` và `round_id` sai
+định dạng, làm `groupBettingTick` tưởng hai profile lệch ván dù cùng bàn. `_DG_STATE_JS`
+và `_DG_BET_STATE_JS` giờ chọn view theo **điểm đo được**: có `tableInfoMan` (+4), có
+`playerInfo.tableId` trùng `gameInfo.tableId` (+4), có `baccaratLimit` thật min>0 (+2).
+Đo lại trên Chrome thật: `table_name = "RB01"`, `round_id = "202611240025R1001"`,
+`min_k 10 / max_k 1000000`, `table_id 60101` — trùng GK881/E3951.
+
 
 > **BẮT BUỘC — push GitHub sau MỖI lần cập nhật hoặc sửa đổi**
 >
@@ -395,7 +449,9 @@ python -m unittest tests.test_enter_valid_flow -v # harness pipeline chọn bàn
 python -m unittest tests.test_lobby_promote -v    # tách iframe sảnh DG ra URL trang (GK881 mobile)
 python -m unittest tests.test_gk881_mobile_flow -v # lớp che CDK, thẻ DG, sảnh Laya bản điện thoại
 python -m unittest tests.test_session_store -v    # lưu/khôi phục phiên đăng nhập (cookie + localStorage)
+python -m unittest tests.test_ae888_entry -v      # 888AE66: thẻ DG, quy tắc một tab, captcha chờ tay
 python -m unittest tests.test_architecture -v     # ranh giới tầng MVC, không LONG-LONG
+python tools/check_js_syntax.py                   # biên dịch mọi blob *_JS của adapter (bắt lỗi ngoặc)
 node tests/test_reader.cjs                        # test logic đọc bàn + chọn mức cược chung
 node tests/test_skip_round.cjs                    # bỏ qua tay lỗi, nhóm vẫn chạy
 node tests/test_profile_subtabs.cjs               # tab Profiles: Chrome / OmniLogin / Hidemium
