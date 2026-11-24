@@ -1089,7 +1089,7 @@ h2 { margin: 6px 0 0; color: var(--text-strong); font-size: 17px; font-weight: 8
 .provider-assignments { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
 .provider-assignment {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  grid-template-columns: auto minmax(0, 1.4fr) minmax(0, 1fr) auto auto;
   align-items: center;
   gap: 9px;
   min-height: 54px;
@@ -1116,6 +1116,10 @@ h2 { margin: 6px 0 0; color: var(--text-strong); font-size: 17px; font-weight: 8
   font-variant-numeric: tabular-nums;
 }
 .provider-assignment select { height: 34px; font-size: 10.5px; }
+/* Ô chọn site riêng của từng slot provider: hẹp hơn ô chọn profile để cả hai vừa
+   một dòng ở cửa sổ hẹp. */
+.provider-site-select { max-width: 170px; color: var(--amber-bright); }
+.provider-site-select:disabled { opacity: .55; }
 .provider-row-state { color: var(--muted); font-size: 9.5px; font-weight: 800; white-space: nowrap; }
 .provider-row-state[data-state="running"] { color: var(--green-bright); }
 .provider-row-state[data-state="opening"], .provider-row-state[data-state="closing"] { color: var(--amber-bright); }
@@ -1392,9 +1396,10 @@ h2 { margin: 6px 0 0; color: var(--text-strong); font-size: 17px; font-weight: 8
   .profile-row { grid-template-columns: 36px minmax(0, 1fr) minmax(96px, 140px) auto; }
   .profile-row .profile-state { display: none; }
   .run-actions { flex-direction: column; }
-  .provider-assignment { grid-template-columns: auto minmax(0, 1fr) auto; grid-template-areas: "slot select toggle" "slot state toggle"; row-gap: 3px; }
+  .provider-assignment { grid-template-columns: auto minmax(0, 1fr) auto; grid-template-areas: "slot select toggle" "slot site toggle" "slot state toggle"; row-gap: 3px; }
   .provider-assignment .provider-slot { grid-area: slot; }
   .provider-assignment select { grid-area: select; }
+  .provider-assignment .provider-site-select { grid-area: site; max-width: none; }
   .provider-assignment .provider-row-state { grid-area: state; }
   .provider-assignment .provider-row-toggle { grid-area: toggle; }
   .site-config-row { grid-template-columns: auto minmax(0, 1fr); row-gap: 9px; }

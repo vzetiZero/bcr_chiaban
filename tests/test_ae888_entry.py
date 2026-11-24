@@ -1,10 +1,12 @@
 # -*- coding: utf-8 -*-
 """Tests for the 888AE66 site-entry adapter.
 
-Facts these tests lock in were measured live on 24/11/2026 with a signed-in
-profile on ``https://www.888ae66.com``:
+Facts these tests lock in were measured live on 24/11/2026 with signed-in
+profiles on ``https://www.888ae66.com``:
 
-* ``SÒNG BÀI`` is ``.nav-item.live`` and routes the SPA to ``/gamelobby/live``.
+* The compact OmniLogin mobile home (400 × 783 CSS px, DPR 1.875) renders
+  ``SÒNG BÀI`` as ``.home-quick-item.navigation-PRODUCT`` at x≈192; it does not
+  use ``.nav-item.live``. Tapping it routes the SPA to ``/gamelobby/live``.
 * Dream Gaming is the card whose ``img`` has ``alt="banner-dg"``. Its wrapping
   ``<li>`` carries an unrelated locale class (``vi-VN``), so the image alt is
   the only stable handle.
@@ -86,19 +88,43 @@ class SiteShapeTest(unittest.TestCase):
     def test_live_route_matches_the_measured_navigation(self):
         js = A._LIVE_ROUTE_JS
         self.assertIn(".nav-item.live", js)
+        self.assertIn(".home-quick-item", js)
+        self.assertIn("[class*=navigation]", js)
         # Nhãn thật trên site là "SÒNG BÀI"; regex chấp nhận cả dấu và không dấu.
         self.assertIn("[oò]ng", js)
 
-    def test_dream_gaming_card_is_found_by_image_alt(self):
+    def test_dream_gaming_card_is_found_by_the_measured_handles(self):
         js = A._LIVE_ROUTE_JS
-        self.assertIn("banner-dg", js)
-        self.assertIn("getAttribute('alt')", js)
-        # Không dựa vào class của <li>: class đó chỉ là mã ngôn ngữ (vi-VN), không
-        # phải định danh nhà cung cấp. Bỏ chú thích trước khi kiểm để câu giải
-        # thích "class vi-VN" không làm test sai.
-        code = "\n".join(line for line in js.splitlines()
-                         if not line.strip().startswith("//"))
-        self.assertNotIn("vi-VN", code)
+        # Đo lại trên profile thật: thẻ DG là ``div.game-item.DG.customized`` và
+        # ảnh bên trong có ``alt`` RỖNG — quy tắc cũ ``img[alt=banner-dg]`` không
+        # khớp gì cả, nên luồng đứng ở sảnh và quét mãi.
+        self.assertIn("live-dg", js)
+        self.assertIn("game-item", js)
+        self.assertIn("banner-dg", js)  # giữ cho bản site khác
+        self.assertNotIn("vi-VN", js.split("return {")[0])
+
+    def test_the_measured_markup_has_no_banner_dg_alt(self):
+        # Hợp đồng với dữ liệu đo được: nếu ai đó "sửa" lại về alt=banner-dg thì
+        # test này phải đỏ, vì trên site thật ảnh đó không có alt.
+        js = A._LIVE_ROUTE_JS
+        self.assertIn(r"/^banner-dg$/i.test(alt)", js)
+        self.assertIn("|| /live-dg/i.test(src)", js)
+
+    def test_popups_are_closed_by_their_own_close_button(self):
+        js = A._LIVE_ROUTE_JS
+        # Đo trên /gamelobby/live: popup là ``.nrc-modal`` và nút đóng là
+        # ``div.iconClose``; không có bước này thì mọi cú bấm vào thẻ DG đều
+        # rơi vào lớp phủ và luồng treo.
+        self.assertIn(".nrc-", js)
+        self.assertIn("iconClose", js)
+        self.assertIn("closers", js)
+        # Trang còn một ``div.close-button`` nằm ngoài màn hình ở (0,0) và các
+        # chấm icon 12px; bấm bừa vào đó sẽ rời trang. Chỉ nhận nút thật sự
+        # hit-test trúng tại toạ độ của nó.
+        self.assertIn("elementFromPoint", js)
+        self.assertIn("rect.width < 16", js)
+        # Chỉ bấm nút đóng thật, không bấm nền mờ (bấm nền sẽ điều hướng đi).
+        self.assertNotIn("target === currentTarget", js)
 
     def test_the_route_script_actually_returns_a_value(self):
         # Selenium chỉ trả giá trị khi script có ``return`` ở mức ngoài cùng.
@@ -107,6 +133,15 @@ class SiteShapeTest(unittest.TestCase):
         body = A._LIVE_ROUTE_JS.strip()
         self.assertFalse(body.startswith("(function"), body[:30])
         self.assertIn("\nreturn {", body)
+
+    def test_the_card_is_scrolled_into_view_before_it_is_tapped(self):
+        # ``/gamelobby/live`` cao ~4000px: thẻ DG đo được ở ``y≈2406`` trong khi
+        # viewport chỉ 1103px. Bấm theo toạ độ viewport mà không cuộn thì cú bấm
+        # rơi ra ngoài trang và luồng treo ở "chưa thấy thẻ DreamGaming".
+        js = A._LIVE_ROUTE_JS
+        self.assertIn("scrollIntoView", js)
+        self.assertIn("block: 'center'", js)
+        self.assertIn("bring(dgNode)", js)
 
     def test_login_gate_reads_the_header_button_only(self):
         js = A._LIVE_ROUTE_JS
@@ -292,17 +327,96 @@ class OpenDgTest(unittest.TestCase):
         self.assertEqual(driver.handles, ["site", "dg"])
 
 
+class PopupTest(unittest.TestCase):
+    """Popup khuyến mãi phải được đóng trước khi bấm thẻ DG."""
+
+    def test_close_popups_taps_the_close_control_once(self):
+        clicks = []
+        driver = FakeDriver({"site": "https://www.888ae66.com/gamelobby/live"})
+        states = [
+            {"overlays": ["nrc-modal fade-in"], "closers": [
+                {"x": 788, "y": 174, "sel": "DIV.iconClose", "alt": ""}]},
+            {"overlays": [], "closers": []},
+        ]
+        driver.script = lambda text, args: states.pop(0) if states else {
+            "overlays": [], "closers": []}
+        original = DG._cdp_click
+        DG._cdp_click = lambda drv, x, y: clicks.append((x, y)) or True
+        seen = []
+        try:
+            result = A.close_popups(driver, lambda text, level="info": seen.append(text))
+        finally:
+            DG._cdp_click = original
+        self.assertEqual(result["closed"], 1)
+        self.assertEqual(result["left"], 0)
+        self.assertEqual(clicks, [(788, 174)])
+        self.assertTrue(any("iconClose" in text for text in seen))
+
+    def test_close_popups_does_nothing_when_the_page_is_clean(self):
+        clicks = []
+        driver = FakeDriver({"site": SITE_URL})
+        driver.script = lambda text, args: {"overlays": [], "closers": []}
+        original = DG._cdp_click
+        DG._cdp_click = lambda drv, x, y: clicks.append((x, y)) or True
+        try:
+            result = A.close_popups(driver)
+        finally:
+            DG._cdp_click = original
+        self.assertEqual(result["closed"], 0)
+        self.assertEqual(clicks, [])
+
+    def test_a_popup_that_cannot_be_closed_is_reported_not_clicked_through(self):
+        # Popup mở lại liên tục (carousel): báo đúng bước "đóng popup" thay vì
+        # để luồng quét "chưa vào sảnh DG" mãi.
+        driver = FakeDriver({"site": "https://www.888ae66.com/gamelobby/live"})
+        state = {"overlays": ["nrc-modal fade-in"],
+                 "closers": [{"x": 788, "y": 174, "sel": "DIV.iconClose"}]}
+        driver.script = lambda text, args: state
+        original_click = DG._cdp_click
+        original_context = DG._dg_context
+        DG._cdp_click = lambda drv, x, y: True
+        DG._dg_context = lambda drv, wait=0: None
+        try:
+            result = A.open_dg(driver, wait=3)
+        finally:
+            DG._cdp_click = original_click
+            DG._dg_context = original_context
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["stage"], "đóng popup")
+        self.assertIn("popup", result["error"])
+
+
+class LayoutMatchTest(unittest.TestCase):
+    """Khung DG của 888AE66 là OOPIF, không phải tab mới."""
+
+    def test_the_lobby_is_promoted_from_the_cdp_frame(self):
+        import pathlib
+
+        root = pathlib.Path(__file__).resolve().parents[1]
+        source = (root / "aibcr" / "adapters" / "ae888.py").read_text(encoding="utf-8")
+        # Đo trên Chrome thật: tab site tự chuyển sang /launchgame rồi sảnh chạy
+        # trong iframe khác tiến trình ``ddnewwap``. Không có bước này thì không
+        # bao giờ có "tab ddnew" để chờ, và luồng báo lỗi dù sảnh đã mở.
+        self.assertIn("find_game_frame", source)
+        self.assertIn("promote_frame_to_tab", source)
+        self.assertIn("ddnewwap", source)
+
+
 class CaptchaPolicyTest(unittest.TestCase):
     """Người dùng tự kéo thanh trượt; tool chỉ báo động và chờ."""
 
     def test_blocking_wording_is_recognised(self):
         for text in ("Xác minh an toàn", "Kéo thanh trượt sang phải",
-                     "xac minh an toan", "keo thanh truot"):
+                     "xac minh an toan", "keo thanh truot",
+                     # Bản Laya mới vẽ captcha bằng tiếng Anh (đo 25/11/2026).
+                     "SafetyVerify", "Drag the slider"):
             self.assertTrue(DG._CAPTCHA_BLOCK_RE.search(text), text)
 
     def test_success_wording_is_not_treated_as_a_block(self):
         self.assertFalse(DG._CAPTCHA_BLOCK_RE.search("Xác minh thành công"))
         self.assertTrue(DG._CAPTCHA_PASS_RE.search("Xác minh thành công"))
+        self.assertFalse(DG._CAPTCHA_BLOCK_RE.search("Verified successfully"))
+        self.assertTrue(DG._CAPTCHA_PASS_RE.search("Verified successfully"))
 
     def test_captcha_probe_reads_the_laya_tree_not_only_the_dom(self):
         # Đo trên 888AE66: lúc thanh trượt hiện, DOM rỗng -> chỉ soi DOM sẽ sai.
@@ -342,8 +456,20 @@ class CaptchaPolicyTest(unittest.TestCase):
         source = (root / "ui" / "renderer" / "alarm.js").read_text(encoding="utf-8")
         self.assertIn("'xác minh an toàn'", source)
         self.assertIn("'kéo thanh trượt'", source)
+        # Captcha của bản Laya mới là tiếng Anh; thiếu hai mẫu này thì còi im.
+        self.assertIn("'drag the slider'", source)
+        self.assertIn("'safetyverify'", source)
         # Mức "action" phải đi qua được cửa chỉ-nhận-error.
         self.assertIn("actionLevel", source)
+
+    def test_the_runner_uses_the_same_captcha_wording(self):
+        import pathlib
+
+        root = pathlib.Path(__file__).resolve().parents[1]
+        source = (root / "ui" / "main.js").read_text(encoding="utf-8")
+        self.assertIn("const CAPTCHA_NOTE_RE", source)
+        self.assertIn("drag the slider", source)
+        self.assertNotIn("/xác minh an toàn|kéo thanh trượt/i.test", source)
 
 
 class ScriptSyntaxTest(unittest.TestCase):

@@ -1,28 +1,38 @@
 """888AE66-specific navigation into its Dream Gaming lobby.
 
-Live site flow (measured on ``https://www.888ae66.com/m`` and
-``/gamelobby/live`` with a phone user-agent):
+Live site flow, re-measured on 25/11/2026 in Chrome profile 1
+(``https://www.888ae66.com/m``, mobile fingerprint):
 
-1. The mobile home is a Vue app with a left navigation. ``SÒNG BÀI`` is
-   ``.nav-item.live`` and routes the SPA to ``/gamelobby/live``.
-2. That page lists providers as ``li`` cards, each holding an ``img`` whose
-   ``alt`` is the provider name. Dream Gaming is ``img[alt=banner-dg]``.
-3. Tapping that card does **not** open an in-page iframe: Chrome opens a new
-   tab on ``/launchgame`` which immediately becomes the DG document
-   (``ddnewpc/index.html?...&token=…``). The site tab stays behind, so a profile
-   ends up with **two** tabs.
-4. Dream Gaming may gate the lobby with a slider captcha ("Xác minh an toàn" /
-   "Kéo thanh trượt sang phải"). It appears *while* the lobby loads and is
-   drawn with Laya nodes, so it is invisible to DOM queries. The operator solves
-   it by hand; the adapter only detects it, reports it loudly and waits.
-5. Tables are loaded with ``ddnewpc/direct1.html?tableId=<id>`` — the same
-   desktop loader the shared helpers already use.
+1. The mobile home is a Vue SPA. ``SÒNG BÀI`` is
+   ``.swiper-slide.nav-anchor.home-quick-item.navigation-PRODUCT`` (measured at
+   x≈249, y≈604 on an 880×1103 viewport) and routes the SPA to
+   ``/gamelobby/live``. The older ``.nav-item.live`` markup is kept for other
+   builds.
+2. ``/gamelobby/live`` opens with a promo modal (``.nrc-modal.fade-in``)
+   covering the page. Its close button is a ``div.iconClose`` at the modal's
+   top-right corner. **Nothing on the page is clickable until it is closed**, so
+   closing popups is a real step of the flow, not a nicety.
+3. The Dream Gaming card is ``div.game-item.DG.customized`` wrapping
+   ``img[src*=live-dg]`` — measured: that image has **no** ``alt`` attribute, so
+   the old ``img[alt=banner-dg]`` rule matched nothing and the run sat in the
+   lobby forever. The class token ``DG`` and the ``live-dg`` file name are the
+   two stable handles; ``banner-dg`` is still accepted for other builds.
+4. Tapping the card does **not** create a DG tab: the tab itself moves to
+   ``/launchgame``, and the lobby runs as a **cross-process iframe**
+   (``ddnewwap/index.html`` on ``new-dd-cloudfront.ywjxi.com``). WebDriver cannot
+   enter an out-of-process frame, so the only way to drive the lobby is to read
+   the real document URL from CDP and navigate the tab to it.
+5. After that promotion Dream Gaming gates the lobby with a slider captcha whose
+   text is **English**: Laya nodes named ``sliderBtn``/``System`` hold
+   ``"SafetyVerify"`` and ``"Drag the slider"``. ``document.body.innerText`` is
+   empty and no ``[class*=captcha]`` exists, so only a Laya walk sees it. The
+   tool never solves it: it rings the siren and waits for the operator.
+6. Tables then load through the phone loader ``ddnewwap/index.html?tableId=<id>``.
 
 The one-tab rule the user asked for ("đóng tab site đi để chỉ còn duy nhất 1 tab
-sảnh") is enforced by keeping the DG tab and closing the site tabs: the DG tab
-already holds the live session, so closing the site tab neither reloads the
-lobby nor drops the token. Measured on 888AE66: after closing the site tab the
-remaining tab kept its whole Laya stage (7979 nodes) and its ``token``.
+sảnh") is enforced by keeping the DG tab and closing the site tabs. Measured
+earlier on 888AE66: after closing the site tab the remaining tab kept its whole
+Laya stage and its ``token``.
 
 Table scanning, sync and bet state reuse the shared helpers in
 ``aibcr.adapters.febet``.
@@ -55,30 +65,94 @@ const vis = (node) => {
   } catch (error) { return false; }
 };
 const norm = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+const box = (node) => {
+  const rect = node.getBoundingClientRect();
+  return {x: rect.left + rect.width / 2, y: rect.top + rect.height / 2,
+          w: Math.round(rect.width), h: Math.round(rect.height),
+          top: Math.round(rect.top), left: Math.round(rect.left)};
+};
+// Selenium/CDP bấm theo toạ độ **viewport**. Đo trên ``/gamelobby/live``: thẻ DG
+// nằm ở ``y≈2406`` trong khi viewport cao 1103px, nên bấm thẳng vào toạ độ đó
+// không trúng gì. Cuộn thẻ vào giữa màn hình rồi mới đọc lại hình chữ nhật.
+const bring = (node) => {
+  if (!node) return null;
+  try { node.scrollIntoView({block: 'center', inline: 'center'}); } catch (error) {}
+  return box(node);
+};
 // Signed-out profiles show "Đăng nhập" in the header; the operator signs in by
 // hand before the lobby can be reached.
 const loginBtn = [...document.querySelectorAll(
   'button.header-btn.login, .header-btn.login')].find(vis) || null;
-// "SÒNG BÀI" is the live-casino entry of the left navigation.
-const liveNav = [...document.querySelectorAll('.nav-item.live, [class*=nav-item]')]
+// "SÒNG BÀI" is the live-casino entry. The signed-in mobile home uses a Swiper
+// quick-nav, not ``.nav-item.live``: measured on the real profile the item is
+// ``.swiper-slide.nav-anchor.home-quick-item.navigation-PRODUCT`` and fully
+// visible. Keep the older selector for other site builds.
+const liveNav = [...document.querySelectorAll(
+  '.nav-item.live, [class*=nav-item], .home-quick-item, .nav-anchor, [class*=navigation]')]
   .find((node) => vis(node) && /^s[oò]ng\s*b[aà]i$/i.test(norm(node.textContent)))
   || null;
-// The Dream Gaming card is the <img> whose alt is exactly banner-dg. Measured:
-// the wrapping <li> carries an unrelated class (``vi-VN``), so matching the
-// banner image is the only stable rule.
-const dgImg = [...document.querySelectorAll('img')].find((img) =>
-  vis(img) && /^banner-dg$/i.test(norm(img.getAttribute('alt')))) || null;
-const center = (node) => {
+// A promo modal covers ``/gamelobby/live`` and swallows every click until it is
+// dismissed. Only a real close control counts: the measured one is
+// ``div.iconClose`` inside ``.nrc-modal``; several other nodes carry
+// "close" in their class but are off-screen or 12px icon dots.
+const OVERLAY_SEL = '[class*=modal],[class*=popup],[class*=dialog],[class*=mask],'
+  + '[class*=overlay],[class*=nrc-]';
+const CLOSE_SEL = 'img[alt=modal-close-button],.iconClose,[class*=iconClose],'
+  + '[class*=close-button],[class*=closeBtn],[class*=close-btn]';
+const overlays = [...document.querySelectorAll(OVERLAY_SEL)].filter(vis);
+// A close control only counts when a real hit-test lands on it: ``/gamelobby/live``
+// also ships an off-screen ``div.close-button`` parked at (0,0) and 12px icon dots
+// (``i.mps-close``). Blind-clicking those navigates away from the page.
+const isCloseControl = (node) => {
+  if (!node || !vis(node)) return false;
   const rect = node.getBoundingClientRect();
-  return {x: rect.left + rect.width / 2, y: rect.top + rect.height / 2,
-          w: Math.round(rect.width), h: Math.round(rect.height)};
+  if (rect.width < 16 || rect.height < 16) return false;
+  const x = rect.left + rect.width / 2;
+  const y = rect.top + rect.height / 2;
+  if (x < 0 || y < 0 || x > innerWidth || y > innerHeight) return false;
+  const hit = document.elementFromPoint(x, y);
+  return !!hit && (hit === node || node.contains(hit));
 };
+const closers = [];
+for (const layer of overlays) {
+  const found = [...layer.querySelectorAll(CLOSE_SEL)].filter(isCloseControl);
+  if (found.length) closers.push(found[0]);
+}
+if (!closers.length) {
+  // Some builds draw the button as a sibling of the dialog body.
+  for (const node of document.querySelectorAll(CLOSE_SEL)) {
+    if (isCloseControl(node)) closers.push(node);
+  }
+}
+// The Dream Gaming card. Measured markup: ``div.game-item.DG.customized`` with
+// an ``img`` whose src ends in ``live-dg.png`` and whose ``alt`` is EMPTY. Keep
+// ``banner-dg`` for other builds, but the DG class token and the file name are
+// what actually matched.
+const cards = [...document.querySelectorAll(
+  '.game-item, [class*=game-item], img[src*=live-dg], img[alt=banner-dg]')];
+const isDg = (node) => {
+  const alt = norm(node.getAttribute && node.getAttribute('alt'));
+  const src = String((node.getAttribute && node.getAttribute('src')) || '');
+  const cls = String(node.className || '');
+  return /^banner-dg$/i.test(alt) || /live-dg/i.test(src)
+    || /(^|\s)DG(\s|$)/.test(cls)
+    || !!node.querySelector('img[src*=live-dg], img[alt=banner-dg]');
+};
+let dgNode = cards.find((node) => vis(node) && isDg(node)) || null;
+if (dgNode && dgNode.tagName === 'IMG') {
+  dgNode = dgNode.closest('.game-item') || dgNode.parentElement || dgNode;
+}
 return {
   path: location.pathname,
   hasLogin: !!loginBtn,
-  live: liveNav ? center(liveNav) : null,
-  dg: dgImg ? Object.assign(center(dgImg),
-    {alt: norm(dgImg.getAttribute('alt'))}) : null,
+  live: liveNav ? box(liveNav) : null,
+  dg: dgNode ? Object.assign(bring(dgNode), {
+    cls: String(dgNode.className || '').slice(0, 60)}) : null,
+  overlays: overlays.map((node) => String(node.className || '').slice(0, 60)),
+  closers: closers.map((node) => Object.assign(box(node), {
+    sel: node.tagName + '.' + String(node.className || '').slice(0, 40),
+    alt: norm(node.getAttribute('alt'))})),
+  scrollY: Math.round(window.scrollY || 0),
 };
 """
 
@@ -99,6 +173,58 @@ def login_state(driver):
     except Exception:
         return {"needs_login": False, "path": ""}
     return {"needs_login": bool(data.get("hasLogin")), "path": data.get("path") or ""}
+
+
+def page_state(driver):
+    """One read of the measured page shape, or ``{}`` when the read fails."""
+    try:
+        return driver.execute_script(_LIVE_ROUTE_JS) or {}
+    except Exception:
+        return {}
+
+
+def close_popups(driver, report=None, rounds=3):
+    """Dismiss every visible promo modal by its **own** close button.
+
+    Measured on ``/gamelobby/live``: a ``.nrc-modal`` covers the page and only
+    ``div.iconClose`` at its top-right corner closes it; while it is up, taps on
+    the DG card land on the modal and nothing happens. Only a visible close
+    control inside a visible overlay (or a bare visible close control) is used —
+    no "click the backdrop" guesswork, because that navigates away on this site.
+
+    Returns ``{"closed": int, "left": int}``: how many controls were tapped and
+    how many overlays are still visible afterwards.
+    """
+    def say(message, level="info"):
+        if report is not None:
+            try:
+                report(message, level)
+            except Exception:
+                pass
+
+    closed = 0
+    left = 0
+    for _ in range(max(1, int(rounds))):
+        state = page_state(driver)
+        closers = state.get("closers") or []
+        overlays = state.get("overlays") or []
+        left = len(overlays)
+        if not closers:
+            break
+        target = closers[0]
+        name = target.get("sel") or target.get("alt") or "nút đóng"
+        if not DG._cdp_click(driver, target.get("x"), target.get("y")):
+            say("Thấy nút đóng popup (%s) nhưng không bấm được." % name, "warning")
+            break
+        closed += 1
+        say("Đã đóng popup %s." % name)
+        time.sleep(0.8)
+        left = len(page_state(driver).get("overlays") or [])
+        if not left:
+            break
+    if left:
+        say("Vẫn còn %d lớp popup trên trang." % left, "warning")
+    return {"closed": closed, "left": left}
 
 
 def wait_for_login(driver, report=None, timeout=300.0, poll=1.5, grace=8.0):
@@ -381,11 +507,19 @@ def open_dg(driver, wait=180.0, log=None):
         return {"ok": False, "site_id": "888ae66", "error": login.get("error")}
     deadline += float(login.get("waited") or 0)
 
+    # ---- Promo popups: close them before touching anything else. ----
+    # Measured on ``/gamelobby/live``: a ``.nrc-modal`` covers the whole viewport
+    # and every tap on the DG card lands on the modal, so the flow stalls with no
+    # visible error. The user asked for this explicitly ("nếu có popup nào hiện
+    # lên đóng hoàn toàn cho tôi").
+    stage = "đóng popup"
+    popup = close_popups(driver, report)
+
     # ---- Home page: open the live-casino list. ----
     stage = "mở danh sách SÒNG BÀI"
     routed = False
     for _ in range(3):
-        state = driver.execute_script(_LIVE_ROUTE_JS) or {}
+        state = page_state(driver)
         if state.get("dg"):
             break
         if state.get("live"):
@@ -405,13 +539,14 @@ def open_dg(driver, wait=180.0, log=None):
         if not DG.navigate_top(driver, target):
             break
         time.sleep(3.0)
+        close_popups(driver, report)
 
     # ---- Provider page: tap the Dream Gaming card. ----
     stage = "chờ thẻ DreamGaming"
     tapped = False
     dg_deadline = min(deadline, time.monotonic() + remain(60.0))
     while time.monotonic() < dg_deadline:
-        state = driver.execute_script(_LIVE_ROUTE_JS) or {}
+        state = page_state(driver)
         if state.get("hasLogin"):
             # The site re-checked the session while navigating.
             again = wait_for_login(driver, report, timeout=min(300.0, remain(300.0)))
@@ -421,8 +556,15 @@ def open_dg(driver, wait=180.0, log=None):
             dg_deadline += max(1.0, float(again.get("waited") or 0))
             continue
         if state.get("dg"):
-            if DG._cdp_click(driver, state["dg"]["x"], state["dg"]["y"]):
-                report("Đã chạm thẻ DreamGaming; chờ tab sảnh DG mở.")
+            if state.get("closers"):
+                # A popup re-opened (carousel autoresize) and would eat the tap.
+                close_popups(driver, report, rounds=1)
+                continue
+            card = state["dg"]
+            if DG._cdp_click(driver, card["x"], card["y"]):
+                report("Đã chạm thẻ DreamGaming (%s) tại %s,%s; chờ sảnh DG mở."
+                       % (card.get("cls") or "game-item", int(card["x"]),
+                          int(card["y"])))
                 tapped = True
             break
         if state.get("live") and not routed:
@@ -430,27 +572,58 @@ def open_dg(driver, wait=180.0, log=None):
             routed = True
         time.sleep(1.0)
     if not tapped:
-        report("Chưa thấy thẻ DreamGaming (banner-dg) trên 888AE66.", "error")
+        left = len(page_state(driver).get("closers") or [])
+        if left:
+            return {"ok": False, "site_id": "888ae66", "stage": "đóng popup",
+                    "error": "888AE66 vẫn còn %d popup che trang; không bấm được thẻ "
+                             "DreamGaming." % left}
+        report("Chưa thấy thẻ DreamGaming trên 888AE66 (trang %s)."
+               % _safe_location(driver), "error")
         return {"ok": False, "site_id": "888ae66",
                 "error": "888AE66 chưa hiển thị thẻ DreamGaming; hãy vào mục "
                          "SÒNG BÀI trên cửa sổ Chrome rồi chạy lại."}
 
-    # ---- The game opens as a real tab (no iframe on this site). ----
-    stage = "chờ tab sảnh DG"
+    # ---- Dream Gaming loads as a cross-process iframe, not a new tab.
+    # Measured: tapping the card moves **this** tab to ``/launchgame`` and the
+    # lobby runs as an OOPIF ``ddnewwap/index.html`` on another host. WebDriver
+    # cannot enter that frame, so wait for the CDP target and navigate the tab
+    # to the real document URL. A separate "ddnew" tab may still appear on other
+    # builds, and is handled by the same wait below.
+    stage = "chờ sảnh DG tải"
     dg_handle = None
-    poll = min(deadline, time.monotonic() + remain(120.0))
+    promoted = False
+    poll = min(deadline, time.monotonic() + remain(150.0))
     while time.monotonic() < poll:
         dg_handle = _dg_tab_handle(driver)
         if dg_handle is not None:
+            promoted = True
+            report("Đã thấy tab sảnh DG (%s)." % _safe_location(driver))
             break
-        time.sleep(1.0)
-    if dg_handle is None:
-        report("Hết thời gian chờ; Dream Gaming không mở tab sảnh.", "error")
-        return {"ok": False, "site_id": "888ae66",
-                "error": "888AE66 đã bấm DreamGaming nhưng chưa mở được tab sảnh DG."}
-    driver.switch_to.window(dg_handle)
-    driver.switch_to.default_content()
-    report("Đã thấy tab sảnh DG (%s)." % _safe_location(driver))
+        try:
+            found = DG.find_game_frame(driver, wait=0)
+        except Exception:
+            found = None
+        if found:
+            report("Thấy khung DG (%s); đưa lên tab chính để điều khiển được."
+                   % ("ddnewwap" if "wap" in str(found.get("url") or "")
+                      else "ddnewpc"))
+            moved = DG.promote_frame_to_tab(driver, found,
+                                            settle=min(45.0, max(6.0, remain(45.0))))
+            if moved.get("ok"):
+                promoted = True
+                report("Sảnh DG đã chạy trên tab chính (%s)." % _safe_location(driver))
+                break
+            report("Chưa đưa được khung DG lên tab chính (%s); thử lại."
+                   % (moved.get("error") or "không rõ"), "warning")
+        time.sleep(1.5)
+    if not promoted:
+        report("Hết thời gian chờ; Dream Gaming không mở sảnh.", "error")
+        return {"ok": False, "site_id": "888ae66", "stage": stage,
+                "error": "888AE66 đã bấm DreamGaming nhưng chưa mở được sảnh DG."}
+    try:
+        driver.switch_to.default_content()
+    except Exception:
+        pass
 
     # ---- Captcha: never solved here, only announced and awaited. ----
     stage = "chờ captcha nếu có"

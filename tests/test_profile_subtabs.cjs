@@ -115,6 +115,37 @@ test('CSS có style cho tab con và thẻ provider', () => {
   assert.match(css, /@media \(max-width: 860px\)/);
 });
 
+test('mỗi slot provider có ô chọn site riêng như tab Profile Chrome', () => {
+  // Người dùng yêu cầu: profile OmniLogin/Hidemium phải mở đúng site đã chọn,
+  // giống profile Chrome. Thiếu ô này thì mọi slot luôn mở site đầu danh sách.
+  const body = renderer.slice(renderer.indexOf('function renderProviderAssignments('),
+    renderer.indexOf('async function connectProvider('));
+  assert.match(body, /provider-site-select/, 'thiếu ô chọn site trong dòng provider');
+  assert.match(body, /for \(const site of profileSites\)/,
+    'ô chọn site phải đổ từ profileSites như tab Chrome');
+  assert.match(body, /profileSiteSelections\[String\(index\)\]/,
+    'phải đọc lựa chọn site đã lưu cho slot');
+  assert.match(body, /localStorage\.setItem\('aibcr\.profileSites'/,
+    'phải lưu lựa chọn site dùng chung với tab Chrome');
+  // Hai select cùng mang data-profile: phải phân biệt bằng class, nếu không đổi
+  // site sẽ bị hiểu thành đổi profile đang gán.
+  assert.match(renderer, /closest\('select\.provider-site-select'\)/);
+  assert.match(renderer, /closest\('select\[data-profile\]'\)/);
+});
+
+test('đổi site ở tab Chrome cập nhật luôn ô site của provider', () => {
+  const body = renderer.slice(renderer.indexOf("profileList.addEventListener('change'"));
+  const head = body.slice(0, 700);
+  assert.match(head, /profile-site-select/);
+  assert.match(head, /provider-site-select/, 'phải đồng bộ sang tab provider');
+  assert.match(head, /Object\.keys\(PROVIDERS\)/);
+});
+
+test('CSS cho ô chọn site của provider có cả bố cục hẹp', () => {
+  assert.match(css, /\.provider-site-select/);
+  assert.match(css, /grid-template-areas: "slot select toggle" "slot site toggle"/);
+});
+
 test('không có script nội tuyến trong index.html (CSP script-src self)', () => {
   const inline = [...html.matchAll(/<script(?![^>]*\bsrc=)[^>]*>/gi)];
   assert.equal(inline.length, 0, 'index.html không được có <script> nội tuyến');

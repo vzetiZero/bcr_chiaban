@@ -947,10 +947,17 @@ return (() => {
 # Captcha "Xác minh thành công" là thông báo thoáng qua; nếu coi nó là "đang bị
 # chặn" thì tool báo động mãi sau khi người dùng đã vượt qua. Chỉ hai câu dưới
 # đây mới là dấu hiệu **đang chặn**.
+#
+# Đo lại trên 888AE66 (25/11/2026) sau khi đưa khung DG lên tab chính: bản Laya
+# hiện tại vẽ captcha bằng **tiếng Anh** — node ``sliderBtn``/``System`` mang chữ
+# "SafetyVerify" và "Drag the slider". Không có mẫu tiếng Anh thì tool tưởng sảnh
+# trống và quét bàn mãi trong khi màn hình đang chờ người kéo thanh trượt.
 _CAPTCHA_BLOCK_RE = re.compile(
-    r"kéo thanh trượt|keo thanh truot|xác minh an toàn|xac minh an toan", re.I)
+    r"kéo thanh trượt|keo thanh truot|xác minh an toàn|xac minh an toan"
+    r"|drag the slider|safety\s*verify", re.I)
 _CAPTCHA_PASS_RE = re.compile(
-    r"xác minh thành công|xac minh thanh cong", re.I)
+    r"xác minh thành công|xac minh thanh cong|verified successfully"
+    r"|verification (?:successful|complete)", re.I)
 
 # Bao lâu thì chờ người dùng tự kéo thanh trượt. Captcha hiện lúc sảnh/bàn đang
 # tải, người dùng thường ở ngay màn hình nên 300 giây là đủ; quá hạn thì báo
@@ -1748,16 +1755,22 @@ def lobby_tables(driver, wait=25.0, log=None):
     if driver is None:
         return {"ok": False, "error": "Mở profile Chrome trước khi quét sảnh DG."}
     try:
+        # Một số build (GK881 desktop) chặn ngay bằng captcha trước khi Laya vẽ
+        # gì. Vòng đọc bên dưới cũng tự phát hiện captcha hiện muộn, nên ở đây
+        # chỉ cần đọc nhanh một lượt: chờ 300 giây ngay từ đầu sẽ làm UI im lặng
+        # trong khi màn hình còn đang tải.
         if log is not None:
-            # Sảnh chỉ vẽ lưới bàn **sau** khi captcha được vượt; chờ ở đây để
-            # vòng đọc bên dưới không báo sai "không tìm thấy bàn".
-            gate = wait_for_captcha(driver, log, timeout=_CAPTCHA_WAIT, poll=2.0)
-            if not gate.get("ok"):
-                return {"ok": False, "captcha": True, "error": gate.get("error")}
-            wait = float(wait) + float(gate.get("waited") or 0)
+            gate = captcha_state(driver)
+            if gate.get("blocked"):
+                gate = wait_for_captcha(driver, log, timeout=_CAPTCHA_WAIT, poll=2.0)
+                if not gate.get("ok"):
+                    return {"ok": False, "captcha": True, "error": gate.get("error")}
+                wait = float(wait) + float(gate.get("waited") or 0)
         deadline = time.monotonic() + max(0.0, wait)
         last_data = {"ready": False, "tables": []}
         last_state = {}
+        announced = False
+        next_gate = time.monotonic() + 2.0
         while True:
             ctx = _dg_context(driver, wait=min(0.5, max(0.0, deadline - time.monotonic())))
             if ctx is not None:
@@ -1784,6 +1797,26 @@ def lobby_tables(driver, wait=25.0, log=None):
                 if tables:
                     return {"ok": True, "in_table": bool(last_state.get("in_table")),
                             "tables": tables}
+                # Captcha có thể hiện **sau** cổng chờ đầu tiên (đo trên 888AE66:
+                # thanh trượt bật lên đúng lúc Laya vẽ sảnh). Nếu chỉ đọc ở hạn
+                # chót thì còi kêu chậm và người dùng thấy "chưa có bàn" trước.
+                if log is not None and time.monotonic() >= next_gate:
+                    next_gate = time.monotonic() + 2.0
+                    gate = captcha_state(driver)
+                    if gate.get("blocked") and not announced:
+                        announced = True
+                        # Hú còi rồi **chờ** tới khi người dùng kéo xong, thay vì
+                        # trả lỗi sau 60 giây: người dùng thường đang nhìn màn
+                        # hình khác, hết hạn sớm chỉ làm họ phải chạy lại cả luồng.
+                        gate = wait_for_captcha(driver, log,
+                                                timeout=_CAPTCHA_WAIT, poll=2.0)
+                        if not gate.get("ok"):
+                            return {"ok": False, "captcha": True,
+                                    "error": gate.get("error")}
+                        waited = float(gate.get("waited") or 0.0)
+                        deadline += waited
+                        wait = float(wait) + waited
+                        continue
             if time.monotonic() >= deadline:
                 # Luôn đọc captcha để câu lỗi nói đúng nguyên nhân (UI sẽ hú còi
                 # vì khớp mẫu "xác minh an toàn"); chỉ **chờ** khi caller truyền

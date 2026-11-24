@@ -68,6 +68,10 @@ const SITE_CHIPS = new Set(['small', 'large']);
 // Site ids that have a real entry adapter in the Python engine. Kept in one
 // place so the run gate, the run dispatcher and the Config badge cannot drift.
 const AUTOMATED_SITE_IDS = Object.freeze(['febet', 'gk881', 'e3951', 'vnwtop', '888ae66']);
+// Câu báo captcha (Việt + Anh) dùng chung cho vòng chờ sảnh và vòng quét bàn.
+// Bản Laya mới vẽ captcha bằng tiếng Anh ("SafetyVerify"/"Drag the slider"), nên
+// chỉ so mẫu tiếng Việt sẽ khiến UI im lặng đúng lúc cần người kéo thanh trượt.
+const CAPTCHA_NOTE_RE = /xác minh an toàn|kéo thanh trượt|drag the slider|safety\s*verify/i;
 const SITE_SERVICE_METHODS = Object.freeze({
   febet: 'febet.openDG',
   gk881: 'gk881.openDG',
@@ -1206,8 +1210,10 @@ async function runDGGroup(count, siteIds, requestedIndices = null) {
       const siteLabel = sites.find((site) => site.id === siteId)?.label || siteId;
       const reply = result.status === 'fulfilled' ? result.value : { ok: false, error: result.reason.message };
       autoEntryStates.set(index, reply?.ok
-        ? { ready: true, note: reply.note || `\u0110\u00e3 chuy\u1ec3n Profile ${index} (${siteLabel}) v\u00e0o s\u1ea3nh DG.` }
-        : { ready: false, note: `${siteLabel} ch\u01b0a t\u1ef1 m\u1edf \u0111\u01b0\u1ee3c DG (${reply?.error || 'ch\u01b0a x\u00e1c nh\u1eadn'}).` });
+        ? { ready: true, stage: 'lobby', note: reply.note || `\u0110\u00e3 chuy\u1ec3n Profile ${index} (${siteLabel}) v\u00e0o s\u1ea3nh DG.` }
+        : { ready: false, stage: String(reply?.stage || ''),
+          captcha: Boolean(reply?.captcha) || CAPTCHA_NOTE_RE.test(String(reply?.error || '')),
+          note: `${siteLabel}: ${reply?.error || 'ch\u01b0a x\u00e1c nh\u1eadn \u0111\u01b0\u1ee3c s\u1ea3nh DG.'}` });
     });
   };
   if (autoEntryIndices.length) {
@@ -1250,16 +1256,30 @@ async function runDGGroup(count, siteIds, requestedIndices = null) {
     if (!waiting.length) break;
     const waitingDetails = profileStates.filter((profile) => !profile.ready)
       .map((profile) => `P${profile.index}: ${profile.note}`).join(' \u00b7 ');
-    const waitCaptcha = /xác minh an toàn|kéo thanh trượt/i.test(waitingDetails);
+    const waitCaptcha = CAPTCHA_NOTE_RE.test(waitingDetails);
     for (let countdown = 5; countdown >= 0; countdown -= 1) {
+      // Đừng chỉ nói "chưa vào sảnh DG": khi luồng tự vào sảnh đã dừng ở một
+      // bước cụ thể (popup, thẻ DG, khung DG), câu báo phải nêu đúng bước đó —
+      // nếu không người dùng chỉ thấy một bức tường "quét lại sau N giây".
+      const blocked = profileStates.filter((profile) => !profile.ready
+        && autoEntryStates.get(profile.index)?.stage
+        && !autoEntryStates.get(profile.index)?.ready);
+      const stuck = blocked.length
+        ? `Luồng tự vào sảnh dừng ở bước "${autoEntryStates.get(blocked[0].index)?.stage}": `
+          + `${autoEntryStates.get(blocked[0].index)?.note}` : '';
       const note = countdown === 0 ? `Đang quét lại sảnh DG cho profile ${waiting.join(', ')}...`
         : `Profile ${waiting.join(', ')} chưa vào sảnh DG; quét lại sau ${countdown} giây. ${waitingDetails}`;
       sendHopStatus({ active: true, countdown, waiting_indices: waiting, profile_states: profileStates,
         error: waitCaptcha,
-        note: waitCaptcha ? `Sảnh DG đang chặn bằng captcha: hãy tự kéo thanh trượt trong cửa sổ Chrome. ${waitingDetails}` : note });
+        note: waitCaptcha ? `Sảnh DG đang chặn bằng captcha: hãy tự kéo thanh trượt trong cửa sổ Chrome. ${waitingDetails}`
+          : (stuck ? `${stuck} ${waitingDetails}` : note) });
       if (countdown > 0) await new Promise((resolve) => setTimeout(resolve, 1000));
     }
-    const retryIndices = waiting.filter((index) => autoEntryIndices.includes(index));
+    const retryIndices = waiting.filter((index) => autoEntryIndices.includes(index)
+      // Đang chờ captcha thì **không** chạy lại luồng: mỗi lần chạy lại sẽ nạp lại
+      // sảnh, xoá thanh trượt người dùng đang kéo. Chỉ hú còi và chờ.
+      && !autoEntryStates.get(index)?.captcha
+      && !waitCaptcha);
     if (retryIndices.length) {
       sendHopStatus({ active: true, waiting_indices: retryIndices,
         profile_states: profileStates,
@@ -1307,7 +1327,7 @@ async function runDGGroup(count, siteIds, requestedIndices = null) {
     // profile nào đọc được danh sách bàn nhưng cũng không có lỗi mạng nào để
     // báo. Phải hú còi để người dùng tự kéo thanh trượt, rồi **vẫn** tiếp tục
     // quét — tool không bao giờ tự giải captcha.
-    const captchaNote = scanErrors.find((note) => /xác minh an toàn|kéo thanh trượt/i.test(note));
+    const captchaNote = scanErrors.find((note) => CAPTCHA_NOTE_RE.test(note));
     for (let countdown = 5; countdown >= 0; countdown -= 1) {
       const base = countdown === 0 ? 'Đang quét lại danh sách bàn của tất cả sảnh DG...'
         : `Chưa chọn được bàn chung · quét lại sau ${countdown} giây.`;

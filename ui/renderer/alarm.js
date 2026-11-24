@@ -34,8 +34,11 @@ const ALARM_PATTERNS = [
   'dừng hẳn',
   // Cần người thật thao tác ngay trên Chrome: sảnh DG chặn bằng captcha thanh
   // trượt. Tool **không bao giờ tự giải**; nó chỉ hú còi để người dùng kéo tay.
+  // Bản Laya mới (đo trên 888AE66) vẽ captcha bằng tiếng Anh.
   'xác minh an toàn',
   'kéo thanh trượt',
+  'drag the slider',
+  'safetyverify',
 ];
 
 let alarmContext = null;

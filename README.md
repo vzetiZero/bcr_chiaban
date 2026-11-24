@@ -131,42 +131,61 @@ Phiên đăng nhập được **lưu và khôi phục** (`aibcr/adapters/session
 → `quit()` Chrome → mở lại → khôi phục `ok=True, cookies=7` → vẫn `signed_in=True`, không
 hiện lại form đăng nhập.
 
-### 888AE66 (`https://www.888ae66.com/m`) — site thứ ba, sảnh DG mở thành tab riêng
+### 888AE66 (`https://www.888ae66.com/m`) — site thứ ba, sảnh DG chạy trong khung OOPIF
 
-Bản `/m` là app Vue dựng giao diện điện thoại; đường vào sảnh đo trực tiếp:
+Bản `/m` là app Vue dựng giao diện điện thoại. Đường vào sảnh đã **đo lại trên Chrome
+thật** (profile 1, viewport 880×1103) — bản ghi cũ trong README này sai ở 3 điểm và đã
+được sửa:
 
-1. **`SÒNG BÀI`** = `.nav-item.live` → SPA chuyển sang `/gamelobby/live`.
-2. Danh sách nhà cung cấp là các `li` chứa `<img>`; Dream Gaming là
-   `img[alt=banner-dg]`. Class của `li` chỉ là mã ngôn ngữ (`vi-VN`) nên **không**
-   dùng để nhận diện.
-3. Bấm thẻ DG **không** mở iframe: Chrome mở tab mới `/launchgame`, rồi tab đó mới
-   thành `ddnewpc/index.html?...&token=…` (bản desktop). Vì vậy profile tạm có 2 tab.
-4. **Quy tắc một tab** (yêu cầu của người dùng): giữ tab sảnh DG và **đóng tab site**.
-   Đo sau khi đóng: tab còn lại vẫn nguyên cây Laya (**7979 node**) và còn `token`,
-   tức là không mất phiên, không bị đá về sảnh.
+| Bước | Thực tế đo được | Ghi chú |
+| --- | --- | --- |
+| 1 | Về `/m` (hoặc quay về `/m` nếu tab đang ở trang con không có menu) | tab trắng / trang con đều được đưa về `/m` |
+| 2 | Bấm **`SÒNG BÀI`** = `.swiper-slide.nav-anchor.home-quick-item.navigation-PRODUCT` (x≈249, y≈604) | `.nav-item.live` **không tồn tại** trên bản này; adapter vẫn nhận nó cho build khác |
+| 3 | `/gamelobby/live` mở **popup khuyến mãi** `.nrc-modal.fade-in` phủ toàn trang | phải **đóng popup trước**, nếu không mọi cú bấm đều rơi vào lớp phủ |
+| 4 | Bấm thẻ Dream Gaming = `div.game-item.DG.customized` chứa `img[src*=live-dg]` | ảnh đó có `alt` **rỗng**; quy tắc cũ `img[alt=banner-dg]` khớp **0** node nên luồng đứng ở sảnh |
+| 5 | Tab tự chuyển sang `/launchgame`; sảnh DG chạy là **OOPIF** `ddnewwap/index.html` trên `new-dd-cloudfront.ywjxi.com` (Laya stage 750×940) | **không** có "tab ddnew" nào xuất hiện — chờ tab mới là chờ vô hạn |
+| 6 | `promote_frame_to_tab` + `navigate_top` URL OOPIF → tab thành tài liệu DG sau ~2 s | WebDriver không vào được frame khác tiến trình |
+| 7 | **Captcha** `sliderBtn`/`System` với chữ `"SafetyVerify"` / `"Drag the slider"` | chờ tay, không tự giải (xem dưới) |
+| 8 | **Một tab**: đóng các tab site còn lại, giữ tab DG | đúng yêu cầu "chỉ còn duy nhất 1 tab sảnh" |
+
+Hai điểm dễ hỏng nữa, đã đo:
+
+- **Thẻ DG nằm ngoài viewport**: đo được ở `y≈2406` trong khi viewport cao 1103 px. Bấm
+  theo toạ độ viewport mà không cuộn thì cú bấm rơi ra ngoài trang. `_LIVE_ROUTE_JS` gọi
+  `scrollIntoView({block:'center'})` rồi mới trả hình chữ nhật.
+- **Chỉ bấm nút đóng thật**: trang còn một `div.close-button` nằm ngoài màn hình ở (0,0)
+  và các chấm icon 12 px. Mỗi nút đóng phải qua `elementFromPoint` tại đúng tâm của nó,
+  nếu không sẽ bấm vào rác và rời trang.
 
 ```python
 from aibcr.adapters import ae888
 ae888.open_dg(driver, wait=180, log=print)   # -> {'ok', 'tables', 'tabs'=1, 'in_table'}
 ```
 
-Trong lúc chờ tab DG, adapter **không** đóng tab `/launchgame` (nó chưa mang chữ
-`ddnew`) — đóng sớm là giết sảnh trước khi Laya tải xong. Sau khi sảnh đã vẽ xong lưới
-bàn (`lobby_tables` đọc được bàn), adapter chạy **lượt dọn thứ hai** và đóng luôn tab
-redirect còn sót — vì lúc đó nó chỉ là rác, và đúng yêu cầu "chỉ còn duy nhất 1 tab sảnh".
+Mỗi bước đều có dòng log riêng (`Đã bấm SÒNG BÀI`, `Đã đóng popup …`, `Đã chạm thẻ
+DreamGaming …`, `Thấy khung DG …`, `Sảnh DG đã chạy trên tab chính …`), và khi hỏng thì
+`result["stage"]` nêu **đúng bước** đang dừng (`đóng popup`, `chờ thẻ DreamGaming`,
+`chờ sảnh DG tải`, `đọc danh sách bàn`) để UI không còn câu chung "chưa vào sảnh DG".
 
 #### Captcha thanh trượt — tool không bao giờ giải
 
-Dream Gaming có thể chặn sảnh bằng **"Xác minh an toàn" / "Kéo thanh trượt sang phải"**.
+Dream Gaming có thể chặn sảnh bằng **"Xác minh an toàn" / "Kéo thanh trượt sang phải"**, và
+bản Laya hiện tại trên 888AE66 vẽ bằng **tiếng Anh**: `"SafetyVerify"` / `"Drag the slider"`.
 Đo trên 888AE66: captcha vẽ bằng **node Laya**, `document.body.innerText` rỗng và không
 có `[class*=captcha]` nào — nên chỉ soi DOM sẽ báo "không có captcha" và tool chờ vô ích.
 
 | Hành vi | Chi tiết |
 | --- | --- |
-| Nhận diện | `febet.captcha_state()` đọc **cả** cây node Laya và DOM; `_CAPTCHA_BLOCK_RE` chỉ khớp câu **đang chặn** ("xác minh an toàn", "kéo thanh trượt"), còn "Xác minh thành công" là `_CAPTCHA_PASS_RE` nên không báo động mãi sau khi đã vượt |
-| Báo động | Log mức `action` → `alarm.js` hú còi (mẫu `'xác minh an toàn'`, `'kéo thanh trượt'`) và dòng nhật ký tô màu cảnh báo riêng. Cả hai chỗ chờ của nhóm (`chờ sảnh`, `quét bàn chung`) đều gửi `error: true` nên không bao giờ treo im lặng |
-| Không giải | Không có `dispatchMouseEvent`/kéo chuột nào trong đường captcha; `wait_for_captcha()` chỉ poll tới khi người dùng kéo tay xong (mặc định 300 giây) rồi chạy tiếp |
+| Nhận diện | `febet.captcha_state()` đọc **cả** cây node Laya và DOM; `_CAPTCHA_BLOCK_RE` khớp cả câu Việt lẫn Anh đang chặn (`xác minh an toàn`, `kéo thanh trượt`, `drag the slider`, `safety verify`), còn "Xác minh thành công" / "Verified successfully" là `_CAPTCHA_PASS_RE` nên không báo động mãi sau khi đã vượt |
+| Báo động | Log mức `action` → `alarm.js` hú còi (mẫu `'xác minh an toàn'`, `'kéo thanh trượt'`, `'drag the slider'`, `'safetyverify'`) và dòng nhật ký tô màu cảnh báo riêng. Cả hai chỗ chờ của nhóm (`chờ sảnh`, `quét bàn chung`) đều gửi `error: true` nên không bao giờ treo im lặng |
+| Báo ngay | `lobby_tables(..., log=…)` kiểm captcha mỗi 2 giây **trong lúc chờ lưới bàn**, không đợi hết hạn: đo được captcha bật lên sau cổng chờ đầu tiên, nếu chỉ đọc ở hạn chót thì người dùng thấy "chưa có bàn" trước khi được báo kéo tay |
+| Không giải | Không có `dispatchMouseEvent`/kéo chuột nào trong đường captcha; `wait_for_captcha()` chỉ poll tới khi người dùng kéo tay xong (mặc định 300 giây) rồi chạy tiếp, và **không** bị tính vào hạn chờ của cả lượt |
+| Không chạy lại khi đang chờ | Vòng `runDGGroup` **không** thử lại luồng vào sảnh khi profile đang ở trạng thái captcha: mỗi lần chạy lại sẽ nạp lại sảnh và xoá thanh trượt người dùng đang kéo |
 | Chờ đúng chỗ | `lobby_tables(..., log=…)` và `sync_table(..., log=…)` nhận `log` để **chờ** captcha; không truyền `log` (nhịp dò `dg.table` 5 giây) thì chỉ đọc một lượt, không treo nhịp nền |
+
+Đo lại toàn bộ luồng trên Chrome thật (profile 1, CDP 9222, 25/11/2026): `/m` → `SÒNG BÀI`
+→ đóng 2 popup → thẻ `game-item DG customized` tại (220, 543) → khung `ddnewwap` → tab chính
+→ còi captcha ở giây 10 → người dùng kéo tay → `Sảnh DG sẵn sàng; tìm thấy 5 bàn, 1 tab`.
 
 #### Một bản `ddnewpc` có nhiều "view cược" — bài học đo được
 
@@ -272,10 +291,18 @@ một trang dài):
 
 | Tab con | Nội dung |
 | --- | --- |
-| **Profile Chrome** | 8 slot P1–P8, chọn site/khung cửa sổ, `Chọn tất cả` / `Bỏ chọn` / `Mở đã chọn` / `Đóng tất cả Chrome` |
-| **OmniLogin** | API `127.0.0.1:35353`, tìm profile, `Gán lần lượt`, `Mở tất cả`, `Đóng tất cả`, `Bỏ gán`, mỗi dòng có nút Mở/Đóng |
-| **Hidemium** | API `127.0.0.1:5555` (v2), UUID profile, cùng bộ thao tác như OmniLogin |
+| **Profile Chrome** | 8 slot P1–P8, chọn **site** và khung cửa sổ, `Chọn tất cả` / `Bỏ chọn` / `Mở đã chọn` / `Đóng tất cả Chrome` |
+| **OmniLogin** | API `127.0.0.1:35353`, tìm profile, `Gán lần lượt`, `Mở tất cả`, `Đóng tất cả`, `Bỏ gán`, mỗi dòng có nút Mở/Đóng **và ô chọn site riêng** |
+| **Hidemium** | API `127.0.0.1:5555` (v2), UUID profile, cùng bộ thao tác như OmniLogin, cũng có ô chọn site riêng |
 
+- **Mỗi slot của OmniLogin/Hidemium có ô chọn site riêng**, giống tab Profile Chrome:
+  danh sách đổ từ cùng `profileSites`, lựa chọn lưu chung một chỗ
+  (`localStorage['aibcr.profileSites']`), nên profile mở ra đúng site game đã chọn thay
+  vì luôn rơi về site đầu danh sách. Đổi site ở tab Chrome thì ô ở tab provider cập nhật
+  theo và ngược lại — hai nơi không thể nói hai kiểu.
+- Hai `<select>` trong một dòng cùng mang `data-profile`, nên handler phân biệt bằng
+  class (`select.provider-site-select` = đổi site, `select[data-profile]` = đổi profile
+  đang gán). Thiếu phân biệt này thì đổi site sẽ âm thầm bỏ gán profile.
 - Badge trên mỗi tab cho biết số profile đang dùng (Chrome: số slot đang chọn).
 - Chọn **Nguồn profile** ở tab *Chạy Tool* sẽ tự nhảy sang tab con tương ứng, và
   ngược lại chuyển tab con sẽ đổi luôn nguồn chạy.

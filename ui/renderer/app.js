@@ -576,9 +576,11 @@ function renderProviderAssignments(key, count = MAX_PROFILES) {
     row.className = `provider-assignment${known ? ' assigned' : ''}`;
     row.dataset.profile = String(index);
     row.innerHTML = `<span class="provider-slot">P${index}</span><select></select>
+      <select class="provider-site-select" data-profile="${index}"
+        aria-label="Site của Profile ${index}"></select>
       <span class="provider-row-state"></span>
       <button class="provider-row-toggle" type="button" data-profile="${index}">Mở</button>`;
-    const select = row.querySelector('select');
+    const select = row.querySelector('select:not(.provider-site-select)');
     select.dataset.profile = String(index);
     const empty = document.createElement('option');
     empty.value = '';
@@ -598,6 +600,28 @@ function renderProviderAssignments(key, count = MAX_PROFILES) {
       select.append(option);
     }
     select.value = known ? chosen : '';
+
+    // Ô chọn site riêng cho từng slot — giống hệt danh sách ở tab Profile Chrome,
+    // để profile OmniLogin/Hidemium mở đúng site người dùng muốn (mặc định site
+    // đầu tiên). Không có ô này thì mọi slot luôn mở site đầu danh sách và người
+    // dùng không cấu hình được gì.
+    const siteSelect = row.querySelector('.provider-site-select');
+    siteSelect.replaceChildren();
+    for (const site of profileSites) {
+      const option = document.createElement('option');
+      option.value = site.id;
+      option.textContent = site.display || site.label;
+      siteSelect.append(option);
+    }
+    const savedSite = profileSiteSelections[String(index)];
+    const pickedSite = profileSites.some((site) => site.id === savedSite)
+      ? savedSite : profileSites[0]?.id || '';
+    if (pickedSite) {
+      siteSelect.value = pickedSite;
+      profileSiteSelections[String(index)] = pickedSite;
+    }
+    siteSelect.disabled = !profileSites.length;
+    localStorage.setItem('aibcr.profileSites', JSON.stringify(profileSiteSelections));
 
     const state = providerOpenState.get(providerStateKey(key, index)) || 'closed';
     const stateNode = row.querySelector('.provider-row-state');
@@ -855,6 +879,25 @@ for (const key of Object.keys(PROVIDERS)) {
   $(spec.closeAll).addEventListener('click', () => closeAllProviderProfiles(key));
   $(spec.clear).addEventListener('click', () => clearProviderAssignments(key));
   $(spec.host).addEventListener('change', (event) => {
+    // Có hai select mang ``data-profile`` trong mỗi dòng: gán profile provider và
+    // chọn site riêng. Phân biệt bằng class để đổi site không bị hiểu nhầm thành
+    // đổi profile đang gán (và ngược lại).
+    const siteSelect = event.target.closest('select.provider-site-select');
+    if (siteSelect) {
+      const index = siteSelect.dataset.profile;
+      if (!siteSelect.value) return;
+      profileSiteSelections[index] = siteSelect.value;
+      localStorage.setItem('aibcr.profileSites', JSON.stringify(profileSiteSelections));
+      const label = profileSites.find((site) => site.id === siteSelect.value)?.label
+        || siteSelect.value;
+      $(spec.notice).textContent = `P${index} sẽ mở site ${label}.`;
+      // Tab Profile Chrome hiển thị cùng lựa chọn này, nên phải vẽ lại để hai nơi
+      // không nói hai kiểu.
+      const chromeSelect = profileList.querySelector(
+        `.profile-site-select[data-profile="${index}"]`);
+      if (chromeSelect) chromeSelect.value = siteSelect.value;
+      return;
+    }
     const select = event.target.closest('select[data-profile]');
     if (!select) return;
     const index = select.dataset.profile;
@@ -965,6 +1008,13 @@ profileList.addEventListener('change', (event) => {
   if (!select) return;
   profileSiteSelections[select.dataset.profile] = select.value;
   localStorage.setItem('aibcr.profileSites', JSON.stringify(profileSiteSelections));
+  // Tab OmniLogin/Hidemium dùng chung lựa chọn site này; cập nhật luôn để người
+  // dùng thấy một site duy nhất cho mỗi slot ở cả hai nơi.
+  for (const key of Object.keys(PROVIDERS)) {
+    const mirror = document.querySelector(
+      `${PROVIDERS[key].host} .provider-site-select[data-profile="${select.dataset.profile}"]`);
+    if (mirror) mirror.value = select.value;
+  }
 });
 $('#profile-source').addEventListener('change', () => {
   localStorage.setItem(PROFILE_SOURCE_KEY, $('#profile-source').value);
