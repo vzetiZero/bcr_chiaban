@@ -130,12 +130,12 @@ const DEFAULT_BET_CONFIG = Object.freeze({
     400, 360, 300, 280],
   min_t: 20,
   max_t: 10000,
-  min_tk: 3,
+  min_tk: 2,
   total_bet: 5000,
   hop_min: '2',
   hop_max: 5,
   split: 'odd-p',
-  auto_confirm: false,
+  auto_confirm: true,
 });
 
 function betConfigPath() {
@@ -149,7 +149,7 @@ function normalizeBetConfig(value = {}) {
     .filter((item) => Number.isFinite(item) && item > 0 && item <= 10000000);
   const min_t = Math.max(10, Math.min(10000, Math.trunc(Number(value.min_t) || 20)));
   const max_t = Math.max(min_t, Math.min(10000, Math.trunc(Number(value.max_t) || 10000)));
-  const min_tk = Math.max(2, Math.min(15, Math.trunc(Number(value.min_tk) || 3)));
+  const min_tk = Math.max(2, Math.min(15, Math.trunc(Number(value.min_tk) || 2)));
   const total_bet = Math.max(1, Math.min(1000000000,
     Math.trunc(Number(value.total_bet) || 5000)));
   const hopText = String(value.hop_min ?? '2').trim();
@@ -166,7 +166,10 @@ function normalizeBetConfig(value = {}) {
     hop_min,
     hop_max,
     split: value.split === 'odd-b' ? 'odd-b' : 'odd-p',
-    auto_confirm: value.auto_confirm === true,
+    // Mặc định BẬT: chỉ xếp chip mà không bấm xác nhận thì không có tay nào được
+    // đặt thật. Chỉ tắt khi người dùng chủ động bỏ chọn (false), nên `undefined`
+    // (cấu hình cũ chưa có trường này) cũng phải thành true.
+    auto_confirm: value.auto_confirm !== false,
   };
 }
 

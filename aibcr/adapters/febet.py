@@ -484,11 +484,14 @@ return (() => {
   };
   const screenFloor = findFloor(view.tableInfoMan);
   const floorRaw = screenFloor >= 80 ? screenFloor : rawMin;
-  // Tất cả số tiền DG (giới hạn bàn, số dư, mệnh giá chip) đều tính bằng VND;
-  // commonReachableStake làm việc theo đơn vị "k" (1k = 1000 VND) nên scale phải
-  // luôn là 1000. Không được để scale = 1 (min_k bị nhãn 1000×, denominations_k
-  // vẫn là số nguyên VND lớn) hay = 0 (min_k = 0, danh sách mệnh giá rỗng).
-  const scale = 1000;
+  // DG trả số tiền theo ĐƠN VỊ HIỂN THỊ của bàn, không phải VND nguyên. Bằng chứng
+  // đo trên bàn 60101 (GK881): nhãn giới hạn trên màn hình là "10-1000" và
+  // ``baccaratLimit.bpMin/bpMax`` cũng đúng 10/1000; khay chip là
+  // ``10, 100, 500, 1000, 10000, 500000`` hiển thị y hệt "10 … 500K"; số dư có
+  // phần lẻ (``enterLimit`` 515.17). Nếu coi các số đó là VND thì bàn chỉ cho cược
+  // 10đ–1.000đ, vô lý. Vậy 1 đơn vị DG = 1 "k" (1.000đ) = đúng thang của app, và
+  // chia thêm 1000 sẽ gộp chip 500 với 1000 làm một rồi kéo mọi mức về 1k.
+  const scale = 1;
   const values = (obj, names) => {
     for (const name of names) if (obj && Number(obj[name]) > 0) return Number(obj[name]);
     return 0;
@@ -600,10 +603,12 @@ const autoConfirm = Boolean(arguments[3]);
   };
   const screenFloor = findFloor(view.tableInfoMan);
   const floorRaw = screenFloor >= 80 ? screenFloor : rawMin;
-  // Tất cả số tiền DG (giới hạn bàn, số dư, mệnh giá chip) đều tính bằng VND;
-  // commonReachableStake làm việc theo đơn vị "k" (1k = 1000 VND) nên scale phải
-  // luôn là 1000. Không được để scale = 1 hay = 0.
-  const scale = 1000;
+  // Cùng đơn vị với ``_DG_BET_STATE_JS``: 1 đơn vị DG = 1 "k" (1.000đ). Đo trên
+  // bàn 60101: nhãn "10-1000" == bpMin/bpMax, khay chip 10…500000 hiển thị
+  // "10 … 500K". Chia thêm 1000 sẽ khiến bước xác nhận tự đồng ý với chính cái
+  // sai (kỳ vọng ``denom*scale`` và delta đọc được cùng bị chia), nên lỗi tiền
+  // không bao giờ lộ ra.
+  const scale = 1;
   if (!scale) return {ok:false,error:'Không xác định được đơn vị tiền của bàn DG; đã dừng để tránh đặt sai số tiền.'};
   if (Number(info.stateId ?? info.state ?? view.stateId ?? 0) !== 1
       || Number(info.countDown ?? view.countDown ?? 0) < 5)

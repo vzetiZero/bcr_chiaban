@@ -1334,12 +1334,12 @@ function fillBetConfig(config) {
   $('#bet-ladder-stakes').value = (config.stakes || []).join(' ');
   $('#bet-min-stake').value = config.min_t ?? 20;
   $('#bet-max-stake').value = config.max_t ?? 10000;
-  $('#bet-min-profiles').value = config.min_tk ?? 3;
+  $('#bet-min-profiles').value = config.min_tk ?? 2;
   $('#bet-total-target').value = config.total_bet ?? 5000;
   $('#bet-hop-rounds').value = config.hop_min ?? '2';
   $('#bet-hop-limit').value = config.hop_max ?? 5;
   $('#bet-split').value = config.split === 'odd-b' ? 'odd-b' : 'odd-p';
-  $('#bet-auto-confirm').checked = config.auto_confirm === true;
+  $('#bet-auto-confirm').checked = config.auto_confirm !== false;
   const match = Object.entries(LADDER_PRESETS).find(([, sequence]) =>
     sequence === $('#bet-ladder-stakes').value);
   $('#bet-ladder-preset').value = match ? match[0] : 'custom';

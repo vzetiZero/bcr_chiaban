@@ -40,6 +40,7 @@ from aibcr.models.bet_ladder import (BetLadder, DEFAULT_STAKES,
                                      parse_hop_rounds, parse_stakes)
 from aibcr.live.reader import LiveReader
 from aibcr.live.session import LiveSession
+from aibcr.live.dg_reader import DGReader, find_dg_page
 from aibcr.live.wm_reader import WMReader, find_wm_page, find_wm_table
 from aibcr.live import ai as LIVE_AI
 from aibcr.models import engine as E
@@ -66,7 +67,10 @@ DEFAULT_CONFIG = {
     "stakes": list(DEFAULT_STAKES),
     "min_t": 20,
     "max_t": 10000,
-    "min_tk": 3,
+    # Số profile tối thiểu để "Chạy cược". Đo trên máy này: nhóm chỉ có 2 profile
+    # (xen kẽ P/B), nên để 3 khiến nút từ chối "Cần 3 profile, hiện có 2" và không
+    # bao giờ đặt được tay nào. Mức 2 vẫn giữ được ý nghĩa đối trọng P/B.
+    "min_tk": 2,
     "total_bet": 5000,
     "hop_min": "2",
     "hop_rounds": [2],
@@ -257,7 +261,7 @@ class BaccaratController:
         config["min_t"] = min(10000, max(1, _as_int(config.get("min_t"), 20)))
         config["max_t"] = min(10000, max(config["min_t"],
                                          _as_int(config.get("max_t"), 10000)))
-        config["min_tk"] = min(15, max(2, _as_int(config.get("min_tk"), 3)))
+        config["min_tk"] = min(15, max(2, _as_int(config.get("min_tk"), 2)))
         config["total_bet"] = max(1, _as_int(config.get("total_bet"), 5000))
         config["hop_min"] = str(config.get("hop_min") or "2").strip()[:120] or "2"
         config["hop_rounds"] = parse_hop_rounds(config["hop_min"])
@@ -2617,7 +2621,7 @@ class BaccaratController:
             self._push_state()
 
     def _make_live_reader(self, session, wm_detected=None):
-        """Chọn bộ đọc theo tab đang mở: WM đọc khung nhị phân, Petalive đọc text."""
+        """Chọn bộ đọc theo tab đang mở: DG (protobuf), WM (nhị phân), Petalive (text)."""
         port = getattr(BR, "CDP_PORT", 9222)
         if wm_detected is None:
             try:
@@ -2627,6 +2631,18 @@ class BaccaratController:
             wm_detected = wm_page is not None
         if wm_detected:
             return WMReader(on_round=session.on_round, on_state=session.on_state,
+                            on_status=lambda text, level="info":
+                            self.log("AI live: %s" % text, level),
+                            port=port, stop=self.live_stop_event)
+        # Sảnh DG (GK881) là mục tiêu chính: tab ``ddnewpc``/``ddnewwap`` không khớp
+        # mẫu URL của Petalive, nên không chọn riêng thì bộ đọc Petalive chạy mãi mà
+        # không bao giờ có dữ liệu.
+        try:
+            dg_page = find_dg_page(port)
+        except Exception:
+            dg_page = None
+        if dg_page is not None:
+            return DGReader(on_round=session.on_round, on_state=session.on_state,
                             on_status=lambda text, level="info":
                             self.log("AI live: %s" % text, level),
                             port=port, stop=self.live_stop_event)
