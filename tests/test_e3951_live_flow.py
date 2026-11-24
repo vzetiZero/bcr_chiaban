@@ -129,6 +129,19 @@ class LobbyUrlPromoteTest(unittest.TestCase):
         self.assertIn('"ddnew" in location.lower()', source)
         self.assertNotIn('"ddnewpc" in location.lower()', source)
 
+    def test_open_dg_keeps_the_tab_while_a_table_is_open(self):
+        """Đang trong bàn thì cấm đưa URL sảnh lên tab.
+
+        URL của frame không mang ``tableId`` khi bàn được vào bằng cách bấm thẻ
+        (đo trên bàn 60101), nên đưa nó lên tab lúc đang chơi sẽ đá profile về
+        sảnh và làm cả nhóm lệch bàn.
+        """
+        import inspect
+        source = inspect.getsource(E.open_dg)
+        self.assertIn("DG.current_table", source)
+        self.assertIn("giữ nguyên tab", source)
+        self.assertIn('"in_table": in_table', source)
+
 
 if __name__ == "__main__":
     unittest.main()

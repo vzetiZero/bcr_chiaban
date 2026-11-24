@@ -453,14 +453,27 @@ def open_dg(driver, wait=150.0, log=None):
         report("Sảnh DG đã mở sẵn; tìm thấy %s bàn." % len(existing.get("tables") or []))
         # Sảnh đã sẵn sàng nhưng tab còn ở trang site (``/m/home``) thì vẫn đưa
         # URL sảnh lên tab: đây chính là yêu cầu "mở bằng link sảnh trong iframe",
-        # và nó bỏ luôn popup/overlay của site. Việc này idempotent — đang ở tab
-        # DG thì trả ``True`` ngay.
-        moved = promote_lobby_to_tab(driver)
-        if moved:
-            report("Tab đang chạy chính tài liệu sảnh DG.")
+        # và nó bỏ luôn popup/overlay của site.
+        #
+        # Nhưng URL của frame **không** mang ``tableId`` khi bàn được vào bằng cách
+        # bấm thẻ (đo trên bàn 60101), nên đưa nó lên tab lúc đang chơi sẽ đá
+        # profile về sảnh và làm cả nhóm lệch bàn. Chỉ đưa lên khi đang ở sảnh.
+        moved = False
+        in_table = False
+        try:
+            here = DG.current_table(driver, wait=1.0) or {}
+            in_table = bool(here.get("in_table"))
+        except Exception:
+            in_table = False
+        if in_table:
+            report("Profile đang trong bàn DG; giữ nguyên tab để không rời bàn.")
         else:
-            report("Chưa tách được sảnh DG sang tab chính; vẫn dùng iframe của trang.",
-                   "warning")
+            moved = promote_lobby_to_tab(driver)
+            if moved:
+                report("Tab đang chạy chính tài liệu sảnh DG.")
+            else:
+                report("Chưa tách được sảnh DG sang tab chính; vẫn dùng iframe của trang.",
+                       "warning")
         current_host = ""
         try:
             current_host = urlsplit(driver.current_url or "").hostname or ""
@@ -468,7 +481,7 @@ def open_dg(driver, wait=150.0, log=None):
             current_host = ""
         return {"ok": True, "site_id": "e3951", "already_open": True, "lobby_ready": True,
                 "tables": existing.get("tables") or [], "promoted": bool(moved),
-                "host": current_host,
+                "in_table": in_table, "host": current_host,
                 "note": "Đã nhận diện sảnh DG E3951 đang mở."}
 
     try:
