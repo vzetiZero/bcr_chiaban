@@ -5,6 +5,7 @@ Lỗi từng gặp: mở Chrome rồi tự tay đóng cửa sổ, nhưng app v�
 nên nút mở Chrome bị vô hiệu và không có cách mở lại.
 """
 
+import time
 import unittest
 from unittest.mock import patch
 
@@ -93,6 +94,30 @@ class ChromeLivenessTests(unittest.TestCase):
         with patch.object(BR.BrowserSession, "_port_open", return_value=False):
             self.assertFalse(session._probe_alive())
         self.assertIsNone(session.driver)
+
+    def test_launching_chrome_is_not_reported_as_closed(self):
+        """While ``start()`` runs, every probe says "closed" — Chrome is opening.
+
+        Measured live: the controller tick (and the UI state poll) landed inside
+        the launch window, ``connected`` returned False, ``_on_chrome_lost`` ran
+        and ``mark_closed()`` wiped the half-built session. Profile 1 then
+        reported "Chrome đã đóng" while Chrome was running.
+        """
+        session = BR.BrowserSession()
+        session._launching = True
+        with patch.object(BR.BrowserSession, "_probe_alive", return_value=False):
+            self.assertTrue(session.connected)
+        self.assertTrue(session._launching)
+
+    def test_a_stale_false_cache_does_not_kill_a_live_chrome(self):
+        """A cached ``False`` from before the window opened must be re-probed."""
+        session = self.session()
+        session._alive_checked_at = time.monotonic()
+        session._alive_ok = False           # cache cũ: lúc đó Chrome chưa lên cổng
+        with patch.object(BR.BrowserSession, "_probe_alive", return_value=True) as probe:
+            self.assertTrue(session.connected)
+        self.assertTrue(probe.called, "phải dò lại trước khi xoá phiên")
+        self.assertIsNotNone(session.driver)
 
     def test_mark_closed_resets_everything(self):
         session = self.session()

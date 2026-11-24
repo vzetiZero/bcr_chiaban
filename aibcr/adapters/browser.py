@@ -407,6 +407,9 @@ class BrowserSession:
         # nhưng vẫn phát hiện được người dùng tự đóng cửa sổ Chrome.
         self._alive_checked_at = 0.0
         self._alive_ok = False
+        # Đang trong lúc khởi động Chrome (start() chưa xong). ``connected`` phải
+        # trả True để vòng tick không coi đây là "Chrome đã đóng".
+        self._launching = False
         self.external_browser = False
         self._external_service = None
         # Dấu vết thiết bị Android của profile (user-agent, màn hình, canvas).
@@ -423,9 +426,21 @@ class BrowserSession:
         giá trị cũ, nên phải dò lại cổng CDP. Kết quả được cache ngắn để không gọi
         HTTP liên tục khi UI lấy state mỗi 2 giây.
         """
+        # Đang khởi động: cổng CDP chưa mở và ``window_handles`` còn ném lỗi, nên
+        # mọi phép dò đều nói "đã đóng" trong khi Chrome đang mở dở. Trả True để
+        # vòng tick không gọi ``_on_chrome_lost`` và không xoá phiên vừa tạo.
+        if self._launching:
+            return True
         if self.driver is None and not self.cdp_attached:
             return False
         if self._alive_cached():
+            return True
+        # Chỉ xoá phiên sau khi dò lại tươi: cache ngắn có thể còn giữ ``False`` từ
+        # trước khi Chrome kịp mở, và dùng nó để ``mark_closed()`` sẽ giết một
+        # Chrome đang sống (đo được: P1 báo "Chrome đã đóng" ngay sau khi mở).
+        if self._probe_alive():
+            self._alive_ok = True
+            self._alive_checked_at = time.monotonic()
             return True
         self.mark_closed()
         return False
@@ -898,6 +913,7 @@ class BrowserSession:
                 if not chrome:
                     raise FileNotFoundError("chrome.exe")
                 kind, why = driver_for()
+                self._launching = True
                 self._start_driver(chrome, url, pos, kind, cdp, self._mobile_window(window))
                 # The window now exists, so measure its real page area and fit the
                 # emulated viewport to it. Without this the phone viewport draws
@@ -906,6 +922,8 @@ class BrowserSession:
                 self.mode = "driver"
                 self.note = why + " · Đăng nhập thủ công; chỉ đọc kết quả, cược chỉ mô phỏng."
                 self.connection_state = "waiting"
+                self._alive_checked_at = 0.0
+                self._alive_ok = True
                 return True
             except Exception as exc:
                 # Không đưa lỗi WebDriver thô (có thể chứa URL/token) vào UI.
@@ -914,6 +932,9 @@ class BrowserSession:
                 self.connection_state = "error"
                 self.mode = ""
                 return False
+            finally:
+                # Kể cả khi lỗi: cờ phải tắt để ``connected`` dò thật trở lại.
+                self._launching = False
 
     def _start_driver(self, chrome, url, pos, kind, cdp=False, window=None):
         from selenium import webdriver
