@@ -11,6 +11,65 @@ Electron desktop app for managing 1-8 browser profiles. Each profile can use its
 
 The DG table and bet readers are shared across portal hosts. Each profile keeps its own site session and iframe URL while joining the common DG table.
 
+### Hai site khác nhau — cùng một bàn (đo thật 24/11/2026)
+
+Chạy profile 1 = `m.gk881.vip`, profile 2 = `e39d5d05qc.e3951.com/m/home`, hai Chrome
+riêng (cổng CDP 9222/9223), đăng nhập tay, rồi đọc sảnh bằng CDP:
+
+| Số đo | GK881 | E3951 |
+| --- | --- | --- |
+| Host sảnh | `new-dd-cloudfront.ywjxi.com` | `new-dd-cn.dingdangmail.com` |
+| Bản build | `ddnewwap/index.html` | `ddnewwap/index.html` |
+| Danh sách bàn | `60101…60105` | `60101…60105` (cùng thứ tự) |
+| Bàn đã vào | 60101 `RB01` | 60101 `RB01` |
+| Mã ván | `202611240022R1049` | `202611240022R1049` |
+| Giới hạn bàn | **10–1000** | **10–1M** |
+| Khay chip | `10 … 500000` | `10 … 500000` |
+
+Ba kết luận được khoá bằng `tests/test_shared_table.py`:
+
+- Sảnh của hai site là hai host và **hai bản build khác nhau**, nhưng cùng một bộ bàn
+  DG, cùng thứ tự — đúng như quan sát "chung giao diện và thứ tự các bàn trên sảnh".
+- Vào cùng bàn thì `round_id` trùng nhau qua nhiều ván liên tiếp; đây là bằng chứng
+  nhóm thật sự ở chung một bàn, không chỉ trùng mã trên URL.
+- **Giới hạn cược khác nhau trên cùng một bàn** (10–1000 so với 10–1M). Vì vậy mức
+  cược chung phải lấy mức **nhỏ nhất** mà mọi sảnh cùng đặt được, và bàn chung phải là
+  **giao** danh sách bàn của mọi profile (`ui/table_sync.js`), không lấy danh sách của
+  profile dẫn đầu.
+
+#### Sảnh DG là iframe khác tiến trình (OOPIF)
+
+Đo trên cả hai site: sảnh DG không nằm trong tài liệu của trang site mà là CDP target
+`type: iframe`, tài liệu thật là `ddnewwap/index.html` — trong khi `<iframe src>` vẫn
+ghi `ddnewpc/direct1.html`. Hệ quả và cách xử lý:
+
+| Việc | Đường chạy |
+| --- | --- |
+| Tìm sảnh | `/json/list` của cổng CDP, lọc target `ddnew*` (`dg_pages.find_game_target`) |
+| Đọc sảnh/bàn | eval thẳng trên websocket của target đó (`Runtime.evaluate`) |
+| Đưa sảnh lên tab | `Page.navigate` gửi trên websocket **của tab**, không phải của browser |
+| Đổi bàn | `_loader_url` giữ `ddnewwap/index.html` và đặt `?tableId=`; `direct1.html` chỉ cho `ddnewpc` |
+| Xác nhận đã vào bàn | đọc `view.tableId` của màn hình cược, **không** dựa vào URL |
+
+`Page.navigate` gửi qua websocket cấp browser trả `{}` và trang vẫn nguyên `/m/home` —
+đây là lỗi thật đã gặp, nên `febet.navigate_top` và các probe đều gửi trên websocket tab.
+
+#### Công cụ đo hai site cùng lúc
+
+Các script dưới đây chỉ dùng CDP thuần (không Selenium, nên không làm tắt Chrome của
+người dùng). Chúng không in token: chỉ host, path và tên tham số.
+
+```
+python tools/launch_profile_chrome.py "https://m.gk881.vip/" --profile 1 --port 9222
+python tools/launch_profile_chrome.py "https://<host>.e3951.com/m/home" --profile 2 --port 9223
+python tools/sync_profiles.py --table 60101 --ports 9222 9223   # về sảnh rồi vào chung bàn
+python tools/probe_round_compare.py 9222 9223 --rounds 4         # so mã ván hai sảnh
+python tools/probe_dg_limits.py --port 9222                      # giới hạn bàn từng sảnh
+```
+
+`tools/sync_profiles.py` làm đúng ba bước của app: đưa sảnh từ iframe lên tab, bỏ
+`tableId` để về sảnh, thêm `tableId` của bàn chung — rồi in `cùng bàn` / `cùng mã ván`.
+
 ### GK881 mobile (`https://m.gk881.vip/`, Chrome Android / OmniLogin)
 
 The phone build is a different Angular app, so `gk881.openDG` runs its own four-step flow:

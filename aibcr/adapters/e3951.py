@@ -19,7 +19,7 @@ Live site flow (Vue SPA observed on ``www.e3951.com/seamless``):
 """
 
 import time
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urlunsplit
 
 from aibcr.adapters import febet as DG
 
@@ -241,10 +241,25 @@ const vis = (node) => {
       && style.visibility !== 'hidden' && style.display !== 'none';
   } catch (error) { return false; }
 };
-const buttons = [...document.querySelectorAll('.card-btn')].filter(vis);
-let target = buttons.find((node) => /chơi ngay|choi ngay|play now/i.test(node.textContent || ''))
-  || buttons[buttons.length - 1];
+const norm = (value) => String(value || '').replace(/\s+/g, ' ').trim().toLowerCase();
+// Đo trên e39d5d05qc.e3951.com/m/home: bấm thẻ DG **không** mở game ngay, nó mở
+// popup `.am-popup-wrap.chooser-game-popup` có hai lựa chọn, và nút thật là
+// `a.chooser-btn.blue` ("Chơi ngay"). `.card-btn` chỉ có ở bản desktop nên bản
+// điện thoại cũ đi tiếp bằng nhánh "bấm lại thẻ" rồi báo không thấy CHƠI NGAY —
+// dù nút đang hiện rõ trên màn hình.
+const chooser = [...document.querySelectorAll('.chooser-btn')].filter(vis);
+let target = chooser.find((node) => /chơi ngay|choi ngay|play now/i.test(node.textContent || ''))
+  || null;
 let label = target ? String(target.textContent || '').replace(/\s+/g, ' ').trim() : '';
+if (target) {
+  target.scrollIntoView({block: 'center'});
+  target.click();
+  return {ok: true, label, layout: 'chooser-btn'};
+}
+const buttons = [...document.querySelectorAll('.card-btn')].filter(vis);
+target = buttons.find((node) => /chơi ngay|choi ngay|play now/i.test(node.textContent || ''))
+  || buttons[buttons.length - 1];
+label = target ? String(target.textContent || '').replace(/\s+/g, ' ').trim() : '';
 if (!target) {
   // Mobile: tapping the provider card itself opens the lobby.
   const dgCard = [...document.querySelectorAll('.vendor-game-item')].find((card) =>
@@ -297,6 +312,28 @@ def _navigate_in_place(driver):
         return True
     except Exception:
         return False
+
+
+def _home_url(location):
+    """Trang chủ của site, suy ra từ trang đang mở.
+
+    Người dùng có thể dán bất kỳ trang con. Đo trên E3951: ``/m/gameRecord`` là
+    **lịch sử cược**, và dải ``Casino/Nổ hũ/...`` ở đó là tab lọc lịch sử
+    (``.mc-tab-item``), không phải menu vào sảnh — bấm vào chỉ đổi bộ lọc, còn
+    ``_CLICK_NAV_JS`` không thấy ``.nav-name``/``.game-menu-item`` nào nên báo
+    "không tìm thấy mục Casino". Vì vậy phải quay về trang chủ trước.
+    """
+    try:
+        parsed = urlsplit(location or "")
+    except ValueError:
+        return ""
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        return ""
+    path = parsed.path or "/"
+    if path == "/m" or path.startswith("/m/"):
+        # Bản điện thoại có trang chủ riêng ở ``/m/home``.
+        return urlunsplit((parsed.scheme, parsed.netloc, "/m/home", "", ""))
+    return urlunsplit((parsed.scheme, parsed.netloc, "/", "", ""))
 
 
 def dismiss_promos(driver, rounds=4, pause=1.0):
@@ -353,41 +390,41 @@ def promote_lobby_to_tab(driver):
     DG document URL and navigating the top-level tab to it removes the site DOM
     entirely; only the Dream Gaming page is left in the window.
 
+    Measured on ``e39d5d05qc.e3951.com/m/home``: the game frame is a
+    **cross-process** iframe (``type: iframe`` in ``/json/list``) whose real
+    document is ``ddnewwap/index.html`` while its ``src`` attribute still says
+    ``ddnewpc/direct1.html``. Two consequences the old code missed:
+
+    * the gate only accepted ``ddnewpc`` in the frame location, so the phone
+      build (``ddnewwap``) was reported as "no lobby to promote";
+    * WebDriver cannot switch into an out-of-process frame, so
+      ``_dg_context``/``game_frame`` never saw it either.
+
+    The frame URL is therefore read from CDP targets, and the navigation runs
+    through ``GameFrame.promote`` so both cases share one code path.
+
     The URL carries a session token, so it is never logged or returned.
     """
     if driver is None:
         return False
     try:
-        ctx = DG._dg_context(driver, wait=10.0)
+        ctx = DG._dg_context(driver, wait=2.0)
     except Exception:
-        return False
-    if not ctx:
-        return False
-    if ctx.get("mode") == "tab":
+        ctx = None
+    if ctx and ctx.get("mode") == "tab":
         return True
-    location = str(ctx.get("location") or "")
-    if "ddnewpc" not in location.lower():
+    if not (hasattr(driver, "execute_cdp_cmd") or hasattr(driver, "get")):
         return False
-    try:
-        driver.switch_to.default_content()
-    except Exception:
-        return False
-    # ``driver.get`` replaces the page target the WebDriver session is bound to.
-    # On an OmniLogin-managed browser that tears the session down and every later
-    # call fails with InvalidSessionIdException, so the shared helper navigates
-    # through CDP (which does not depend on the session's target) and only falls
-    # back to ``get`` when CDP is unavailable.
-    probe = ("return (() => ({url: location.href,"
-             " laya: typeof Laya !== 'undefined' && !!Laya.stage}))()")
-    if not DG.navigate_top(driver, location):
-        return False
-    try:
-        driver.execute_script(probe)
-    except Exception:
-        # Session died during the navigation: report failure so the caller keeps
-        # the working iframe context instead of ending up with a dead driver.
-        return False
-    return True
+    location = str((ctx or {}).get("location") or "")
+    if location and "ddnew" in location.lower():
+        # A frame WebDriver can enter: its real document URL is already known, so
+        # navigating the tab to it is enough (this is the desktop layout).
+        moved = DG.promote_frame_to_tab(driver, {"url": location}, settle=20.0)
+        if moved.get("ok"):
+            return True
+    # Otherwise the lobby may sit in a frame WebDriver cannot enter at all.
+    moved = DG._promote_cdp_frame(driver, settle=25.0)
+    return bool(moved.get("promoted"))
 
 
 def open_dg(driver, wait=150.0, log=None):
@@ -414,8 +451,24 @@ def open_dg(driver, wait=150.0, log=None):
     existing = DG.lobby_tables(driver, wait=1.0)
     if existing.get("ok"):
         report("Sảnh DG đã mở sẵn; tìm thấy %s bàn." % len(existing.get("tables") or []))
+        # Sảnh đã sẵn sàng nhưng tab còn ở trang site (``/m/home``) thì vẫn đưa
+        # URL sảnh lên tab: đây chính là yêu cầu "mở bằng link sảnh trong iframe",
+        # và nó bỏ luôn popup/overlay của site. Việc này idempotent — đang ở tab
+        # DG thì trả ``True`` ngay.
+        moved = promote_lobby_to_tab(driver)
+        if moved:
+            report("Tab đang chạy chính tài liệu sảnh DG.")
+        else:
+            report("Chưa tách được sảnh DG sang tab chính; vẫn dùng iframe của trang.",
+                   "warning")
+        current_host = ""
+        try:
+            current_host = urlsplit(driver.current_url or "").hostname or ""
+        except Exception:
+            current_host = ""
         return {"ok": True, "site_id": "e3951", "already_open": True, "lobby_ready": True,
-                "tables": existing.get("tables") or [],
+                "tables": existing.get("tables") or [], "promoted": bool(moved),
+                "host": current_host,
                 "note": "Đã nhận diện sảnh DG E3951 đang mở."}
 
     try:
@@ -475,9 +528,27 @@ def open_dg(driver, wait=150.0, log=None):
     stage = "mở mục Casino"
     nav = driver.execute_script(_CLICK_NAV_JS, "casino") or {}
     if not nav.get("ok"):
-        report("Không tìm thấy mục Casino trên thanh điều hướng.", "error")
-        return {"ok": False, "site_id": "e3951",
-                "error": "Không tìm thấy mục Casino trên E3951."}
+        # The saved URL may be a sub-page without the site menu (measured:
+        # ``/m/gameRecord`` only has history-filter tabs ``.mc-tab-item``). Load
+        # the site home once and retry there instead of failing the whole entry.
+        home = _home_url(driver.current_url or "")
+        if home:
+            here = urlsplit(driver.current_url or "")
+            there = urlsplit(home)
+            if (here.hostname, here.path) != (there.hostname, there.path):
+                report("Trang này không có menu vào sảnh; mở trang chủ %s."
+                       % (there.path or "/"), "warning")
+                if DG.navigate_top(driver, home):
+                    reload_deadline = min(deadline, time.monotonic() + remain(30.0))
+                    while time.monotonic() < reload_deadline:
+                        time.sleep(1.0)
+                        nav = driver.execute_script(_CLICK_NAV_JS, "casino") or {}
+                        if nav.get("ok"):
+                            break
+        if not nav.get("ok"):
+            report("Không tìm thấy mục Casino trên thanh điều hướng.", "error")
+            return {"ok": False, "site_id": "e3951",
+                    "error": "Không tìm thấy mục Casino trên E3951."}
     report("Đã chọn mục Casino; chờ danh sách nhà cung cấp.")
 
     stage = "chờ sảnh Casino"
@@ -515,14 +586,14 @@ def open_dg(driver, wait=150.0, log=None):
     report("Đã chọn nhà cung cấp DG; chờ nút CHƠI NGAY.")
 
     # On the mobile build the SPA re-renders after the vendor card is tapped and
-    # the CHƠI NGAY button only mounts a moment later. Poll for it before
-    # clicking so a race is not reported as a missing button.
+    # the launch control only mounts a moment later. Poll for it before clicking
+    # so a race is not reported as a missing button.
     stage = "chờ nút CHƠI NGAY xuất hiện"
     launch_ready = False
     launch_deadline = min(deadline, time.monotonic() + remain(15.0))
     while time.monotonic() < launch_deadline:
         probe = driver.execute_script(
-            "return !!document.querySelector('.card-btn');") or False
+            "return document.querySelectorAll('.chooser-btn, .card-btn').length;") or 0
         if probe:
             launch_ready = True
             break
@@ -548,6 +619,10 @@ def open_dg(driver, wait=150.0, log=None):
 
     stage = "chờ sảnh DG"
     lobby = {}
+    # The DG lobby may be an out-of-process frame that WebDriver cannot enter.
+    # Promote it first so the table scan and everything after it talk to a normal
+    # DG tab instead of failing with "Laya chưa tải xong".
+    DG._promote_cdp_frame(driver, settle=25.0)
     poll_deadline = min(deadline, time.monotonic() + remain(75.0))
     while time.monotonic() < poll_deadline:
         lobby = DG.lobby_tables(driver, wait=2.0)
@@ -600,6 +675,13 @@ def open_dg(driver, wait=150.0, log=None):
 
     tables = lobby.get("tables") or []
     report("Sảnh DG sẵn sàng; tìm thấy %s bàn." % len(tables))
+    # ``promoted`` cho UI/log biết tab đã rời khỏi ``/m/home`` và đang chạy chính
+    # tài liệu sảnh DG — đúng yêu cầu "mở bằng link sảnh trong iframe".
+    current_host = ""
+    try:
+        current_host = urlsplit(driver.current_url or "").hostname or ""
+    except Exception:
+        current_host = ""
     return {"ok": True, "site_id": "e3951", "already_open": False, "lobby_ready": True,
-            "tables": tables,
+            "tables": tables, "promoted": bool(promoted), "host": current_host,
             "note": "Đã mở sảnh DG từ E3951."}

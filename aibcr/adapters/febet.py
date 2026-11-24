@@ -5,6 +5,8 @@ import re
 import time
 from urllib.parse import urlsplit, urlunsplit, parse_qs, urlencode
 
+from aibcr.adapters import dg_pages
+
 
 LOBBY_URL = "https://febet.kiwi/live-casino/baccarat"
 MAX_FRAMES = 48
@@ -400,6 +402,7 @@ _DG_STATE_JS = """
 return (() => {
   if (typeof Laya === 'undefined' || !Laya.stage) return {ready: false};
   let lobby = false, inTable = false, label = '', cards = 0;
+  let viewTable = '', viewName = '';
   const walk = (n, d) => {
     if (d > 10) return;
     const name = String(n.name || '');
@@ -414,15 +417,30 @@ return (() => {
     // Dùng cùng dấu hiệu với _DG_BET_STATE_JS để hai hàm không mâu thuẫn.
     if (name.toLowerCase() === 'banker' && n.visible) inTable = true;
     if (n.betBtn && (typeof n.betHandler === 'function' || n.betBtnMan
-        || n.baccaratLimit || n.tableInfoMan)) inTable = true;
+        || n.baccaratLimit || n.tableInfoMan)) {
+      inTable = true;
+      // Mã bàn của **bàn đang chơi**: bản điện thoại vào bàn bằng cách bấm thẻ
+      // thì URL không có tableId (đo trên tab 60101), nên phải đọc từ view cược.
+      const fromView = [n.tableId, n.gameInfo && n.gameInfo.tableId,
+        n.playerInfo && n.playerInfo.tableId, n.tableInfoMan && n.tableInfoMan.tableId]
+        .map((value) => (value === undefined || value === null) ? '' : String(value).trim())
+        .find((value) => /^60\\d{3,}$/.test(value)) || '';
+      if (fromView) viewTable = fromView;
+      if (!viewName) {
+        viewName = String((n.gameInfo && n.gameInfo.tableName)
+          || (n.tableInfoMan && n.tableInfoMan.tableName) || '').trim();
+      }
+    }
     const t = typeof n.text === 'string' ? n.text.trim() : '';
     if (!label && t && t.length <= 30 && /(RB|S|SB)[0-9]+/.test(t)) label = t;
     for (let i = 0; i < (n.numChildren || 0); i++) walk(n.getChildAt(i), d + 1);
   };
   walk(Laya.stage, 0);
+  const urlTable = (location.href.match(/tableId=([0-9]+)/) || [])[1] || '';
   return {ready: true, lobby: (lobby || cards > 0) && !inTable, in_table: inTable,
-          label: label, table_cards: cards,
-          url_table: (location.href.match(/tableId=([0-9]+)/) || [])[1] || ''};
+          label: label || viewName, table_id: viewTable || urlTable,
+          table_name: viewName, url_table: urlTable,
+          table_cards: cards};
 })()
 """
 
@@ -441,6 +459,17 @@ return (() => {
   if (!view) return {ready:true, in_table:false};
   const info = view.gameInfo || view.tableInfoMan?.gameInfo || window.gameInfo || {};
   const player = view.playerInfo || window.playerInfo || {};
+  // Mã bàn phải đọc từ **view cược**, không chỉ từ URL: trên bản điện thoại
+  // (``ddnewwap``) vào bàn bằng cách bấm thẻ thì ``location`` không có ``tableId``
+  // (đo trên tab 60101: URL trống nhưng ``view.tableId``/``gameInfo.tableId`` =
+  // 60101). Thiếu bước này thì hai profile cùng bàn vẫn bị coi là khác bàn.
+  const rawTableId = [view.tableId, info.tableId, player.tableId,
+    view.tableInfoMan?.tableId, view.videoMan?.tableId, window.tableId]
+    .map((value) => (value === undefined || value === null) ? '' : String(value).trim())
+    .find((value) => /^60\d{3,}$/.test(value)) || '';
+  const tableId = rawTableId || (location.href.match(/tableId=([0-9]+)/) || [])[1] || '';
+  const tableName = String(info.tableName || view.tableName
+    || view.tableInfoMan?.tableName || '').trim();
   const rawRoundId = String(info.gameNo || info.roundId || info.roundNo || info.issueNo
     || view.gameNo || '').trim();
   const roundId = /^[A-Za-z0-9_-]{1,64}$/.test(rawRoundId) ? rawRoundId : '';
@@ -520,7 +549,8 @@ return (() => {
     winner = playerScore === bankerScore ? 'T' : playerScore > bankerScore ? 'P' : 'B';
   return {
     ready:true, in_table:true,
-    table_id:(location.href.match(/tableId=([0-9]+)/) || [])[1] || '',
+    table_id:tableId,
+    table_name:tableName,
     round_id:roundId, state_id:stateId, countdown,
     bet_open:stateId === 1 && countdown >= 5,
     winner, scale, raw_min:rawMin, screen_floor:screenFloor,
@@ -862,9 +892,92 @@ def _dg_window(driver):
     return None
 
 
+def _site_handle(driver):
+    """Handle của tab site (không phải tab DG) — nơi sảnh DG sẽ được đưa lên.
+
+    Giữ nguyên tab đang điều khiển nếu nó không phải tab DG, để hành vi của
+    profile một-tab (E3951) không thay đổi.
+    """
+    try:
+        handles = list(driver.window_handles)
+    except Exception:
+        return None
+    try:
+        current = driver.current_window_handle
+    except Exception:
+        current = None
+    candidates = []
+    for handle in handles:
+        try:
+            driver.switch_to.window(handle)
+            driver.switch_to.default_content()
+            url = (driver.current_url or "").lower()
+        except Exception:
+            continue
+        if "ddnew" in url:
+            continue
+        candidates.append(handle)
+    chosen = current if current in candidates else (candidates[0] if candidates else None)
+    if chosen is None:
+        return None
+    try:
+        driver.switch_to.window(chosen)
+        driver.switch_to.default_content()
+    except Exception:
+        return None
+    return chosen
+
+
+# Host của mọi ``<iframe src>`` trong trang hiện tại. Dùng để chắc chắn target
+# đọc từ CDP đúng là frame mà **trang này** đã dựng, chứ không phải một tab DG
+# khác trong cùng Chrome (nhiều profile có thể mở song song).
+_IFRAME_HOSTS_JS = r"""
+try {
+  const hosts = [];
+  for (const node of document.querySelectorAll('iframe,frame')) {
+    const src = node.getAttribute('src') || '';
+    if (!src) continue;
+    try { hosts.push(new URL(src, location.href).hostname.toLowerCase()); }
+    catch (error) {}
+  }
+  return hosts;
+} catch (error) { return []; }
+"""
+
+
+def _promote_cdp_frame(driver, settle=20.0):
+    """Đưa frame DG **khác tiến trình** (OOPIF) lên tab chính, nếu có.
+
+    Đo trên ``e39d5d05qc.e3951.com/m/home``: ``<iframe src>`` ghi
+    ``ddnewpc/direct1.html`` nhưng tài liệu thật lại là ``ddnewwap/index.html``,
+    và CDP liệt kê nó thành target ``type: iframe``. WebDriver không switch được
+    vào frame đó, nên đây là đường duy nhất để chạm tới sảnh.
+
+    Chỉ hành động khi host của target trùng host một iframe trong trang hiện tại —
+    nhờ vậy không bao giờ kéo nhầm tab DG của profile khác.
+    """
+    if driver is None or not hasattr(driver, "execute_cdp_cmd"):
+        return {"ok": False, "promoted": False, "error": "không hỗ trợ CDP"}
+    try:
+        hosts = driver.execute_script(_IFRAME_HOSTS_JS) or []
+    except Exception:
+        return {"ok": False, "promoted": False, "error": "không đọc được iframe"}
+    hosts = {str(host).lower() for host in hosts if host}
+    if not hosts:
+        return {"ok": False, "promoted": False, "error": "trang không có iframe"}
+    target = find_game_frame(driver, wait=0)
+    if not target or target.get("type") != "iframe":
+        return {"ok": False, "promoted": False, "error": "không có target DG dạng iframe"}
+    if _frame_host(target["url"]) not in hosts:
+        return {"ok": False, "promoted": False, "error": "target DG không thuộc trang này"}
+    _site_handle(driver)
+    return promote_frame_to_tab(driver, target, settle=settle)
+
+
 def _dg_context(driver, wait=15.0):
     """Đặt driver vào đúng document DG (tab riêng hoặc iframe của site bất kỳ)."""
     deadline = time.monotonic() + max(0.0, wait)
+    tried_promote = False
     while True:
         window = _dg_window(driver)
         if window is not None:
@@ -887,6 +1000,19 @@ def _dg_context(driver, wait=15.0):
             # No DG frame: the lobby may be a Laya stage in this document.
             if _has_top_laya(driver):
                 return {"mode": "top", "location": driver.current_url or ""}
+            # WebDriver cannot enter a cross-process frame, so a lobby hosted in
+            # one stays invisible here even while it runs. Measured on E3951
+            # mobile: the game document is a CDP target ``type: iframe``
+            # (``ddnewwap/index.html``) while the page's ``<iframe src>`` still
+            # points at the desktop loader. Promoting that URL to the tab is the
+            # only way WebDriver can reach it, and it also strips the site's
+            # promo overlays, so try it once per call.
+            if not tried_promote:
+                tried_promote = True
+                moved = _promote_cdp_frame(
+                    driver, settle=min(25.0, max(6.0, deadline - time.monotonic())))
+                if moved.get("ok"):
+                    continue
         if time.monotonic() >= deadline:
             return None
         time.sleep(0.5)
@@ -991,6 +1117,97 @@ def navigate_top(driver, url):
         return False
 
 
+def _cdp_port():
+    """Cổng gỡ lỗi của Chrome đang dùng (engine đổi cổng theo từng trò)."""
+    try:
+        from aibcr.adapters import browser as BR
+        return int(getattr(BR, "CDP_PORT", dg_pages.DEFAULT_PORT))
+    except Exception:
+        return dg_pages.DEFAULT_PORT
+
+
+def find_game_frame(driver, wait=6.0, port=None):
+    """Target DG đọc thẳng từ CDP, kể cả iframe **khác tiến trình** (OOPIF).
+
+    Đo trên ``e39d5d05qc.e3951.com/m/home``: game DG là một target
+    ``type: iframe`` có tài liệu thật ``ddnewwap/index.html``, còn thẻ ``<iframe>``
+    trong trang vẫn ghi ``src=ddnewpc/direct1.html``. WebDriver không switch vào
+    được frame đó, nên ``_frame_contexts``/``game_frame`` luôn báo không thấy game
+    và mọi bước sau (đọc bàn, xếp chip) chết ở "Laya chưa tải". ``/json/list`` là
+    đường duy nhất thấy nó.
+
+    Trả ``{"url", "type", "port"}`` hoặc ``None``. URL mang token phiên nên chỉ
+    dùng để điều hướng, không log/không trả ra ngoài.
+    """
+    if driver is None:
+        return None
+    port = _cdp_port() if port is None else int(port)
+    try:
+        target = dg_pages.find_game_target(port, wait=wait)
+    except Exception:
+        return None
+    if not target:
+        return None
+    url = str(target.get("url") or "")
+    if not url:
+        return None
+    return {"url": url, "type": str(target.get("type") or ""), "port": port}
+
+
+def _wait_promoted(driver, url, settle):
+    """Chờ tab chính thật sự chạy tài liệu DG --- không chỉ tin ``navigate`` trả về."""
+    result = {"ok": False, "promoted": False, "mode": "", "host": "",
+              "error": ""}
+    deadline = time.monotonic() + max(1.0, float(settle))
+    while time.monotonic() < deadline:
+        try:
+            driver.switch_to.default_content()
+        except Exception:
+            pass
+        try:
+            current = driver.current_url or ""
+        except Exception:
+            current = ""
+        try:
+            laya = _has_top_laya(driver)
+        except Exception:
+            laya = False
+        if "ddnew" in current.lower() or laya:
+            result.update(ok=True, promoted=True, mode="tab",
+                          host=_frame_host(current) or _frame_host(url),
+                          note="Đã thay URL trang bằng sảnh DG.")
+            return result
+        time.sleep(0.5)
+    result.update(host=_frame_host(url),
+                  error="Đã điều hướng nhưng sảnh DG chưa tải xong trên tab chính.")
+    return result
+
+
+def promote_frame_to_tab(driver, found, settle=20.0):
+    """Đưa URL của một target DG (tab hoặc OOPIF) lên chính tab của site.
+
+    Dùng chung cho iframe mà WebDriver thấy được và iframe khác tiến trình: cả
+    hai chỉ cần một URL thật rồi ``navigate_top``. Nhờ vậy sảnh DG rời khỏi trang
+    site, mọi popup khuyến mãi/overlay biến mất, và ``sync_table`` đổi bàn được
+    bằng loader của chính sảnh.
+    """
+    result = {"ok": False, "promoted": False, "mode": "", "host": "",
+              "error": ""}
+    url = str((found or {}).get("url") or "")
+    if not url:
+        result["error"] = "Không có URL sảnh DG để tải sang tab chính."
+        return result
+    try:
+        driver.switch_to.default_content()
+    except Exception:
+        pass
+    if not navigate_top(driver, url):
+        result.update(host=_frame_host(url),
+                      error="Không điều hướng được tab chính tới sảnh DG.")
+        return result
+    return _wait_promoted(driver, url, settle)
+
+
 def promote_lobby_to_tab(driver, site_hosts=(), wait=6.0, settle=20.0,
                          prefer_handle=None):
     """Replace the site page URL with the DG lobby document.
@@ -1028,6 +1245,13 @@ def promote_lobby_to_tab(driver, site_hosts=(), wait=6.0, settle=20.0,
             handles = None
     found = game_frame(driver, site_hosts=site_hosts, wait=wait, handles=handles)
     if not found:
+        # The frame may be out-of-process, which WebDriver cannot enter (measured
+        # on E3951 mobile: real document is ``ddnewwap/index.html`` while the
+        # ``src`` attribute still says ``ddnewpc/direct1.html``). CDP targets are
+        # the only place that URL exists, so fall back to them before failing.
+        moved = _promote_cdp_frame(driver, settle=settle)
+        if moved.get("promoted"):
+            return moved
         result["error"] = "Chưa thấy iframe sảnh DG để tách sang tab chính."
         return result
     try:
@@ -1039,34 +1263,58 @@ def promote_lobby_to_tab(driver, site_hosts=(), wait=6.0, settle=20.0,
         result.update(host=_frame_host(found["url"]),
                       error="Không điều hướng được tab chính tới sảnh DG.")
         return result
-    deadline = time.monotonic() + max(1.0, float(settle))
-    while time.monotonic() < deadline:
-        try:
-            driver.switch_to.default_content()
-        except Exception:
-            pass
-        try:
-            current = driver.current_url or ""
-        except Exception:
-            current = ""
-        try:
-            laya = _has_top_laya(driver)
-        except Exception:
-            laya = False
-        if "ddnew" in current.lower() or laya:
-            result.update(ok=True, promoted=True, mode="tab",
-                          host=_frame_host(current) or _frame_host(found["url"]),
-                          note="Đã thay URL trang bằng sảnh DG.")
-            return result
-        time.sleep(0.5)
-    result.update(host=_frame_host(found["url"]),
-                  error="Đã điều hướng nhưng sảnh DG chưa tải xong trên tab chính.")
-    return result
+    return _wait_promoted(driver, found["url"], settle)
 
 
-# Click a table card inside a Laya lobby (GK881 mobile renders the lobby in the
-# page body, so there is no direct1.html URL to rewrite). The node is found by
-# its rendered label or by the table id, then the nearest click handler runs.
+# Thẻ bàn trong sảnh Laya (GK881 mobile vẽ sảnh ngay trong body, nên không có
+# URL ``direct1.html`` để sửa). Tìm thẻ theo ``tableId`` rồi **đổi toạ độ stage →
+# client** để bấm chuột thật; Laya chỉ phản ứng với hit-test thật, không với
+# ``event('click')`` hay handler gọi tay.
+_LAYA_CARD_BOX_JS = r"""
+const wanted = String(arguments[0] || '');
+if (typeof Laya === 'undefined' || !Laya.stage) return {ok: false, reason: 'no-laya'};
+const stage = Laya.stage;
+let hit = null;
+const walk = (node, depth) => {
+  if (!node || hit || depth > 40) return;
+  let id = '';
+  try {
+    if (node.tableId !== undefined && node.tableId !== null) id = String(node.tableId);
+  } catch (error) {}
+  if (id && id === wanted) { hit = node; return; }
+  for (let i = 0; i < (node.numChildren || 0); i++) walk(node.getChildAt(i), depth + 1);
+};
+walk(stage, 0);
+if (!hit) return {ok: false, reason: 'no-card'};
+// Laya hit-tests in stage space, so the node centre must be converted to client
+// pixels of the canvas that actually receives the mouse event.
+const canvas = stage._canvas || document.getElementById('layaCanvas')
+  || document.querySelector('canvas');
+if (!canvas) return {ok: false, reason: 'no-canvas'};
+const rect = canvas.getBoundingClientRect();
+const stageW = Number(stage.width) || rect.width || 0;
+const stageH = Number(stage.height) || rect.height || 0;
+if (!stageW || !stageH) return {ok: false, reason: 'no-stage-size'};
+const box = hit.hitArea || {x: 0, y: 0, width: hit.width, height: hit.height};
+const local = new Laya.Point(Number(box.x || 0) + Number(box.width || 0) / 2,
+                             Number(box.y || 0) + Number(box.height || 0) / 2);
+const global = hit.localToGlobal(local);
+const x = rect.left + global.x * rect.width / stageW;
+const y = rect.top + global.y * rect.height / stageH;
+if (!Number.isFinite(x) || !Number.isFinite(y)) return {ok: false, reason: 'no-point'};
+if (x < rect.left || y < rect.top || x > rect.left + rect.width || y > rect.top + rect.height)
+  return {ok: false, reason: 'outside-canvas'};
+return {ok: true, x, y, table_id: wanted,
+        stage: [Math.round(stageW), Math.round(stageH)],
+        canvas: [Math.round(rect.width), Math.round(rect.height),
+                 Math.round(rect.left), Math.round(rect.top)]};
+"""
+
+
+# Dự phòng khi không bấm được bằng chuột: tìm thẻ bàn trong sảnh Laya và gọi
+# thẳng handler của nó. Đo trên bàn 60101 của DG: handler ``run()`` trả "ok" mà
+# sảnh **vẫn đứng nguyên**, nên đường này chỉ dùng sau ``_LAYA_CARD_BOX_JS`` +
+# ``_cdp_click`` (chuột thật mới qua được hit-test của Laya).
 _LAYA_ENTER_JS = r"""
 const wanted = String(arguments[0] || '');
 const wantedName = String(arguments[1] || '').toLowerCase();
@@ -1151,11 +1399,52 @@ try {
 
 
 def _laya_enter_table(driver, table_id, name=""):
-    """Tap a table card inside a Laya lobby rendered in the page body."""
+    """Tap a table card inside a Laya lobby rendered in the page body.
+
+    Measured on the DG phone lobby (``ddnewwap``, table 60101): calling
+    ``clickHandler.run()`` on the card returns success but leaves the stage in
+    the lobby. Laya only reacts to a real hit-test, so the card is located by
+    ``tableId``, its centre converted from stage space to client pixels, and a
+    genuine mouse event is dispatched with ``Input.dispatchMouseEvent``.
+    """
+    table_id = str(table_id or "")
+    box = {}
     try:
-        return driver.execute_script(_LAYA_ENTER_JS, str(table_id), str(name or "")) or {}
+        box = driver.execute_script(_LAYA_CARD_BOX_JS, table_id) or {}
+    except Exception:
+        box = {}
+    if box.get("ok"):
+        clicked = _cdp_click(driver, box.get("x"), box.get("y"))
+        if clicked:
+            return {"ok": True, "label": table_id, "table_id": table_id,
+                    "via": "cdp-mouse"}
+    try:
+        return driver.execute_script(_LAYA_ENTER_JS, table_id, str(name or "")) or {}
     except Exception:
         return {"ok": False, "reason": "script-error"}
+
+
+def _cdp_click(driver, x, y):
+    """Bấm chuột thật tại ``(x, y)`` client của tab đang điều khiển."""
+    try:
+        x = float(x)
+        y = float(y)
+    except (TypeError, ValueError):
+        return False
+    if not hasattr(driver, "execute_cdp_cmd"):
+        return False
+    base = {"x": x, "y": y, "button": "left", "clickCount": 1}
+    try:
+        driver.execute_cdp_cmd("Input.dispatchMouseEvent",
+                               dict(base, type="mouseMoved", buttons=0))
+        driver.execute_cdp_cmd("Input.dispatchMouseEvent",
+                               dict(base, type="mousePressed", buttons=1))
+        time.sleep(0.05)
+        driver.execute_cdp_cmd("Input.dispatchMouseEvent",
+                               dict(base, type="mouseReleased", buttons=0))
+        return True
+    except Exception:
+        return False
 
 
 def _loader_url(location, src, table_id):
@@ -1256,7 +1545,10 @@ def current_table(driver, wait=15.0):
         if ctx is None:
             return {"ok": False, "error": "Chưa mở game DG hoặc bàn chưa tải xong."}
         state = driver.execute_script(_DG_STATE_JS) or {}
-        table_id = state.get("url_table") or _table_id_from_src(ctx["location"])
+        # Bản điện thoại không ghi ``tableId`` vào URL khi vào bàn bằng cách bấm
+        # thẻ, nên mã bàn lấy từ view cược trước rồi mới tới URL/iframe src.
+        table_id = (state.get("table_id") or state.get("url_table")
+                    or _table_id_from_src(ctx["location"]))
         in_table = bool(state.get("in_table")) and _is_real_table_id(table_id)
         return {"ok": True, "mode": ctx["mode"],
                 "table_id": table_id,
@@ -1280,9 +1572,11 @@ def lobby_tables(driver, wait=25.0):
             if ctx is not None:
                 last_state = driver.execute_script(_DG_STATE_JS) or {}
                 last_data = driver.execute_script(_DG_LOBBY_JS) or last_data
-                current_id = str(last_state.get("url_table") or _table_id_from_src(ctx["location"]))
+                current_id = str(last_state.get("table_id") or last_state.get("url_table")
+                                 or _table_id_from_src(ctx["location"]))
                 if last_state.get("in_table") and _is_real_table_id(current_id):
                     return {"ok": True, "in_table": True,
+                            "table_id": current_id,
                             "tables": [{"table_id": current_id,
                                         "name": last_state.get("label") or "Bàn " + current_id,
                                         "online": 0}], "current_table": True}
@@ -1394,7 +1688,8 @@ def sync_table(driver, table_id, wait=30.0, settle=120.0):
         if ctx is None:
             return {"ok": False, "error": "Chưa mở game DG trong profile này; bấm chạy DG trước."}
         state = driver.execute_script(_DG_STATE_JS) or {}
-        current = state.get("url_table") or _table_id_from_src(ctx["location"])
+        current = (state.get("table_id") or state.get("url_table")
+                   or _table_id_from_src(ctx["location"]))
         if current == table_id and state.get("in_table"):
             return {"ok": True, "table_id": table_id, "already": True,
                     "in_table": bool(state.get("in_table")),
@@ -1444,14 +1739,16 @@ def sync_table(driver, table_id, wait=30.0, settle=120.0):
             if not result.get("ok"):
                 return {"ok": False, "error": "Không đổi được iframe DG của profile này."}
         deadline = time.monotonic() + max(0.0, settle)
+        # Mã bàn được đọc từ **view cược** ở mọi chế độ (``view.tableId``), nên
+        # không cần phân biệt: bấm thẻ trên bản điện thoại tuy không đổi URL
+        # nhưng ``table_id`` vẫn có, còn loader thì có ``tableId`` trong URL.
         while time.monotonic() < deadline:
             time.sleep(1.0)
             if _dg_context(driver, wait=0) is None:
                 continue
             landed = driver.execute_script(_DG_STATE_JS) or {}
-            if landed.get("url_table") != table_id:
-                continue
-            if landed.get("in_table"):
+            landed_id = str(landed.get("table_id") or landed.get("url_table") or "")
+            if landed.get("in_table") and landed_id == table_id:
                 return {"ok": True, "table_id": table_id, "in_table": True,
                         "label": landed.get("label") or "",
                         "note": "Đã vào bàn DG %s." % table_id}

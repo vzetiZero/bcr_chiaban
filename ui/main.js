@@ -9,6 +9,7 @@ const { randomUUID } = require('node:crypto');
 const { parseProxy, proxyLabel, startProxyBridge, checkProxy } = require('./proxy_bridge');
 const { commonReachableStake } = require('./chip_amounts');
 const { reorderSites } = require('./site_order');
+const { pickSharedTable } = require('./table_sync');
 
 const PROJECT_ROOT = path.resolve(__dirname, '..');
 const ACTIVITY_LOG_LIMIT = 5000;
@@ -734,6 +735,7 @@ async function rotateSharedProfiles() {
   if (groupBetting) {
     groupBetting.tableId = target;
     groupBetting.lastPlaced = null;
+    groupBetting.roundMismatchSince = 0;
   }
   sendHopStatus({ active: true, table_id: target, hops: sharedHop.hops,
     note: `Cả ${indices.length} profile đã cùng vào bàn ${target}.` });
@@ -745,7 +747,7 @@ function startGroupBetting(tableId, indices, config) {
   groupBetting = {
     active: true, busy: false, tableId: String(tableId), indices: [...indices],
     config, lastPlaced: null, totalWagered: 0, lastMessage: '',
-    skippedRound: '', skippedCount: 0,
+    skippedRound: '', skippedCount: 0, roundMismatchSince: 0,
   };
   groupBetTimer = setInterval(() => { void groupBettingTick(); }, 450);
   sendHopStatus({ active: true, table_id: String(tableId),
@@ -821,14 +823,36 @@ async function groupBettingTick() {
       && states.every((state) => state?.ok && state.in_table === true
         && String(state.table_id) === groupBetting.tableId && state.round_id);
     if (!ready) {
-      groupStatus('Chờ tất cả profile tải xong trạng thái bàn DG.');
+      const detail = states.map((state, offset) => {
+        const index = groupBetting.indices[offset];
+        if (!state) return `P${index}: không trả lời`;
+        if (!state.ok) return `P${index}: ${state.error || 'chưa sẵn sàng'}`;
+        if (state.in_table !== true) return `P${index}: chưa vào bàn`;
+        if (String(state.table_id) !== groupBetting.tableId) {
+          return `P${index}: đang ở bàn ${state.table_id || '?'} (nhóm ${groupBetting.tableId})`;
+        }
+        return `P${index}: chưa đọc được mã ván`;
+      }).join(' · ');
+      groupStatus(`Chờ tất cả profile tải xong trạng thái bàn DG. ${detail}`);
       return;
     }
     const roundIds = new Set(states.map((state) => String(state.round_id)));
     if (roundIds.size !== 1) {
-      groupStatus('Các profile chưa đồng bộ cùng mã ván; chưa đặt chip.');
+      // Cùng một bàn DG nhưng khác mã ván: thường chỉ là một profile đọc đúng lúc
+      // bàn vừa sang ván. Không xếp chip, chờ ván kế để cả nhóm khớp lại. Nếu lệch
+      // kéo dài thì hai sảnh đang phục vụ hai bàn khác nhau dù trùng mã, phải dừng
+      // và báo rõ thay vì im lặng chờ.
+      groupBetting.roundMismatchSince ||= Date.now();
+      if (Date.now() - groupBetting.roundMismatchSince > 20000) {
+        stopGroupBetting(`Mã ván lệch nhau quá lâu (${[...roundIds].join(' / ')}) `
+          + `dù cùng bàn ${groupBetting.tableId}; đã dừng nhóm để không cược lệch phiên.`, true);
+        return;
+      }
+      groupStatus(`Các profile chưa đồng bộ cùng mã ván (${[...roundIds].join(' / ')}); chưa đặt chip.`);
       return;
     }
+    groupBetting.roundMismatchSince = 0;
+
     const roundId = String(states[0].round_id);
     if (groupBetting.skippedRound && groupBetting.skippedRound === roundId) {
       groupStatus(`Tay ${roundId} đã bỏ qua; chờ ván kế tiếp.`);
@@ -1231,22 +1255,33 @@ async function runDGGroup(count, siteIds, requestedIndices = null) {
     return { ok: false, cancelled: true, error, profile_states: profileStates };
   }
   sendHopStatus({ active: true, profile_states: profileStates,
-    note: 'Đã thấy sảnh DG trên tất cả profile; đang đọc danh sách bàn để đồng bộ nhóm...' });
-  const leader = profileEngine(indices[0]);
-  let scan = null;
-  let tables = [];
+    note: 'Đã thấy sảnh DG trên tất cả profile; đang đọc danh sách bàn của từng sảnh để chọn bàn chung...' });
+  // Nguyên tắc: các profile có thể vào từ site khác nhau, nhưng phải vào **cùng
+  // một bàn DG**. Mã bàn 60xxx là không gian chung của DG, nên bàn hợp lệ là bàn
+  // xuất hiện trong danh sách của **mọi** sảnh — không phải bàn của profile dẫn
+  // đầu. Lấy bàn của leader rồi ép các profile khác vào sẽ tách nhóm khi hai site
+  // hiển thị tập bàn khác nhau.
+  let picked = null;
+  let scanErrors = [];
   while (indices.every((index) => activeProfileIndices.has(index))) {
-    try {
-      scan = await leader.call('dg.tables', { wait: 0 }, 10000);
-      tables = (scan?.tables || []).filter((row) => /^60[0-9]{3,}$/.test(String(row.table_id || '')));
-      if (scan?.ok && tables.length) break;
-    } catch (error) {
-      scan = { ok: false, error: error.message };
-    }
+    const scans = await Promise.allSettled(indices.map((index) =>
+      profileEngine(index).call('dg.tables', { wait: 0 }, 10000)));
+    const perProfile = scans.map((result) => {
+      if (result.status !== 'fulfilled') return [];
+      const tables = result.value?.tables;
+      return Array.isArray(tables) ? tables : [];
+    });
+    scanErrors = scans
+      .map((result, offset) => (result.status !== 'fulfilled'
+        ? `P${indices[offset]}: ${result.reason?.message || 'lỗi đọc sảnh'}`
+        : (result.value?.ok ? '' : `P${indices[offset]}: ${result.value?.error || 'chưa đọc được sảnh'}`)))
+      .filter(Boolean);
+    picked = pickSharedTable(perProfile);
+    if (picked.ok) break;
     for (let countdown = 5; countdown >= 0; countdown -= 1) {
       sendHopStatus({ active: true, countdown, profile_states: profileStates,
-        note: countdown === 0 ? 'Đang quét danh sách bàn DG...'
-          : `Đã nhận diện DG; chờ danh sách bàn · quét lại sau ${countdown} giây.` });
+        note: countdown === 0 ? 'Đang quét lại danh sách bàn của tất cả sảnh DG...'
+          : `Chưa chọn được bàn chung · quét lại sau ${countdown} giây.` });
       if (countdown > 0) await new Promise((resolve) => setTimeout(resolve, 1000));
     }
   }
@@ -1255,25 +1290,25 @@ async function runDGGroup(count, siteIds, requestedIndices = null) {
     sendHopStatus({ active: false, error: true, note: error });
     return { ok: false, cancelled: true, error, profile_states: profileStates };
   }
-  if (!tables.length) {
-    const reason = scan?.error || 'H\u1ebft th\u1eddi gian ch\u1edd, ch\u01b0a \u0111\u1ecdc \u0111\u01b0\u1ee3c danh s\u00e1ch b\u00e0n th\u1eadt t\u1eeb s\u1ea3nh DG.';
+  if (!picked?.ok) {
+    const reason = picked?.error
+      || scanErrors[0]
+      || 'Hết thời gian chờ, chưa đọc được danh sách bàn thật từ sảnh DG.';
     sendHopStatus({ active: false, error: true, note: reason });
-    return { ok: false, error: reason };
+    return { ok: false, error: reason, scans: scanErrors };
   }
-  // Prefer the busiest table; use the real DG id as a stable tie-breaker.
-  tables.sort((a, b) => (Number(b.online) || 0) - (Number(a.online) || 0)
-    || String(a.table_id).localeCompare(String(b.table_id), undefined, { numeric: true }));
-  const tableId = String(tables[0].table_id);
+  const tableId = String(picked.table_id);
   sendHopStatus({ active: true, table_id: tableId,
-    note: `\u0110\u00e3 t\u1ef1 ch\u1ecdn ${tables[0].name || `b\u00e0n ${tableId}`} (${tableId}); \u0111ang \u0111\u1ed3ng b\u1ed9 ${indices.length} profile...` });
+    note: `Bàn chung của ${indices.length} sảnh: ${picked.table_name} (${tableId}); đang đồng bộ cả nhóm...` });
   const syncResults = await Promise.allSettled(indices.map((index) =>
     profileEngine(index).call('dg.syncTable', { table_id: tableId }, 180000)));
   const syncReplies = syncResults.map((result, offset) => result.status === 'fulfilled'
     ? { index: indices[offset], ...result.value }
     : { index: indices[offset], ok: false, error: result.reason.message });
-  const notReady = syncReplies.filter((reply) => !reply.ok || reply.in_table !== true);
+  const notReady = syncReplies.filter((reply) => !reply.ok || reply.in_table !== true
+    || String(reply.table_id || tableId) !== tableId);
   if (notReady.length) {
-    const error = `${notReady.length}/${indices.length} profile ch\u01b0a x\u00e1c nh\u1eadn v\u00e0o b\u00e0n ${tableId}; \u0111\u00e3 d\u1eebng tr\u01b0\u1edbc khi x\u1ebfp chip.`;
+    const error = `${notReady.length}/${indices.length} profile chưa xác nhận vào bàn ${tableId}; đã dừng trước khi xếp chip.`;
     sendHopStatus({ active: false, error: true, table_id: tableId, note: error });
     return { ok: false, error, table_id: tableId, sync: syncReplies };
   }
@@ -1284,11 +1319,11 @@ async function runDGGroup(count, siteIds, requestedIndices = null) {
     sendHopStatus({ active: false, error: true, table_id: tableId, note: error });
     return { ok: false, error, table_id: tableId, sync: syncReplies, replies: ladderReplies };
   }
-  const tableIds = [...new Set(tables.map((row) => String(row.table_id)))];
-  startSharedHop(tableId, tableIds, config, indices);
+  startSharedHop(tableId, picked.common_ids, config, indices);
   startGroupBetting(tableId, indices, config);
   const result = { ok: true, count: indices.length, table_id: tableId,
-    table_name: tables[0].name || `B\u00e0n ${tableId}`, tables: tableIds,
+    table_name: picked.table_name, tables: picked.common_ids,
+    per_profile_tables: picked.per_profile,
     sync: syncReplies, replies: ladderReplies, stake: ladderStake(config), config };
   sendHopStatus({ active: true, table_id: tableId,
     note: `C\u1ea3 ${indices.length} profile \u0111\u00e3 v\u00e0o ${result.table_name} (${tableId}); \u0111ang ch\u1edd tr\u1ea1ng th\u00e1i c\u01b0\u1ee3c \u0111\u1ed3ng b\u1ed9.` });
@@ -1324,31 +1359,39 @@ ipcMain.handle('febet:sync-table', async (_event, { tableId }) => {
   const indices = Array.from(activeProfileIndices).sort((a, b) => a - b);
   if (!indices.length) return { ok: false, error: 'Chưa có profile nào đang mở.' };
   let target = String(tableId || '').trim();
+  let picked = null;
   if (!target) {
+    // Không có mã bàn chỉ định: vẫn phải giữ nguyên tắc "cùng một bàn cho mọi
+    // profile", nên lấy bàn chung của tất cả sảnh thay vì bàn của profile dẫn đầu.
     try {
-      const leader = profileEngine(indices[0]);
-      const read = await leader.call('dg.table', {}, 30000);
-      if (read && read.ok && read.in_table && /^60\d{3,}$/.test(String(read.table_id || ''))) {
-        target = String(read.table_id);
-      } else {
-        const scan = await leader.call('dg.tables', {}, 60000);
-        if (!scan || !scan.ok || !(scan.tables || []).length) {
-          return { ok: false, error: (scan && scan.error) || 'Không đọc được danh sách bàn của sảnh DG.' };
-        }
-        target = String(scan.tables[0].table_id || '');
-      }
+      const scans = await Promise.allSettled(indices.map((index) =>
+        profileEngine(index).call('dg.tables', {}, 60000)));
+      picked = pickSharedTable(scans.map((result) =>
+        result.status === 'fulfilled' ? (result.value?.tables || []) : []));
     } catch (error) {
-      return { ok: false, error: error.message || 'Không đọc được bàn của profile dẫn đầu.' };
+      return { ok: false, error: error.message || 'Không đọc được danh sách bàn của các sảnh DG.' };
     }
+    if (!picked?.ok) {
+      return { ok: false, error: picked?.error || 'Không đọc được danh sách bàn của sảnh DG.' };
+    }
+    target = String(picked.table_id);
   }
   if (!/^60[0-9]{3,}$/.test(target)) {
     return { ok: false, error: 'Mã bàn DG không hợp lệ; mã bàn Baccarat DG phải thuộc dải 60xxx (ví dụ 60102).' };
   }
   const results = await Promise.allSettled(indices.map((index) =>
     profileEngine(index).call('dg.syncTable', { table_id: target }, 180000)));
-  return { ok: true, count: indices.length, table_id: target, replies: results.map((result, offset) =>
-    result.status === 'fulfilled' ? { index: indices[offset], ...result.value }
-      : { index: indices[offset], ok: false, error: result.reason.message }) };
+  const replies = results.map((result, offset) => result.status === 'fulfilled'
+    ? { index: indices[offset], ...result.value }
+    : { index: indices[offset], ok: false, error: result.reason.message });
+  const notReady = replies.filter((reply) => !reply.ok || reply.in_table !== true
+    || (reply.table_id !== undefined && String(reply.table_id) !== target));
+  if (notReady.length) {
+    return { ok: false, count: indices.length, table_id: target, replies,
+      error: `${notReady.length}/${indices.length} profile chưa xác nhận vào bàn ${target}.` };
+  }
+  return { ok: true, count: indices.length, table_id: target, replies,
+    tables: picked?.common_ids || [target] };
 });
 
 function ladderStake(config) {
